@@ -356,6 +356,29 @@ namespace Duels
         return drone->powered == on;
     }
 
+    // supershield <ship> <layers>: a Zoltan super shield of that many layers (tests; Zoltan ships start with one).
+    static bool DoSuperShield(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int layers;
+        if (!ArgInt(cmd, 2, layers) || layers < 0)
+        {
+            message = "usage: supershield <ship> <layers>";
+            return false;
+        }
+        if (!ship->shieldSystem)
+        {
+            message = "ship has no shields";
+            return false;
+        }
+        ShieldPower &power = ship->shieldSystem->shields.power;
+        power.super.second = std::max(power.super.second, layers);
+        power.super.first = layers;
+        message = "super shield " + std::to_string(power.super.first) + "/" + std::to_string(power.super.second);
+        return true;
+    }
+
     // ionize <ship> <system> <amount>: ion damage to a system, as an ion shot does (tests of the ion lock).
     static bool DoIonize(const Command &cmd, std::string &message)
     {
@@ -737,6 +760,7 @@ namespace Duels
         if (verb == "ionize") return DoIonize(cmd, message);
         if (verb == "drone") return DoDrone(cmd, message);
         if (verb == "droneparts") return DoDroneParts(cmd, message);
+        if (verb == "supershield") return DoSuperShield(cmd, message);
         if (verb == "dronepower") return DoDronePower(cmd, message);
         if (verb == "fire") return DoFire(cmd, message);
         if (verb == "autofire") return DoAutofire(cmd, message);
