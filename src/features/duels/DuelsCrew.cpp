@@ -23,9 +23,12 @@ namespace Duels
         {
             FLAG_DEAD = 1,
             FLAG_MIND_CONTROLLED = 2,
-            FLAG_FIGHTING = 4,
+            FLAG_FIGHTING = 4,    // these three as the crew member's animation shows them
             FLAG_REPAIRING = 8,
-            FLAG_MANNING = 16
+            FLAG_MANNING = 16,
+            FLAG_IN_FIRE = 32,
+            FLAG_TYPING = 64,
+            ANIMATION_FLAGS = FLAG_FIGHTING | FLAG_REPAIRING | FLAG_IN_FIRE | FLAG_TYPING
         };
 
         struct RosterEntry
@@ -62,11 +65,13 @@ namespace Duels
             std::map<const CrewMember*, uint16_t> ownIds;
             uint16_t nextId = 1;
             std::string sentRoster;
+            std::map<const CrewAnimation*, uint8_t> ownAnimations;   // what each animation showed last (only compared)
             // Theirs.
             bool active = false;           // a roster came: the replica's crew are puppets now
             std::map<uint16_t, Puppet> puppets;
             std::vector<std::pair<uint16_t, Sample>> pending;
             bool havePending = false;
+            std::map<const CrewAnimation*, uint8_t> puppetAnimations;   // rebuilt after every replica loop
             uint32_t rostersApplied = 0, placed = 0, created = 0;
         };
 
@@ -146,9 +151,9 @@ namespace Duels
                 uint8_t flags = 0;
                 if (member->bDead) flags |= FLAG_DEAD;
                 if (member->bMindControlled) flags |= FLAG_MIND_CONTROLLED;
-                if (member->bFighting) flags |= FLAG_FIGHTING;
-                if (member->currentRepair) flags |= FLAG_REPAIRING;
                 if (member->bActiveManning) flags |= FLAG_MANNING;
+                auto shown = g_crew.ownAnimations.find(member->crewAnim);
+                if (shown != g_crew.ownAnimations.end()) flags |= shown->second;
                 // Where they are heading: the final goal while walking, else where they stand.
                 int goalRoom = member->finalGoal.roomId >= 0 ? member->finalGoal.roomId : member->currentSlot.roomId;
                 int goalSlot = member->finalGoal.roomId >= 0 ? member->finalGoal.slotId : member->currentSlot.slotId;
@@ -343,12 +348,21 @@ namespace Duels
         {
             if (!g_crew.active || !replica || replica != G_->GetShipManager(1)) return;
             double now = WallMs();
+            g_crew.puppetAnimations.clear();
             for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
             {
                 Puppet &puppet = entry.second;
                 CrewMember *crew = LiveCrew(replica, puppet);
                 if (!crew || crew->bDead || !puppet.haveSample) continue;
                 const Sample &s = puppet.sample;
+                // What they are doing shows as their owner's crew member shows it (the next frame's animation).
+                if (crew->crewAnim)
+                {
+                    g_crew.puppetAnimations[crew->crewAnim] = s.flags & ANIMATION_FLAGS;
+                    // FTL sets typing again from the replica's own manning after the animation update: for the frame
+                    // drawn now it is the owner's.
+                    crew->crewAnim->bTyping = (s.flags & FLAG_TYPING) != 0;
+                }
                 // Their health is their owner's, whatever happened here.
                 crew->health.first = std::min((float)s.health, crew->health.second);
                 // Too far off for too long (a door closed on one side only, a lost update): put them there.
@@ -377,7 +391,9 @@ namespace Duels
             }
         }
 
-        static std::string Describe(ShipManager *ship, bool rooms)
+        enum class Describing { HEALTH, ROOMS, ANIMATIONS };
+
+        static std::string Describe(ShipManager *ship, Describing what)
         {
             // Ours by our ids; the replica's by the owner's ids (the puppets').
             std::vector<std::pair<uint16_t, CrewMember*>> list;
@@ -399,20 +415,36 @@ namespace Duels
             for (const std::pair<uint16_t, CrewMember*> &entry : list)
             {
                 const CrewMember *crew = entry.second;
-                if (rooms) out << entry.first << ':' << (crew->bDead ? -1 : crew->iRoomId) << ' ';
-                else out << entry.first << ':' << (crew->bDead ? 0L : std::lround(crew->health.first)) << (crew->bDead ? "x" : "") << ' ';
+                switch (what)
+                {
+                    case Describing::HEALTH:
+                        out << entry.first << ':' << (crew->bDead ? 0L : std::lround(crew->health.first)) << (crew->bDead ? "x" : "") << ' ';
+                        break;
+                    case Describing::ROOMS:
+                        out << entry.first << ':' << (crew->bDead ? -1 : crew->iRoomId) << ' ';
+                        break;
+                    case Describing::ANIMATIONS:
+                        out << entry.first << ':' << (crew->bDead || !crew->crewAnim ? -1 : crew->crewAnim->status)
+                            << (!crew->bDead && crew->crewAnim && crew->crewAnim->bTyping ? "t" : "") << ' ';
+                        break;
+                }
             }
             return out.str();
         }
 
         std::string Signature(ShipManager *ship)
         {
-            return Describe(ship, false);
+            return Describe(ship, Describing::HEALTH);
         }
 
         std::string RoomSignature(ShipManager *ship)
         {
-            return Describe(ship, true);
+            return Describe(ship, Describing::ROOMS);
+        }
+
+        std::string AnimationSignature(ShipManager *ship)
+        {
+            return Describe(ship, Describing::ANIMATIONS);
         }
 
         std::string Status()
@@ -431,6 +463,27 @@ namespace Duels
         bool MayRepair(const ShipSystem *system)
         {
             return !(g_crew.active && system && system->_shipObj.iShipId == 1);
+        }
+
+        void Animate(CrewAnimation *anim, bool &fighting, bool &repairing, bool &onFire)
+        {
+            if (!anim) return;
+            auto puppet = g_crew.puppetAnimations.find(anim);
+            if (puppet != g_crew.puppetAnimations.end())
+            {
+                fighting = (puppet->second & FLAG_FIGHTING) != 0;
+                repairing = (puppet->second & FLAG_REPAIRING) != 0;
+                onFire = (puppet->second & FLAG_IN_FIRE) != 0;
+                // At a console the replica's own manning would decide (it differs while the owner's repairs).
+                anim->bTyping = (puppet->second & FLAG_TYPING) != 0;
+                return;
+            }
+            // Ours, in a duel (the ids are made with the first state). Animations of crew that are gone stay in the
+            // map until it is cleared; they are only compared with live crew's.
+            if (g_crew.ownIds.empty()) return;
+            if (g_crew.ownAnimations.size() > 64) g_crew.ownAnimations.clear();
+            g_crew.ownAnimations[anim] = (fighting ? FLAG_FIGHTING : 0) | (repairing ? FLAG_REPAIRING : 0) |
+                                         (onFire ? FLAG_IN_FIRE : 0) | (anim->bTyping ? FLAG_TYPING : 0);
         }
     }
 }

@@ -167,7 +167,7 @@ namespace Duels
     {
         static const std::set<std::string> verbs = {
             "console", "debug", "host", "join", "leave", "name", "net", "netstats", "note", "quit", "relay", "say",
-            "screenshot", "status", "stop", "trace", "tracepower", "version", "window"};
+            "screenshot", "status", "stop", "trace", "tracepower", "version", "window", "xp"};
         return verbs.count(verb) != 0;
     }
 
@@ -323,6 +323,16 @@ namespace Duels
         }
 
         // Network duel
+        if (verb == "xp")
+        {
+            // xp [factor]: how fast crew skills grow in a duel (the host's setting counts; 1 is FTL's own pace).
+            if (cmd.raw.size() < 2)
+            {
+                message = Match::CrewXpStatus();
+                return true;
+            }
+            return Match::SetCrewXp((float)std::atof(cmd.raw[1].c_str()), message);
+        }
         if (verb == "name")
         {
             if (cmd.raw.size() < 2) { message = "usage: name <player name>"; return false; }

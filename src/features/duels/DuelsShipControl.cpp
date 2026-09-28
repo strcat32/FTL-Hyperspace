@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsBays.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
@@ -692,6 +693,46 @@ namespace Duels
         return false;
     }
 
+    // swap <slot> <slot>: two of our weapons change places, as when the player drags one onto the other.
+    static bool DoSwap(const Command &cmd, std::string &message)
+    {
+        int a, b;
+        ShipManager *ship = G_->GetShipManager(0);
+        if (!ArgInt(cmd, 1, a) || !ArgInt(cmd, 2, b))
+        {
+            message = "usage: swap <slot> <slot>";
+            return false;
+        }
+        int count = ship && ship->weaponSystem ? (int)ship->GetWeaponList().size() : 0;
+        if (a < 0 || b < 0 || a >= count || b >= count || a == b)
+        {
+            message = "no such weapon slots (" + std::to_string(count) + " weapons)";
+            return false;
+        }
+        G_->GetCApp()->gui->combatControl.weapControl.SwapArmaments((unsigned)a, (unsigned)b);
+        message = "weapons:";
+        for (ProjectileFactory *weapon : ship->GetWeaponList()) message += " " + (weapon->blueprint ? weapon->blueprint->name : "?");
+        return true;
+    }
+
+    // rooms <ship>: the ship's rooms (tiles), their consoles and systems (the weapon bays' cut, DuelsBays.cpp).
+    static bool DoRooms(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        std::string text = Bays::Describe(ship);
+        size_t start = 0;
+        while (start <= text.size())
+        {
+            size_t end = text.find('\n', start);
+            Log("%s", text.substr(start, end == std::string::npos ? std::string::npos : end - start).c_str());
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+        message = "rooms of ship " + std::to_string(ship->iShipId) + " in the log";
+        return true;
+    }
+
     static bool DoDescribe(const Command &cmd, std::string &message)
     {
         ShipManager *ship = ArgShip(cmd, 1, message);
@@ -845,6 +886,8 @@ namespace Duels
         if (verb == "export") return DoExport(cmd, message);
         if (verb == "import") return DoImport(cmd, message);
         if (verb == "describe") return DoDescribe(cmd, message);
+        if (verb == "rooms") return DoRooms(cmd, message);
+        if (verb == "swap") return DoSwap(cmd, message);
         if (verb == "pausetest") return DoPauseTest(cmd, message);
         if (verb == "quit")
         {

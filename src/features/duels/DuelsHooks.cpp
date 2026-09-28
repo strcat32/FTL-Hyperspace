@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "Duels.h"
+#include "DuelsBays.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
@@ -266,6 +267,7 @@ HOOK_METHOD_PRIORITY(ShipManager, OnLoop, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::OnLoop -> Begin (DuelsHooks.cpp)\n")
     super();
+    Duels::Bays::AfterLoop(this);
     Duels::Match::HoldReplicaSubsystems(this);
 }
 
@@ -297,6 +299,148 @@ HOOK_METHOD_PRIORITY(ShipSystem, PartialRepair, -2000, (float speed, bool autoRe
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::PartialRepair -> Begin (DuelsHooks.cpp)\n")
     if (!Duels::Crew::MayRepair(this)) return false;
     return super(speed, autoRepair);
+}
+
+// Weapon bays (DuelsBays.cpp): the weapons room of every player ship is cut into one room per weapon slot as its
+// layout loads, and the ship's blueprint gets a bay system in each.
+HOOK_METHOD_PRIORITY(ResourceControl, LoadFile, -2000, (const std::string& fileName) -> char*)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ResourceControl::LoadFile -> Begin (DuelsHooks.cpp)\n")
+    return Duels::Bays::OnLoadFile(fileName, super(fileName));
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, OnInit, -2000, (ShipBlueprint *bp, int shipLevel) -> int)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::OnInit -> Begin (DuelsHooks.cpp)\n")
+    Duels::Bays::PrepareBlueprint(bp);
+    return super(bp, shipLevel);
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, AddSystem, -2000, (int systemId) -> int)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::AddSystem -> Begin (DuelsHooks.cpp)\n")
+    Duels::Bays::Building(&myBlueprint.layoutFile);
+    int ret = super(systemId);
+    Duels::Bays::Building(nullptr);
+    return ret;
+}
+
+// A cut room still looks like one: no doors or walls inside it (DuelsBays.cpp).
+HOOK_METHOD_PRIORITY(Ship, OnInit, -2000, (ShipBlueprint *bp) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Ship::OnInit -> Begin (DuelsHooks.cpp)\n")
+    Duels::Bays::BuildingShip(this, bp ? &bp->layoutFile : nullptr);
+    super(bp);
+    Duels::Bays::BuildingShip(this, nullptr);
+}
+
+HOOK_METHOD_PRIORITY(ShipGraph, OnInit, -2000, (std::vector<Room*> *pRooms, std::vector<Door*> *pDoors) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipGraph::OnInit -> Begin (DuelsHooks.cpp)\n")
+    super(pRooms, pDoors);
+    Duels::Bays::OnGraphBuilt();
+}
+
+HOOK_STATIC_PRIORITY(CSurface, GL_CreateMultiLinePrimitive, -2000, (std::vector<GL_Line>& vec, GL_Color color, float thickness) -> GL_Primitive*)
+{
+    LOG_HOOK("HOOK_STATIC_PRIORITY -> CSurface::GL_CreateMultiLinePrimitive -> Begin (DuelsHooks.cpp)\n")
+    Duels::Bays::OnLines(vec, thickness);
+    return super(vec, color, thickness);
+}
+
+// The weapons system keeps its room picture where the whole weapons room was (FTL places it at the room's corner).
+HOOK_METHOD_PRIORITY(ShipSystem, SetFloorImage1, -2000, (const std::string &name) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::SetFloorImage1 -> Begin (DuelsHooks.cpp)\n")
+    int x = 0, y = 0;
+    if (!Duels::Bays::OriginalRoomCorner(this, x, y)) return super(name);
+    Globals::Rect shape = roomShape;
+    roomShape.x = x;
+    roomShape.y = y;
+    super(name);
+    roomShape = shape;
+}
+
+// Bay 1 shares its room with the weapons system: hits, repairs and hacking there are bay 1's.
+HOOK_METHOD_PRIORITY(ShipManager, GetSystemInRoom, -2000, (int roomId) -> ShipSystem*)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::GetSystemInRoom -> Begin (DuelsHooks.cpp)\n")
+    return Duels::Bays::InRoom(this, roomId, super(roomId));
+}
+
+HOOK_METHOD_PRIORITY(CrewMember, SetCurrentSystem, -2000, (ShipSystem *sys) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::SetCurrentSystem -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::KeepConsole(this, sys)) return;
+    super(sys);
+}
+
+// ShipManager::DamageSystem damages every system in the hit room (its first argument is a room): in W1 that is bay 1
+// only, the weapons system beside it takes no damage.
+HOOK_METHOD_PRIORITY(ShipSystem, AddDamage, -2000, (int amount) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::AddDamage -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::Untouchable(this)) return;
+    super(amount);
+}
+
+HOOK_METHOD_PRIORITY(WeaponSystem, AddDamage, -2000, (int amount) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> WeaponSystem::AddDamage -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::Untouchable(this)) return;
+    super(amount);
+}
+
+HOOK_METHOD_PRIORITY(ShipSystem, DamageOverTime, -2000, (float unk) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::DamageOverTime -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::Untouchable(this)) return false;
+    return super(unk);
+}
+
+HOOK_METHOD_PRIORITY(ShipSystem, PartialDamage, -2000, (float amount) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::PartialDamage -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::Untouchable(this)) return false;
+    return super(amount);
+}
+
+HOOK_METHOD_PRIORITY(ShipSystem, IonDamage, -2000, (int amount) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::IonDamage -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::Untouchable(this)) return;
+    super(amount);
+}
+
+HOOK_METHOD_PRIORITY(WeaponSystem, PowerWeapon, -2000, (ProjectileFactory *weapon, bool userDriven, bool force) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> WeaponSystem::PowerWeapon -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Bays::MayPower(G_->GetShipManager(_shipObj.iShipId), weapon)) return false;
+    return super(weapon, userDriven, force);
+}
+
+// The icon in W1 is bay 1's.
+HOOK_METHOD_PRIORITY(ShipSystem, OnRender, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::OnRender -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::HideRoomIcon(this)) return;
+    super();
+}
+
+// Crew experience: in a duel, each skill gain of our crew counts as often as the host's setting says.
+HOOK_METHOD_PRIORITY(CrewMember, IncreaseSkill, -2000, (int skillId) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::IncreaseSkill -> Begin (DuelsHooks.cpp)\n")
+    int gains = Duels::Match::SkillGains(this);
+    for (int i = 0; i < gains; ++i) super(skillId);
+}
+
+// A puppet repairs, fights fires and fights when its owner's crew member does (its own work here has no effect).
+HOOK_METHOD_PRIORITY(CrewAnimation, OnUpdate, -2000, (Pointf position, bool moving, bool fighting, bool repairing, bool dying, bool onFire) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewAnimation::OnUpdate -> Begin (DuelsHooks.cpp)\n")
+    Duels::Crew::Animate(this, fighting, repairing, onFire);
+    super(position, moving, fighting, repairing, dying, onFire);
 }
 
 // A beam's sweep over the rooms behind the shields.

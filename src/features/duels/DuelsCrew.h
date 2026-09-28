@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 
+struct CrewAnimation;
 struct CrewMember;
 struct ShipManager;
 struct ShipSystem;
@@ -42,6 +43,8 @@ namespace Duels
         // (crew walking the same distance by another route are in other rooms for a moment).
         std::string Signature(ShipManager *ship);
         std::string RoomSignature(ShipManager *ship);
+        // And the animation each one shows (FTL's animation number; "t" when typing at a console).
+        std::string AnimationSignature(ShipManager *ship);
         std::string Status();
 
         // --- hook entry points ---
@@ -50,5 +53,8 @@ namespace Duels
         bool IsPuppet(const CrewMember *crew);
         // ShipSystem::PartialRepair: the replica's systems are repaired by their owner (the state brings the health).
         bool MayRepair(const ShipSystem *system);
+        // CrewAnimation::OnUpdate: whether a crew member is shown fighting, repairing (a system, a breach or a fire),
+        // standing in a fire and typing at a console. Ours is noted for the state; a puppet shows its owner's.
+        void Animate(CrewAnimation *anim, bool &fighting, bool &repairing, bool &onFire);
     }
 }

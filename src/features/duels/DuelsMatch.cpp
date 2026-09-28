@@ -5,6 +5,7 @@
 #include "Systems.h"
 #include "Duels.h"
 #include "DuelsConsole.h"
+#include "DuelsBays.h"
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
 #include "DuelsMatch.h"
@@ -16,6 +17,7 @@
 #include "DuelsWire.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <map>
 #include <set>
@@ -35,7 +37,8 @@ namespace Duels
             MSG_SHOT = 20,       // reliable: a projectile left one of our weapons
             MSG_RESULT = 21,     // reliable: the defender's verdict on a shot
             MSG_DEFEAT = 22,     // reliable: our hull reached 0
-            MSG_SHOT_DOWNED = 23 // reliable: our shot ran into something in our own space before it left
+            MSG_SHOT_DOWNED = 23, // reliable: our shot ran into something in our own space before it left
+            MSG_SETTINGS = 27    // reliable, host to guest: the duel's settings (crew experience)
             // 24, 25: DuelsDrones.h
         };
 
@@ -133,6 +136,7 @@ namespace Duels
             std::string playerName = "Captain";
 
             bool loadoutSent = false;
+            std::string sentArmament;      // our weapons and drones, in slot order, as the last loadout had them
             bool replicaReady = false;     // we built the opponent's ship
             bool peerReady = false;        // they built ours
             bool defeatSent = false;
@@ -255,6 +259,24 @@ namespace Duels
         // Loadout: what the opponent needs to build our ship
         // --------------------------------------------------------------------------------------------------------
 
+        // Our weapons and drones in slot order. When it changes (weapons dragged to other slots, a refit), the
+        // opponent gets the loadout again: slots decide power, charge and the weapon bays.
+        static std::string Armament(ShipManager *ship)
+        {
+            std::string text;
+            if (!ship) return text;
+            if (ship->weaponSystem)
+            {
+                for (ProjectileFactory *weapon : ship->GetWeaponList()) text += (weapon->blueprint ? weapon->blueprint->name : "?") + ",";
+            }
+            text += "|";
+            if (ship->droneSystem)
+            {
+                for (Drone *drone : ship->GetDroneList()) text += (drone->blueprint ? drone->blueprint->name : "?") + ",";
+            }
+            return text;
+        }
+
         static void SendLoadout()
         {
             ShipManager *ship = G_->GetShipManager(0);
@@ -284,6 +306,7 @@ namespace Duels
 
             Net::Send(MSG_LOADOUT, w, true);
             g_match.loadoutSent = true;
+            g_match.sentArmament = Armament(ship);
             Log("Match: loadout sent (%s, hull %d/%d, %u systems, %u weapons, %u drones)", ship->myBlueprint.blueprintName.c_str(),
                 ship->ship.hullIntegrity.first, ship->ship.hullIntegrity.second, (unsigned)ship->vSystemList.size(),
                 (unsigned)weapons.size(), (unsigned)drones.size());
@@ -1574,7 +1597,8 @@ namespace Duels
                 for (ProjectileFactory *weapon : ship->GetWeaponList()) out << (weapon->powered ? '1' : '0');
             }
             out << ',' << Drones::Signature(ship);
-            out << ',' << Crew::Signature(ship) << ',' << Crew::RoomSignature(ship) << ',' << Rooms::Signature(ship);
+            out << ',' << Crew::Signature(ship) << ',' << Crew::RoomSignature(ship) << ',' << Rooms::Signature(ship)
+                << ',' << Crew::AnimationSignature(ship) << ',' << Bays::Signature(ship);
             return out.str();
         }
 
@@ -1591,7 +1615,7 @@ namespace Duels
                 std::string signature = Signature(ship);
                 if (signature == m.lastSignature[shipId]) continue;
                 m.lastSignature[shipId] = signature;
-                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms");
+                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms,crew_anim,bays");
                 Row row;
                 row << now << Net::LocalToPeerTime(0.0) << (shipId == 0 ? "own" : "replica") << signature;
                 m.syncCsv.WriteRow(row.str());
@@ -1602,6 +1626,77 @@ namespace Duels
         // Session events
         // --------------------------------------------------------------------------------------------------------
 
+        // ---------------------------------------------------------------------------------------------------------
+        // Crew experience
+        // ---------------------------------------------------------------------------------------------------------
+
+        // Main skills mastered in about two of a match's five fights (docs/design/weapon-bays.md): FTL needs 26
+        // dodges for piloting, 100 absorbed hits for shields, 116 volleys for weapons (humans).
+        static const float XP_DEFAULT = 3.f, XP_MIN = 1.f, XP_MAX = 10.f;
+        static float g_xpSetting = XP_DEFAULT;   // ours: counts when we host
+        static float g_xpMatch = XP_DEFAULT;     // this duel's: the host's
+        static float g_xpCarry = 0.f;            // what is left of a fraction
+        static uint32_t g_xpGains = 0, g_xpCounted = 0;
+
+        static std::string XpText(float factor)
+        {
+            char text[32];
+            std::snprintf(text, sizeof(text), "x%g", factor);
+            return text;
+        }
+
+        static void SendSettings()
+        {
+            Writer w;
+            w.F32(g_xpMatch);
+            Net::Send(MSG_SETTINGS, w, true);
+        }
+
+        static void ApplySettings(Reader &r)
+        {
+            float xp = r.F32();
+            if (!r.Ok() || !(xp >= XP_MIN && xp <= XP_MAX)) return;
+            if (xp != g_xpMatch) Announce("crew experience " + XpText(xp) + " (the host's setting)");
+            g_xpMatch = xp;
+        }
+
+        bool SetCrewXp(float factor, std::string &message)
+        {
+            if (!(factor >= XP_MIN && factor <= XP_MAX))
+            {
+                message = "usage: xp <factor from 1 to 10> (1 is FTL's own pace)";
+                return false;
+            }
+            if (Net::IsConnected() && !Net::IsHost())
+            {
+                message = "the host decides the crew experience: " + XpText(g_xpMatch);
+                return false;
+            }
+            g_xpSetting = factor;
+            g_xpMatch = factor;
+            if (Net::IsConnected()) SendSettings();
+            message = "crew experience " + XpText(factor) + (Net::IsConnected() ? " for this duel" : " when you host");
+            return true;
+        }
+
+        std::string CrewXpStatus()
+        {
+            std::string text = "crew experience " + XpText(Net::IsConnected() ? g_xpMatch : g_xpSetting);
+            if (Net::IsConnected() && !Net::IsHost()) text += " (the host's setting)";
+            return text;
+        }
+
+        int SkillGains(const CrewMember *crew)
+        {
+            if (!crew || crew->iShipId != 0 || !Net::IsConnected()) return 1;
+            float gain = g_xpMatch + g_xpCarry;
+            int whole = std::max(0, (int)gain);
+            g_xpCarry = gain - (float)whole;
+            ++g_xpGains;
+            g_xpCounted += (uint32_t)whole;
+            return whole;
+        }
+
         class Listener : public Net::Listener
         {
         public:
@@ -1609,6 +1704,14 @@ namespace Duels
             {
                 ResetMatch();
                 Announce("connected to " + Net::PeerName() + (Net::IsHost() ? " (you host)" : ""));
+                // The host's settings count for both; the guest has the default until they come.
+                g_xpMatch = Net::IsHost() ? g_xpSetting : XP_DEFAULT;
+                g_xpCarry = 0.f;
+                if (Net::IsHost())
+                {
+                    SendSettings();
+                    Announce("crew experience " + XpText(g_xpMatch) + " (your setting, as the host)");
+                }
                 // Test commands can change ships, so both players see a debug duel for what it is.
                 bool ours = GetState().debug, theirs = Net::PeerDebug();
                 if (ours || theirs)
@@ -1650,6 +1753,9 @@ namespace Duels
                 {
                 case MSG_CHAT:
                     Announce(Net::PeerName() + ": " + reader.Str());
+                    break;
+                case MSG_SETTINGS:
+                    if (!Net::IsHost()) ApplySettings(reader);
                     break;
                 case MSG_LOADOUT:
                     ApplyLoadout(reader);
@@ -1710,6 +1816,11 @@ namespace Duels
             if (InGame())
             {
                 if (!m.loadoutSent) SendLoadout();
+                else if (Armament(G_->GetShipManager(0)) != m.sentArmament)
+                {
+                    Log("Match: our weapons or drones changed their slots; the loadout goes again");
+                    SendLoadout();
+                }
                 if (m.stateDirty || now - m.lastStateSent >= STATE_INTERVAL_MS) SendState(now);
                 ShipManager *ship = G_->GetShipManager(0);
                 // No escaping a duel: the FTL drive never finishes charging while the opponent is here.
@@ -1787,7 +1898,9 @@ namespace Duels
                 << (m.replicaReady ? " built" : "") << (m.peerReady ? ", ours built there" : "")
                 << ", states applied " << m.statesApplied << ", shots out " << m.shotsSent << " in " << m.shotsReceived
                 << ", verdicts sent " << m.verdictsSent << " received " << m.verdictsReceived << ", hold timeouts "
-                << m.holdTimeouts << ", " << Drones::Status() << ", " << Crew::Status() << ", " << Rooms::Status();
+                << m.holdTimeouts << ", " << Drones::Status() << ", " << Crew::Status() << ", " << Rooms::Status()
+                << ", " << Bays::Status() << ", " << CrewXpStatus() << " (skill gains " << g_xpGains << " counted "
+                << g_xpCounted << ")";
             return out.str();
         }
     }

@@ -5,6 +5,7 @@
 
 struct BombProjectile;
 struct Collideable;
+struct CrewMember;
 struct CollisionResponse;
 struct Damage;
 struct Pointf;
@@ -41,9 +42,17 @@ namespace Duels
         bool Say(const std::string &text);
         // Debug mode on (Duels::EnableDebug): the handshake tells the other player.
         void SetDebug(bool debug);
+        // Crew experience (rules, roadmap 2.3): in a duel each skill gain of the crew counts this many times. The
+        // host's setting counts for both players; 1 is FTL's own pace.
+        bool SetCrewXp(float factor, std::string &message);
+        std::string CrewXpStatus();
         std::string Status();
 
         // --- hook entry points ---
+
+        // CrewMember::IncreaseSkill: how many times this gain counts (our crew in a duel: the host's setting; the
+        // fractions add up).
+        int SkillGains(const CrewMember *crew);
 
         // ProjectileFactory::GetProjectile released a projectile of one of our weapons.
         void OnOwnProjectile(ProjectileFactory *weapon, Projectile *projectile);
