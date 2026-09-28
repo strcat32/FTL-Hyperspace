@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 
+struct BombProjectile;
 struct Collideable;
 struct CollisionResponse;
 struct Damage;
@@ -16,9 +17,10 @@ struct ShipManager;
 //
 //  - On connecting, both send their loadout; each spawns the other's ship as ship 1 and applies it.
 //  - Ten times a second each sends its ship's state (hull, shields, systems, weapons); the replica follows it.
-//  - A shot is captured when the owner's weapon releases a projectile and sent with its exact target point. The
-//    defender creates it on its side and lets its own game decide the hit (dodge, shields, damage). The verdict
-//    goes back; until it arrives, the attacker's copy of the shot waits at the edge of the target's shield.
+//  - A shot is captured when the owner's weapon releases a projectile (laser, missile, flak shard, beam or bomb) and
+//    sent with its exact target point. The defender creates it on its side and lets its own game decide the hit
+//    (dodge, shields, damage). The verdict goes back; until it arrives, the attacker's copy of the shot waits at the
+//    edge of the target's shield (a bomb: where it goes off). A beam's damage is only done by the defender's game.
 //
 // Hooks live in DuelsHooks.cpp and call in here.
 namespace Duels
@@ -57,5 +59,15 @@ namespace Duels
         // The defender's own game decided an incoming shot (after the original functions ran).
         void ObserveShield(ShipManager *ship, const CollisionResponse &response);
         void ObserveDamageArea(ShipManager *ship, bool hit, int hullBefore);
+
+        // Bombs (BombProjectile::CollisionCheck, ShipManager::GetDodged): ours in the replica goes off, or misses,
+        // as the defender's did, and waits for that verdict; the defender's dodge is reported when it is rolled.
+        bool BeginBombCheck(BombProjectile *bomb, Collideable *other);
+        bool ForcedDodge(ShipManager *ship, bool &dodged);
+        void ObserveDodge(ShipManager *ship, bool dodged);
+
+        // Beams (ShipManager::DamageBeam): ours sweeps the replica without damage; the defender's is reported when over.
+        void MuteBeamDamage(ShipManager *ship, Damage &damage);
+        void ObserveBeam(ShipManager *ship, bool hit, int hullBefore);
     }
 }

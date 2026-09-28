@@ -75,6 +75,15 @@ namespace Duels
         return true;
     }
 
+    bool SetGameWindowTitle(const char *title, std::string &details)
+    {
+        HWND window = GameWindow();
+        if (!window) return false;
+        SetWindowTextA(window, title);
+        details = Describe(window);
+        return true;
+    }
+
     bool MoveGameWindow(int x, int y, int width, int height, std::string &details)
     {
         HWND window = GameWindow();
@@ -102,6 +111,7 @@ namespace Duels
     bool MinimizeGameWindow(std::string &details) { details = "not supported"; return false; }
     bool RestoreGameWindow(std::string &details) { details = "not supported"; return false; }
     bool MoveGameWindow(int, int, int, int, std::string &details) { details = "not supported"; return false; }
+    bool SetGameWindowTitle(const char *, std::string &details) { details = "not supported"; return false; }
 }
 
 #endif

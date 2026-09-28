@@ -12,4 +12,6 @@ namespace Duels
     // Moves the window's top-left corner to screen position x, y (two games side by side for tests); with a
     // width and height > 0, also sizes its drawing area.
     bool MoveGameWindow(int x, int y, int width, int height, std::string &details);
+
+    bool SetGameWindowTitle(const char *title, std::string &details);
 }

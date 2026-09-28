@@ -14,7 +14,7 @@ struct CommandGui;
 namespace Duels
 {
     // Version of the Duels module (the Hyperspace version stays upstream's, so mods' version checks keep working).
-    static const char *const VERSION = "0.2.1-dev";
+    static const char *const VERSION = "0.3.0-dev";
 
     struct State
     {

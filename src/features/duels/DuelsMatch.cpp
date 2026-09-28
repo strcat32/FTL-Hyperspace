@@ -53,12 +53,21 @@ namespace Duels
             }
         }
 
-        // Weapon blueprint types (CustomWeapons.cpp)
+        // Weapon blueprint types (CustomWeapons.cpp). Flak ("burst") fires laser blasts at scattered points.
         static const int WEAPON_LASER = 0;
         static const int WEAPON_MISSILES = 1;
+        static const int WEAPON_BEAM = 2;
+        static const int WEAPON_BOMB = 3;
+        static const int WEAPON_BURST = 4;
+
+        static bool Networked(int type)
+        {
+            return type >= WEAPON_LASER && type <= WEAPON_BURST;
+        }
 
         static const double STATE_INTERVAL_MS = 100.0;
         static const double HOLD_TIMEOUT_MS = 3000.0;     // no verdict by then: show a miss, the state has the truth
+        static const double BEAM_VERDICT_WAIT_MS = 3000.0;
         static const double NATURAL_OPPONENT_LEG_MS = 1100.0;   // step 1: a shot's flight out of the enemy window
         static const int MAX_SLOTS = 8;
 
@@ -69,6 +78,7 @@ namespace Duels
             unsigned int selfId = 0;
             uint32_t netId = 0;
             int slot = 0;
+            int type = WEAPON_LASER;
             std::string weapon;
             double spawnMs = 0.0;
             double transferMs = -1.0;
@@ -77,6 +87,7 @@ namespace Duels
             uint8_t verdict = PENDING;
             int damage = 0;
             bool timedOut = false;
+            double goneMs = -1.0;       // a beam whose sweep is over, still waiting for its verdict
         };
 
         // The opponent's projectile flying at our ship, created from their shot message.
@@ -85,6 +96,9 @@ namespace Duels
             Projectile *projectile = nullptr;
             unsigned int selfId = 0;
             uint32_t netId = 0;
+            int type = WEAPON_LASER;
+            bool beamTouched = false;      // a beam reached our shields
+            bool beamHit = false;          // a beam reached a room
             std::string weapon;
             double spawnMs = 0.0;          // the attacker's spawn time, in our clock
             double receivedMs = 0.0;
@@ -120,6 +134,7 @@ namespace Duels
             std::vector<OutShot> out;
             std::vector<InShot> in;
             double legEstimate[MAX_SLOTS];
+            double lastFireMs[MAX_SLOTS];   // when a replica weapon last fired a received shot
 
             uint32_t shotsSent = 0, shotsReceived = 0, verdictsSent = 0, verdictsReceived = 0, holdTimeouts = 0;
             std::set<std::string> unsupportedLogged;
@@ -145,7 +160,11 @@ namespace Duels
             m.statesApplied = 0;
             m.out.clear();
             m.in.clear();
-            for (int i = 0; i < MAX_SLOTS; ++i) m.legEstimate[i] = -1.0;
+            for (int i = 0; i < MAX_SLOTS; ++i)
+            {
+                m.legEstimate[i] = -1.0;
+                m.lastFireMs[i] = -1.0e9;
+            }
             m.lastSignature[0].clear();
             m.lastSignature[1].clear();
             g_forced = nullptr;
@@ -478,12 +497,13 @@ namespace Duels
             int slot = WeaponSlot(ship, weapon);
             if (slot < 0 || !weapon->blueprint) return;
 
-            int type = weapon->blueprint->type;
-            if (type != WEAPON_LASER && type != WEAPON_MISSILES)
+            const WeaponBlueprint *blueprint = weapon->blueprint;
+            int type = blueprint->type;
+            if (!Networked(type))
             {
-                if (m.unsupportedLogged.insert(weapon->blueprint->name).second)
+                if (m.unsupportedLogged.insert(blueprint->name).second)
                 {
-                    Announce(weapon->blueprint->name + " is not networked yet; the opponent won't see it");
+                    Announce(blueprint->name + " is not networked yet; the opponent won't see it");
                 }
                 return;
             }
@@ -494,7 +514,8 @@ namespace Duels
             shot.selfId = projectile->selfId;
             shot.netId = m.nextNetId++;
             shot.slot = slot;
-            shot.weapon = weapon->blueprint->name;
+            shot.type = type;
+            shot.weapon = blueprint->name;
             shot.spawnMs = now;
             m.out.push_back(shot);
 
@@ -508,6 +529,33 @@ namespace Duels
             w.F32(projectile->target.y);
             w.F64(now);
             w.F32((float)leg);
+            // What the defender needs to build the same projectile: a beam's second point (it sweeps from the first),
+            // a bomb's Zoltan-shield bypass, a flak shard's look (and whether it is one of the harmless ones).
+            w.U8((uint8_t)type);
+            if (type == WEAPON_BEAM)
+            {
+                BeamWeapon *beam = static_cast<BeamWeapon*>(projectile);
+                w.F32(beam->target2.x);
+                w.F32(beam->target2.y);
+            }
+            else if (type == WEAPON_BOMB)
+            {
+                w.U8(static_cast<BombProjectile*>(projectile)->superShieldBypass ? 1 : 0);
+            }
+            else if (type == WEAPON_BURST)
+            {
+                uint8_t shard = 0xFF;
+                for (size_t i = 0; i < blueprint->miniProjectiles.size() && i < 0xFF; ++i)
+                {
+                    if (blueprint->miniProjectiles[i].image == projectile->flight_animation.animName)
+                    {
+                        shard = (uint8_t)i;
+                        break;
+                    }
+                }
+                w.U8(shard);
+                w.U8(projectile->damage.iDamage == 0 && blueprint->damage.iDamage > 0 ? 1 : 0);
+            }
             Net::Send(MSG_SHOT, w, true);
             ++m.shotsSent;
         }
@@ -537,6 +585,25 @@ namespace Duels
             target.y = r.F32();
             double peerSpawn = r.F64();
             double ownLeg = r.F32();
+            int type = r.U8();
+            Pointf target2 = target;
+            bool bombBypass = false;
+            int shard = 0xFF;
+            bool fakeShard = false;
+            if (type == WEAPON_BEAM)
+            {
+                target2.x = r.F32();
+                target2.y = r.F32();
+            }
+            else if (type == WEAPON_BOMB)
+            {
+                bombBypass = r.U8() != 0;
+            }
+            else if (type == WEAPON_BURST)
+            {
+                shard = r.U8();
+                fakeShard = r.U8() != 0;
+            }
             if (!r.Ok()) return;
             MatchState &m = g_match;
             ++m.shotsReceived;
@@ -544,11 +611,13 @@ namespace Duels
 
             InShot shot;
             shot.netId = netId;
+            shot.type = type;
             shot.weapon = weaponName;
             shot.receivedMs = now;
             shot.spawnMs = Net::HasClock() ? Net::PeerToLocalTime(peerSpawn) : now;
 
             ShipManager *replica = G_->GetShipManager(1);
+            ShipManager *own = G_->GetShipManager(0);
             ProjectileFactory *weapon = nullptr;
             if (replica && replica->weaponSystem)
             {
@@ -556,7 +625,7 @@ namespace Duels
                 if (slot < (int)list.size() && list[slot]->blueprint && list[slot]->blueprint->name == weaponName) weapon = list[slot];
             }
             const WeaponBlueprint *blueprint = weapon ? weapon->blueprint : nullptr;
-            if (!weapon || !blueprint || (blueprint->type != WEAPON_LASER && blueprint->type != WEAPON_MISSILES))
+            if (!weapon || !blueprint || !own || blueprint->type != type || !Networked(type))
             {
                 Log("Match: shot %u from %s slot %d cannot be shown (no such weapon on the replica)", netId,
                     weaponName.c_str(), slot);
@@ -564,45 +633,110 @@ namespace Duels
                 return;
             }
 
-            // Like ProjectileFactory::Update does it, at the replica's weapon mount.
+            // Like ProjectileFactory::Update does it (CustomWeapons.cpp), at the replica's weapon mount.
             Point fireLocation = weapon->weaponVisual.GetFireLocation() + weapon->localPosition;
-            if (blueprint->type == WEAPON_MISSILES)
+            if (type == WEAPON_MISSILES)
             {
                 if (weapon->currentFiringAngle == 0.f) fireLocation.x += 16;
                 else if (weapon->currentFiringAngle == 270.f) fireLocation.y -= 16;
             }
             Pointf position((float)fireLocation.x, (float)fireLocation.y);
             Projectile *projectile = nullptr;
-            if (blueprint->type == WEAPON_LASER)
+            switch (type)
+            {
+            case WEAPON_LASER:
+            case WEAPON_BURST:
             {
                 LaserBlast *laser = new LaserBlast(position, 1, 0, target);
                 laser->OnInit();
                 projectile = laser;
+                break;
             }
-            else
-            {
+            case WEAPON_MISSILES:
                 projectile = new Missile(position, 1, 0, target, weapon->currentFiringAngle);
+                break;
+            case WEAPON_BEAM:
+            {
+                BeamWeapon *beam = new BeamWeapon(position, 1, 0, target, target2, blueprint->length, &own->_targetable,
+                                                  weapon->currentFiringAngle);
+                beam->SetWeaponAnimation(&weapon->weaponVisual);
+                projectile = beam;
+                break;
+            }
+            default:
+            {
+                BombProjectile *bomb = new BombProjectile(position, 1, 0, target);
+                bomb->superShieldBypass = bombBypass;
+                projectile = bomb;
+                break;
+            }
             }
             projectile->entryAngle = weapon->currentEntryAngle;
             projectile->Initialize(*blueprint);
             projectile->heading = weapon->currentFiringAngle;
-            projectile->flight_animation = weapon->flight_animation;
+            if (type == WEAPON_BURST && !blueprint->miniProjectiles.empty())
+            {
+                // The shard's own look; the harmless ones do no damage (as CustomWeapons.cpp builds them).
+                const WeaponBlueprint::MiniProjectile &mini = blueprint->miniProjectiles[shard < (int)blueprint->miniProjectiles.size() ? shard : 0];
+                projectile->flight_animation = G_->GetAnimationControl()->GetAnimation(mini.image);
+                projectile->flight_animation.SetCurrentFrame(random32() % std::max(1, projectile->flight_animation.info.numFrames));
+                projectile->flight_animation.Stop();
+                if (fakeShard || mini.fake)
+                {
+                    Damage &damage = projectile->damage;
+                    damage.iDamage = 0;
+                    damage.iShieldPiercing = 0;
+                    damage.fireChance = 0;
+                    damage.breachChance = 0;
+                    damage.stunChance = 0;
+                    damage.iIonDamage = 0;
+                    damage.iSystemDamage = 0;
+                    damage.iPersDamage = 0;
+                    damage.bHullBuster = false;
+                    damage.ownerId = -1;
+                    damage.selfId = -1;
+                    damage.bLockdown = false;
+                    damage.crystalShard = false;
+                    damage.bFriendlyFire = true;
+                    damage.iStun = 0;
+                    projectile->death_animation.fScale = 0.25f;
+                }
+            }
+            else
+            {
+                projectile->flight_animation = weapon->flight_animation;
+            }
             G_->GetWorld()->space.AddProjectile(projectile);
 
-            weapon->weaponVisual.StartFire();
-            if (!blueprint->effects.launchSounds.empty())
+            // The weapon fires once per volley: a flak volley's shards arrive together.
+            bool sameVolley = type == WEAPON_BURST && slot < MAX_SLOTS && now - m.lastFireMs[slot] < 100.0;
+            if (slot < MAX_SLOTS) m.lastFireMs[slot] = now;
+            if (!sameVolley)
             {
-                G_->GetSoundControl()->PlaySoundMix(blueprint->effects.launchSounds[random32() % blueprint->effects.launchSounds.size()], -1.f, false);
+                weapon->weaponVisual.StartFire();
+                if (!blueprint->effects.launchSounds.empty())
+                {
+                    G_->GetSoundControl()->PlaySoundMix(blueprint->effects.launchSounds[random32() % blueprint->effects.launchSounds.size()], -1.f, false);
+                }
             }
 
             // Timing: our copy should enter our space when theirs entered the replica's space on their screen, less
             // the one-way latency, so the verdict is back when their shot reaches our shields. The flight out of the
-            // enemy window runs faster to make up for the time the message took.
+            // enemy window runs faster to make up for the time the message took. A beam has no flight: it reaches
+            // across at once, and its sweep keeps the weapon's own pace.
             double oneWay = Net::RttMs() * 0.5;
-            shot.releaseAt = shot.spawnMs + ownLeg - oneWay;
-            double available = shot.releaseAt - now;
-            shot.speedUp = available >= NATURAL_OPPONENT_LEG_MS ? 1
-                           : std::min(8, (int)std::ceil(NATURAL_OPPONENT_LEG_MS / std::max(available, 120.0)));
+            if (type == WEAPON_BEAM)
+            {
+                shot.releaseAt = 0.0;
+                shot.speedUp = 1;
+            }
+            else
+            {
+                shot.releaseAt = shot.spawnMs + ownLeg - oneWay;
+                double available = shot.releaseAt - now;
+                shot.speedUp = available >= NATURAL_OPPONENT_LEG_MS ? 1
+                               : std::min(8, (int)std::ceil(NATURAL_OPPONENT_LEG_MS / std::max(available, 120.0)));
+            }
             shot.projectile = projectile;
             shot.selfId = projectile->selfId;
             m.in.push_back(shot);
@@ -682,6 +816,79 @@ namespace Duels
             g_forced = nullptr;
         }
 
+        // A bomb appears in its target room and goes off after a short delay; the dodge is rolled when it appears
+        // (a dodged bomb is set aside with a "MISS"). Our bomb in the replica never rolls: it waits at the moment it
+        // would go off until the defender's verdict is here, then goes off or misses as the defender's did.
+        bool BeginBombCheck(BombProjectile *bomb, Collideable *other)
+        {
+            g_forced = nullptr;
+            ShipManager *replica = G_->GetShipManager(1);
+            if (!replica || other != &replica->_collideable || bomb->currentSpace != 1) return true;
+            OutShot *shot = FindOut(bomb);
+            if (!shot) return true;
+            if (bomb->explosiveDelay > 0.f || bomb->startedDeath || bomb->bMissed) return true;
+
+            if (shot->verdict == PENDING)
+            {
+                if (shot->holdStartMs < 0.0) shot->holdStartMs = WallMs();
+                return false;
+            }
+            if (shot->verdict == OUTCOME_MISS || shot->verdict == OUTCOME_GONE)
+            {
+                bomb->bMissed = true;
+                replica->damMessages.push_back(new DamageMessage(1.f, bomb->position, DamageMessage::MISS));
+            }
+            g_forced = shot;
+            return true;
+        }
+
+        bool ForcedDodge(ShipManager *ship, bool &dodged)
+        {
+            if (!ship || ship->iShipId != 1) return false;
+            OutShot *shot = FindOut(CustomDamageManager::currentProjectile);
+            if (!shot || shot->type != WEAPON_BOMB) return false;
+            dodged = false;   // decided when it goes off (BeginBombCheck)
+            return true;
+        }
+
+        void ObserveDodge(ShipManager *ship, bool dodged)
+        {
+            if (!ship || ship->iShipId != 0 || !dodged) return;
+            InShot *shot = FindIn(CustomDamageManager::currentProjectile);
+            if (shot && shot->type == WEAPON_BOMB && shot->outcome == PENDING) SendResult(*shot, OUTCOME_MISS, 0);
+        }
+
+        // Our beam sweeping the replica: the defender's game does the damage (and the state sync shows it), ours only
+        // draws it. It still runs with no damage, so the beam looks and sounds as it does.
+        void MuteBeamDamage(ShipManager *ship, Damage &damage)
+        {
+            if (!ship || ship->iShipId != 1) return;
+            OutShot *shot = FindOut(CustomDamageManager::currentProjectile);
+            if (!shot || shot->type != WEAPON_BEAM) return;
+            damage.iDamage = 0;
+            damage.iShieldPiercing = 0;
+            damage.fireChance = 0;
+            damage.breachChance = 0;
+            damage.stunChance = 0;
+            damage.iIonDamage = 0;
+            damage.iSystemDamage = 0;
+            damage.iPersDamage = 0;
+            damage.bHullBuster = false;
+            damage.bLockdown = false;
+            damage.crystalShard = false;
+            damage.iStun = 0;
+        }
+
+        // The opponent's beam sweeping our ship: its verdict (for the trace) is sent when it is over.
+        void ObserveBeam(ShipManager *ship, bool hit, int hullBefore)
+        {
+            if (!ship || ship->iShipId != 0) return;
+            InShot *shot = FindIn(CustomDamageManager::currentProjectile);
+            if (!shot || shot->type != WEAPON_BEAM) return;
+            shot->beamHit = shot->beamHit || hit;
+            shot->damage += std::max(0, hullBefore - ship->ship.hullIntegrity.first);
+        }
+
         static bool ForcedApplies(ShipManager *ship)
         {
             return g_forced && ship && ship->iShipId == 1 && CustomDamageManager::currentProjectile == g_forced->projectile;
@@ -750,6 +957,12 @@ namespace Duels
             if (!ship || ship->iShipId != 0) return;
             InShot *shot = FindIn(CustomDamageManager::currentProjectile);
             if (!shot || shot->outcome != PENDING) return;
+            if (shot->type == WEAPON_BEAM)
+            {
+                // A beam touches the shields every frame of its sweep; its verdict is sent when it is over.
+                if (response.collision_type == 2) shot->beamTouched = true;
+                return;
+            }
             if (response.collision_type == 3) SendResult(*shot, OUTCOME_MISS, 0);
             else if (response.collision_type == 2) SendResult(*shot, OUTCOME_SHIELD, 0);
         }
@@ -800,6 +1013,17 @@ namespace Duels
                     ++i;
                     continue;
                 }
+                // A beam's verdict comes when the defender's sweep is over, usually after ours: wait a little for it.
+                if (shot.type == WEAPON_BEAM && shot.verdict == PENDING)
+                {
+                    shot.projectile = nullptr;
+                    if (shot.goneMs < 0.0) shot.goneMs = now;
+                    if (now - shot.goneMs < BEAM_VERDICT_WAIT_MS)
+                    {
+                        ++i;
+                        continue;
+                    }
+                }
                 LogShot("out", shot.netId, shot.weapon, shot.spawnMs, -1.0, shot.transferMs, -1.0, shot.holdStartMs, -1.0,
                         shot.verdictMs, shot.verdict, shot.damage, 1);
                 m.out.erase(m.out.begin() + i);
@@ -814,7 +1038,16 @@ namespace Duels
                     ++i;
                     continue;
                 }
-                if (shot.outcome == PENDING) SendResult(shot, OUTCOME_GONE, 0);
+                if (shot.outcome == PENDING && shot.type == WEAPON_BEAM)
+                {
+                    // (DamageBeam returns false even when it did damage.)
+                    bool hit = shot.beamHit || shot.damage > 0;
+                    SendResult(shot, hit ? OUTCOME_HIT : shot.beamTouched ? OUTCOME_SHIELD : OUTCOME_MISS, shot.damage);
+                }
+                else if (shot.outcome == PENDING)
+                {
+                    SendResult(shot, OUTCOME_GONE, 0);
+                }
                 LogShot("in", shot.netId, shot.weapon, shot.spawnMs, shot.receivedMs, shot.transferMs, shot.releasedMs, -1.0,
                         shot.decisionMs, -1.0, shot.outcome, shot.damage, shot.speedUp);
                 m.in.erase(m.in.begin() + i);

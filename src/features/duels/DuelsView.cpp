@@ -34,12 +34,15 @@ namespace Duels
         {
             bool active = false;
             CombatControl *combat = nullptr;
-            float scale = 1.f;
-            // Our ship: FTL draws its point p at ownOrigin + p, we draw it at ownScreen + scale (p - ownPivot).
+            // Our ship: FTL draws its point p at ownOrigin + p, we draw it at ownScreen + ownScale (p - ownPivot).
+            // Unless both ships are drawn at one scale ("equal"), that is FTL's own place and size.
             ShipManager *own = nullptr;
+            float ownScale = 1.f;
             float ownOriginX = 0.f, ownOriginY = 0.f, ownPivotX = 0.f, ownPivotY = 0.f, ownScreenX = 0.f, ownScreenY = 0.f;
+            bool ownMoved = false;
             // The opponent, mirrored: FTL at targetOrigin + p, we at targetScreen + (-scale, scale) (p - targetPivot).
             ShipManager *target = nullptr;
+            float scale = 1.f;
             float targetOriginX = 0.f, targetOriginY = 0.f, targetPivotX = 0.f, targetPivotY = 0.f;
             float targetScreenX = 0.f, targetScreenY = 0.f;
             // The enemy window: grown to the left by `grow`, its top moved down by `lower`.
@@ -66,6 +69,7 @@ namespace Duels
         };
 
         static Mode g_mode = Mode::Auto;
+        static bool g_equal = false;
         static bool g_duelOpponent = false;
         static Layout g_layout;
         static Window g_window;
@@ -74,6 +78,8 @@ namespace Duels
 
         void SetMode(Mode mode) { g_mode = mode; }
         Mode GetMode() { return g_mode; }
+        void SetEqualSize(bool equal) { g_equal = equal; }
+        bool EqualSize() { return g_equal; }
         void SetDuelOpponent(bool present) { g_duelOpponent = present; }
         bool Active() { return g_layout.active; }
 
@@ -145,18 +151,33 @@ namespace Duels
             Hull ours = HullOf(own), theirs = HullOf(target);
             float ownLeft = (float)gui->shipPosition.x + ours.x;
             float ownCenterY = (float)gui->shipPosition.y + ours.y + ours.h * 0.5f;
+            auto heightFit = [&](int lower) { return (BOX_H - lower - MARGIN_TOP - MARGIN_BOTTOM) / theirs.h; };
+            auto widthFit = [&](float left) { return (fitRight - MARGIN_LEFT - left) / theirs.w; };
 
-            // The largest common scale (at most FTL's own): both hulls side by side with a gap up to the window's right
-            // edge, ours ending left of FTL's window position at least, theirs within the window's height. A window at
-            // its own height can't grow left past the buttons; one moved down can, but has less height.
-            float sideBySide = (fitRight - MARGIN_LEFT - GAP - ownLeft) / (ours.w + theirs.w);
-            float ownRoom = (boxLeft - GAP - ownLeft) / ours.w;
-            float common = std::min(1.f, std::min(sideBySide, ownRoom));
-            float keepTop = std::min(common, std::min((BOX_H - MARGIN_TOP - MARGIN_BOTTOM) / theirs.h,
-                                                      (fitRight - MARGIN_LEFT - BUTTONS_RIGHT) / theirs.w));
-            float lowerTop = std::min(common, (BOX_H - BUTTONS_CLEARANCE - MARGIN_TOP - MARGIN_BOTTOM) / theirs.h);
+            // The opponent's scale (at most FTL's own): its hull within the window's height, and within its width as
+            // far as the window can grow left. A window at its own height can't grow past the buttons; one moved down
+            // can, but has less height.
+            float ownScale = 1.f, keepTop, lowerTop;
+            if (g_equal)
+            {
+                // Both ships at one scale: both hulls side by side with a gap up to the window's right edge, ours
+                // ending left of FTL's window position at least.
+                float sideBySide = (fitRight - MARGIN_LEFT - GAP - ownLeft) / (ours.w + theirs.w);
+                float ownRoom = (boxLeft - GAP - ownLeft) / ours.w;
+                float common = std::min(1.f, std::min(sideBySide, ownRoom));
+                keepTop = std::min(common, std::min(heightFit(0), widthFit(BUTTONS_RIGHT)));
+                lowerTop = std::min(common, heightFit(BUTTONS_CLEARANCE));
+            }
+            else
+            {
+                // Our ship as FTL draws it: the window grows up to a gap after its hull (never narrower than FTL's).
+                float edge = std::min(boxLeft, ownLeft + ours.w + GAP);
+                keepTop = std::min(1.f, std::min(heightFit(0), widthFit(std::max(edge, BUTTONS_RIGHT))));
+                lowerTop = std::min(1.f, std::min(heightFit(BUTTONS_CLEARANCE), widthFit(edge)));
+            }
             int lower = lowerTop > keepTop + 0.01f ? BUTTONS_CLEARANCE : 0;
             float scale = std::max(0.2f, lower ? lowerTop : keepTop);
+            if (g_equal) ownScale = scale;
 
             // The window grows only as far as the opponent needs (never narrower than FTL's).
             float left = std::min(boxLeft, std::floor(fitRight - MARGIN_LEFT - theirs.w * scale));
@@ -164,6 +185,7 @@ namespace Duels
             int grow = (int)(boxLeft - left);
 
             // One center line for both ships: ours where FTL has it, as far as the opponent fits in its window there.
+            // (At one scale our ship moves to the opponent's line if that has to move.)
             float fitTop = boxTop + lower + MARGIN_TOP, fitBottom = boxBottom - MARGIN_BOTTOM;
             float half = theirs.h * scale * 0.5f;
             float centerY = fitTop + half <= fitBottom - half
@@ -174,12 +196,14 @@ namespace Duels
             l.combat = combat;
             l.scale = scale;
             l.own = own;
+            l.ownScale = ownScale;
             l.ownOriginX = (float)gui->shipPosition.x;
             l.ownOriginY = (float)gui->shipPosition.y;
             l.ownPivotX = ours.x;
             l.ownPivotY = ours.y + ours.h * 0.5f;
             l.ownScreenX = ownLeft;
-            l.ownScreenY = centerY;
+            l.ownScreenY = g_equal ? centerY : ownCenterY;
+            l.ownMoved = g_equal && (ownScale != 1.f || centerY != ownCenterY);
             l.target = target;
             l.targetOriginX = (float)(w.ftlPositionX - grow + combat->targetPosition.x);
             l.targetOriginY = (float)(combat->position.y + combat->targetPosition.y);
@@ -218,17 +242,37 @@ namespace Duels
         void BeginTarget() { g_drawing = Drawing::Target; }
         void BeginPlayerShip() { g_drawing = Drawing::Own; }
 
-        void EndTarget()
+        // FTL picks nearest or smooth texture filtering per draw; a shrunk ship drawn with nearest filtering loses rows
+        // and columns of pixels and looks grainy. CSurface::GL_ForceAntialias (never used by FTL itself) makes every
+        // draw smooth: on while a scaled ship is drawn, and for whole frames drawn finer than FTL's (DuelsScreen).
+        static bool g_frameSmooth = false;
+        static bool g_shipSmooth = false;
+
+        static void UpdateSmoothing()
         {
-            g_drawing = Drawing::None;
-            g_transforming = Drawing::None;
+            CSurface::GL_ForceAntialias(g_frameSmooth || g_shipSmooth);
         }
 
-        void EndPlayerShip()
+        void SetFrameSmoothing(bool on)
+        {
+            if (g_frameSmooth == on) return;
+            g_frameSmooth = on;
+            UpdateSmoothing();
+        }
+
+        static void EndShip()
         {
             g_drawing = Drawing::None;
             g_transforming = Drawing::None;
+            if (g_shipSmooth)
+            {
+                g_shipSmooth = false;
+                UpdateSmoothing();
+            }
         }
+
+        void EndTarget() { EndShip(); }
+        void EndPlayerShip() { EndShip(); }
 
         void ApplyShipTransform(ShipManager *ship)
         {
@@ -236,19 +280,27 @@ namespace Duels
             if (!l.active || !ship) return;
             // No push: RenderTarget and RenderPlayerShip pop their matrix after the aiming marks, which belong to the
             // same transform.
+            float scale = 1.f;
             if (g_drawing == Drawing::Target && ship == l.target)
             {
                 CSurface::GL_Translate(l.targetScreenX - l.targetOriginX, l.targetScreenY - l.targetOriginY, 0.f);
                 CSurface::GL_Scale(-l.scale, l.scale, 1.f);
                 CSurface::GL_Translate(-l.targetPivotX, -l.targetPivotY, 0.f);
                 g_transforming = Drawing::Target;
+                scale = l.scale;
             }
-            else if (g_drawing == Drawing::Own && ship == l.own)
+            else if (g_drawing == Drawing::Own && ship == l.own && l.ownMoved)
             {
                 CSurface::GL_Translate(l.ownScreenX - l.ownOriginX, l.ownScreenY - l.ownOriginY, 0.f);
-                CSurface::GL_Scale(l.scale, l.scale, 1.f);
+                CSurface::GL_Scale(l.ownScale, l.ownScale, 1.f);
                 CSurface::GL_Translate(-l.ownPivotX, -l.ownPivotY, 0.f);
                 g_transforming = Drawing::Own;
+                scale = l.ownScale;
+            }
+            if (scale != 1.f)
+            {
+                g_shipSmooth = true;
+                UpdateSmoothing();
             }
         }
 
@@ -256,10 +308,62 @@ namespace Duels
 
         void InverseScale(float &sx, float &sy)
         {
-            float scale = g_layout.scale > 0.f ? g_layout.scale : 1.f;
+            float scale = g_transforming == Drawing::Target ? g_layout.scale : g_layout.ownScale;
+            if (scale <= 0.f) scale = 1.f;
             sx = (g_transforming == Drawing::Target ? -1.f : 1.f) / scale;
             sy = 1.f / scale;
         }
+
+        static bool g_unmirror = true;
+        void SetUnmirrorIcons(bool on) { g_unmirror = on; }
+
+        bool BeginUnmirrored(float x, float y, float minScale)
+        {
+            if (!g_unmirror || g_transforming != Drawing::Target || !g_layout.active) return false;
+            float grow = g_layout.scale > 0.f ? std::max(1.f, minScale / g_layout.scale) : 1.f;
+            CSurface::GL_PushMatrix();
+            CSurface::GL_Translate(x, y, 0.f);
+            CSurface::GL_Scale(-grow, grow, 1.f);
+            CSurface::GL_Translate(-x, -y, 0.f);
+            return true;
+        }
+
+        void EndUnmirrored()
+        {
+            CSurface::GL_PopMatrix();
+        }
+
+        bool TargetRoomCenter(int shipId, int roomId, float &x, float &y)
+        {
+            const Layout &l = g_layout;
+            if (g_transforming != Drawing::Target || !l.active || !l.target || shipId != l.target->iShipId) return false;
+            if (roomId < 0 || roomId >= (int)l.target->ship.vRoomList.size()) return false;
+            Pointf center = l.target->GetRoomCenter(roomId);
+            x = center.x;
+            y = center.y;
+            return true;
+        }
+
+        bool TargetMarkerCenter(const CachedPrimitive *image, float &x, float &y)
+        {
+            const Layout &l = g_layout;
+            if (g_transforming != Drawing::Target || !l.active || !l.combat) return false;
+            CombatControl *combat = l.combat;
+            const CachedImage *markers[4] = {&combat->teleportTarget_send, &combat->teleportTarget_return, &combat->hackTarget,
+                                             &combat->mindTarget};
+            for (const CachedImage *marker : markers)
+            {
+                if (image != marker || !marker->texture) continue;
+                x = marker->x + marker->texture->width_ * marker->wScale * 0.5f;
+                y = marker->y + marker->texture->height_ * marker->hScale * 0.5f;
+                return true;
+            }
+            return false;
+        }
+
+        static bool g_aiming = false;
+        void SetAiming(bool aiming) { g_aiming = aiming; }
+        bool Aiming() { return g_aiming; }
 
         void AdjustHostileBoxSize(const CombatControl *combat, Point &size)
         {
@@ -422,8 +526,8 @@ namespace Duels
         {
             const Layout &l = g_layout;
             if (!l.active) return false;
-            shipX = l.ownPivotX + (x - l.ownScreenX) / l.scale;
-            shipY = l.ownPivotY + (y - l.ownScreenY) / l.scale;
+            shipX = l.ownPivotX + (x - l.ownScreenX) / l.ownScale;
+            shipY = l.ownPivotY + (y - l.ownScreenY) / l.ownScale;
             return true;
         }
 
@@ -448,8 +552,8 @@ namespace Duels
             {
                 if (l.active)
                 {
-                    screenX = l.ownScreenX + l.scale * (shipX - l.ownPivotX);
-                    screenY = l.ownScreenY + l.scale * (shipY - l.ownPivotY);
+                    screenX = l.ownScreenX + l.ownScale * (shipX - l.ownPivotX);
+                    screenY = l.ownScreenY + l.ownScale * (shipY - l.ownPivotY);
                 }
                 else
                 {
@@ -481,16 +585,17 @@ namespace Duels
             Hull ours = HullOf(l.own), theirs = HullOf(l.target);
             char buffer[640];
             snprintf(buffer, sizeof(buffer),
-                     "duel view (%s): scale %.3f | ours %s, hull %.0f,%.0f to %.0f,%.0f | theirs %s, hull %.0f,%.0f to "
-                     "%.0f,%.0f, mirrored | window %.0f,%.0f %.0fx%.0f (grown %d, top down %d) | center line y %.0f",
-                     mode, l.scale, l.own->myBlueprint.blueprintName.c_str(), l.ownScreenX + l.scale * (ours.x - l.ownPivotX),
-                     l.ownScreenY + l.scale * (ours.y - l.ownPivotY), l.ownScreenX + l.scale * (ours.x + ours.w - l.ownPivotX),
-                     l.ownScreenY + l.scale * (ours.y + ours.h - l.ownPivotY), l.target->myBlueprint.blueprintName.c_str(),
+                     "duel view (%s%s): scale %.3f | ours %s at %.3f, hull %.0f,%.0f to %.0f,%.0f | theirs %s, hull %.0f,%.0f "
+                     "to %.0f,%.0f, mirrored | window %.0f,%.0f %.0fx%.0f (grown %d, top down %d) | centre lines y %.0f / %.0f",
+                     mode, g_equal ? ", equal size" : "", l.scale, l.own->myBlueprint.blueprintName.c_str(), l.ownScale,
+                     l.ownScreenX + l.ownScale * (ours.x - l.ownPivotX), l.ownScreenY + l.ownScale * (ours.y - l.ownPivotY),
+                     l.ownScreenX + l.ownScale * (ours.x + ours.w - l.ownPivotX),
+                     l.ownScreenY + l.ownScale * (ours.y + ours.h - l.ownPivotY), l.target->myBlueprint.blueprintName.c_str(),
                      l.targetScreenX - l.scale * (theirs.x + theirs.w - l.targetPivotX),
                      l.targetScreenY + l.scale * (theirs.y - l.targetPivotY),
                      l.targetScreenX - l.scale * (theirs.x - l.targetPivotX),
                      l.targetScreenY + l.scale * (theirs.y + theirs.h - l.targetPivotY), l.boxX, l.boxY, l.boxW, l.boxH,
-                     l.grow, l.lower, l.ownScreenY);
+                     l.grow, l.lower, l.ownScreenY, l.targetScreenY);
             return buffer;
         }
     }

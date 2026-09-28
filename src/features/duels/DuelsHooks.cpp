@@ -2,6 +2,7 @@
 #include "CommandConsole.h"
 #include "Duels.h"
 #include "DuelsMatch.h"
+#include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsView.h"
 
@@ -219,6 +220,37 @@ HOOK_METHOD_PRIORITY(ShipManager, DamageArea, -2000, (Pointf location, Damage dm
     return hit;
 }
 
+// Bombs override the collision check; ours in the replica waits there for the defender's verdict.
+HOOK_METHOD_PRIORITY(BombProjectile, CollisionCheck, -2000, (Collideable *other) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> BombProjectile::CollisionCheck -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Match::BeginBombCheck(this, other)) return;
+    super(other);
+    Duels::Match::EndCollisionCheck();
+}
+
+// A bomb's dodge roll, when it appears in its target room.
+HOOK_METHOD_PRIORITY(ShipManager, GetDodged, -2000, () -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::GetDodged -> Begin (DuelsHooks.cpp)\n")
+    bool dodged = false;
+    if (Duels::Match::ForcedDodge(this, dodged)) return dodged;
+    dodged = super();
+    Duels::Match::ObserveDodge(this, dodged);
+    return dodged;
+}
+
+// A beam's sweep over the rooms behind the shields.
+HOOK_METHOD_PRIORITY(ShipManager, DamageBeam, -2000, (Pointf location1, Pointf location2, Damage dmg) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::DamageBeam -> Begin (DuelsHooks.cpp)\n")
+    Duels::Match::MuteBeamDamage(this, dmg);
+    int hullBefore = ship.hullIntegrity.first;
+    bool hit = super(location1, location2, dmg);
+    Duels::Match::ObserveBeam(this, hit, hullBefore);
+    return hit;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Duel view (DuelsView.cpp): both ships at one scale, the opponent mirrored in a grown enemy window, mouse input
 // mapped back to each ship's coordinates.
@@ -246,12 +278,54 @@ HOOK_METHOD_PRIORITY(CommandGui, MouseMove, -2000, (int mX, int mY) -> void)
 HOOK_METHOD_PRIORITY(CachedPrimitive, OnRender, -2000, (const GL_Color &color) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CachedPrimitive::OnRender -> Begin (DuelsHooks.cpp)\n")
-    float dx, dy;
-    if (!Duels::View::HullBarShift(this, dx, dy)) return super(color);
+    float x, y;
+    // The teleport, hacking and mind-control markers on the opponent's rooms, the right way round.
+    if (Duels::View::TargetMarkerCenter(this, x, y) && Duels::View::BeginUnmirrored(x, y, 0.f))
+    {
+        super(color);
+        Duels::View::EndUnmirrored();
+        return;
+    }
+    if (!Duels::View::HullBarShift(this, x, y)) return super(color);
     CSurface::GL_PushMatrix();
-    CSurface::GL_Translate(dx, dy, 0.f);
+    CSurface::GL_Translate(x, y, 0.f);
     super(color);
     CSurface::GL_PopMatrix();
+}
+
+// The system icons in the opponent's rooms, the right way round and at a readable size. (FTL builds each icon at its
+// room's centre, so it turns around that.)
+HOOK_METHOD_PRIORITY(ShipSystem, OnRender, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::OnRender -> Begin (DuelsHooks.cpp)\n")
+    float x, y;
+    if (!Duels::View::TargetRoomCenter(_shipObj.iShipId, roomId, x, y) || !Duels::View::BeginUnmirrored(x, y, 0.8f))
+    {
+        return super();
+    }
+    super();
+    Duels::View::EndUnmirrored();
+}
+
+// The crosshairs on the opponent's rooms, numbered by weapon: Hyperspace draws each at the local origin, translated to
+// the target point (AdditionalWeaponSlots.cpp). The flak radius and beam lines are drawn otherwise.
+HOOK_METHOD_PRIORITY(WeaponControl, RenderAiming, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> WeaponControl::RenderAiming -> Begin (DuelsHooks.cpp)\n")
+    Duels::View::SetAiming(true);
+    super();
+    Duels::View::SetAiming(false);
+}
+
+HOOK_STATIC_PRIORITY(CSurface, GL_RenderPrimitive, -2000, (GL_Primitive *primitive) -> void)
+{
+    LOG_HOOK("HOOK_STATIC_PRIORITY -> CSurface::GL_RenderPrimitive -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::View::Aiming() || !primitive || !primitive->hasTexture || !Duels::View::BeginUnmirrored(0.f, 0.f, 0.f))
+    {
+        return super(primitive);
+    }
+    super(primitive);
+    Duels::View::EndUnmirrored();
 }
 
 HOOK_METHOD_PRIORITY(CommandGui, RenderPlayerShip, -2000, (Point &shipCenter, float jumpScale) -> void)
@@ -504,6 +578,8 @@ HOOK_METHOD_PRIORITY(Ship, GetBaseEllipse, -2000, () -> Globals::Ellipse)
 HOOK_STATIC_PRIORITY(freetype, easy_printRightAlign, -2000, (int fontSize, float x, float y, const std::string &text) -> Pointf)
 {
     LOG_HOOK("HOOK_STATIC_PRIORITY -> freetype::easy_printRightAlign -> Begin (DuelsHooks.cpp)\n")
+    std::string label;
+    if (Duels::Screen::VersionLabel(x, y, text, label)) return super(fontSize, x, y, label);
     Duels::View::AdjustHeaderText(fontSize, x, y, text);
     return super(fontSize, x, y, text);
 }

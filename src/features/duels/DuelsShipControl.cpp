@@ -1,6 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
-#include "DuelsCapture.h"
+#include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
 #include "DuelsWin32.h"
@@ -152,6 +152,72 @@ namespace Duels
         message = std::string(SYSTEM_NAMES[system]) + " power " + std::to_string(ship->GetSystemPower(system)) + "/" +
                   std::to_string(ship->GetSystemPowerMax(system));
         return reached;
+    }
+
+    // arm <ship> <slot> <WEAPON_BLUEPRINT>: puts that weapon into the slot, replacing what is there (tests of weapon
+    // types; in a duel, before connecting, so the loadout carries it).
+    static bool DoArm(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int slot;
+        if (!ArgInt(cmd, 2, slot) || cmd.raw.size() < 4)
+        {
+            message = "usage: arm <ship> <slot> <WEAPON_BLUEPRINT>";
+            return false;
+        }
+        if (!ship->weaponSystem)
+        {
+            message = "ship has no weapons system";
+            return false;
+        }
+        const std::string &name = cmd.raw[3];   // original spelling: blueprint names are case-sensitive
+        WeaponBlueprint *blueprint = G_->GetBlueprints()->GetWeaponBlueprint(name);
+        if (!blueprint || blueprint->name != name)
+        {
+            message = "no weapon blueprint " + name;
+            return false;
+        }
+        int count = (int)ship->GetWeaponList().size();
+        if (slot < 0 || slot > count || slot >= ship->weaponSystem->slot_count)
+        {
+            message = "slot " + std::to_string(slot) + " is not free or next (" + std::to_string(count) + " weapons, " +
+                      std::to_string(ship->weaponSystem->slot_count) + " slots)";
+            return false;
+        }
+        if (slot < count) ship->RemoveWeapon(slot);
+        ship->AddWeapon(blueprint, slot);
+        std::ostringstream out;
+        out << "weapons:";
+        for (ProjectileFactory *weapon : ship->GetWeaponList()) out << " " << (weapon->blueprint ? weapon->blueprint->name : "?");
+        message = out.str();
+        return true;
+    }
+
+    // upgrade <ship> <system> <levels>: more system levels, and as much more reactor power (tests).
+    static bool DoUpgrade(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int system = cmd.args.size() > 2 ? ParseSystem(cmd.args[2]) : -1;
+        int levels;
+        if (system < 0 || !ArgInt(cmd, 3, levels) || levels < 1)
+        {
+            message = "usage: upgrade <ship> <system> <levels>";
+            return false;
+        }
+        ShipSystem *target = ship->GetSystem(system);
+        if (!target)
+        {
+            message = std::string("ship has no ") + SYSTEM_NAMES[system];
+            return false;
+        }
+        target->UpgradeSystem(levels);
+        PowerManager *power = PowerManager::GetPowerManager(ship->iShipId);
+        if (power) power->currentPower.second += levels;
+        message = std::string(SYSTEM_NAMES[system]) + " level " + std::to_string(target->powerState.second) +
+                  (power ? ", reactor " + std::to_string(power->currentPower.second) : "");
+        return true;
     }
 
     static bool DoWeapon(const Command &cmd, std::string &message)
@@ -478,7 +544,7 @@ namespace Duels
             message = "usage: screenshot <file.bmp>";
             return false;
         }
-        RequestCapture(path);
+        Screen::RequestCapture(path);
         message = "saving the next frame as " + path;
         return true;
     }
@@ -490,6 +556,8 @@ namespace Duels
         if (verb == "screenshot") return DoScreenshot(cmd, message);
         if (verb == "power") return DoPower(cmd, message);
         if (verb == "weapon") return DoWeapon(cmd, message);
+        if (verb == "arm") return DoArm(cmd, message);
+        if (verb == "upgrade") return DoUpgrade(cmd, message);
         if (verb == "fire") return DoFire(cmd, message);
         if (verb == "autofire") return DoAutofire(cmd, message);
         if (verb == "crew") return DoCrew(cmd, message);

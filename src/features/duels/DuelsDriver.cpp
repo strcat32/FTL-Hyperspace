@@ -3,6 +3,7 @@
 #include "Duels.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
+#include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsView.h"
 
@@ -193,10 +194,18 @@ namespace Duels
                 View::UsePlayerShieldPosition(G_->GetShipManager(1));
             }
             else if (ArgIs(cmd, 1, "off")) View::SetMode(View::Mode::Off);
-            else if (cmd.args.size() > 1) { message = "usage: view [auto|fit|off]"; return false; }
+            else if (ArgIs(cmd, 1, "equal") || ArgIs(cmd, 1, "hires") || ArgIs(cmd, 1, "icons"))
+            {
+                bool on;
+                if (!ParseOnOff(cmd, 2, on)) { message = "usage: view equal|hires|icons on|off"; return false; }
+                if (ArgIs(cmd, 1, "equal")) View::SetEqualSize(on);
+                else if (ArgIs(cmd, 1, "hires")) Screen::SetHiRes(on);
+                else View::SetUnmirrorIcons(on);
+            }
+            else if (cmd.args.size() > 1) { message = "usage: view [auto|fit|off] | view equal|hires on|off"; return false; }
             // The layout follows at the next frame.
             View::OnFrame();
-            message = View::Describe();
+            message = View::Describe() + " | " + Screen::Describe();
             Log("%s", message.c_str());
             return true;
         }
