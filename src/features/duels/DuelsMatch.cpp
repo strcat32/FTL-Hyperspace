@@ -4,6 +4,7 @@
 #include "HSVersion.h"
 #include "Systems.h"
 #include "Duels.h"
+#include "DuelsDrones.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsShipControl.h"
@@ -30,7 +31,9 @@ namespace Duels
             MSG_STATE = 19,      // unreliable, 10 Hz: hull, shields, systems, weapons
             MSG_SHOT = 20,       // reliable: a projectile left one of our weapons
             MSG_RESULT = 21,     // reliable: the defender's verdict on a shot
-            MSG_DEFEAT = 22      // reliable: our hull reached 0
+            MSG_DEFEAT = 22,     // reliable: our hull reached 0
+            MSG_SHOT_DOWNED = 23 // reliable: our shot ran into something in our own space before it left
+            // 24, 25: DuelsDrones.h
         };
 
         enum Outcome : uint8_t
@@ -39,7 +42,8 @@ namespace Duels
             OUTCOME_MISS = 1,     // dodged
             OUTCOME_SHIELD = 2,   // absorbed by the shields
             OUTCOME_HIT = 3,      // reached the hull
-            OUTCOME_GONE = 4      // the defender never saw it hit anything
+            OUTCOME_GONE = 4,     // the defender never saw it hit anything
+            OUTCOME_DOWNED = 5    // exploded before the shields: shot down by a defense drone, or ran into a drone
         };
 
         static const char *OutcomeName(uint8_t outcome)
@@ -50,6 +54,7 @@ namespace Duels
             case OUTCOME_SHIELD: return "shield";
             case OUTCOME_HIT: return "hit";
             case OUTCOME_GONE: return "gone";
+            case OUTCOME_DOWNED: return "downed";
             default: return "pending";
             }
         }
@@ -89,6 +94,10 @@ namespace Duels
             int damage = 0;
             bool timedOut = false;
             double goneMs = -1.0;       // a beam whose sweep is over, still waiting for its verdict
+            bool drone = false;         // fired by one of our drones (slot = the drone's slot)
+            Pointf downPoint;           // "downed": where it exploded on the defender's screen
+            float downDistance = 1.0e9f;
+            bool exploded = false;
         };
 
         // The opponent's projectile flying at our ship, created from their shot message.
@@ -100,6 +109,8 @@ namespace Duels
             int type = WEAPON_LASER;
             bool beamTouched = false;      // a beam reached our shields
             bool beamHit = false;          // a beam reached a room
+            bool drone = false;            // fired by one of the opponent's drones, in our space
+            double catchUpMs = 0.0;        // a drone's shot makes up the message's delay this way, flying faster
             std::string weapon;
             double spawnMs = 0.0;          // the attacker's spawn time, in our clock
             double receivedMs = 0.0;
@@ -169,6 +180,7 @@ namespace Duels
             m.lastSignature[0].clear();
             m.lastSignature[1].clear();
             g_forced = nullptr;
+            Drones::Reset();
         }
 
         static void Announce(const std::string &text)
@@ -526,6 +538,9 @@ namespace Duels
                 w.F32(weapon->cooldown.first);
             }
 
+            // Drones: power, launch, wreck and where they are (DuelsDrones.cpp).
+            Drones::WriteState(w);
+
             Net::Send(MSG_STATE, w, false);
             g_match.lastStateSent = now;
             g_match.stateDirty = false;
@@ -533,7 +548,7 @@ namespace Duels
 
         static void ApplyState(Reader &r)
         {
-            r.F64();
+            double sentAt = r.F64();
             uint16_t seq = r.U16();
             int hull = r.I16();
             bool hasShields = r.Bool();
@@ -567,7 +582,7 @@ namespace Duels
                 weapon.powered = r.Bool();
                 weapon.charge = r.F32();
             }
-            if (!r.Ok()) return;
+            if (!Drones::ReadState(r) || !r.Ok()) return;
 
             // Snapshots may arrive out of order; only newer ones count.
             if (g_match.havePeerState && (uint16_t)(seq - g_match.peerStateSeq) >= 32768) return;
@@ -601,14 +616,15 @@ namespace Duels
                 if (system->healthState.first != health)
                 {
                     system->healthState.first = health;
-                    if (PowerBars(system) > health) SetReplicaPower(replica, system, health);
+                    if (state.id != SYS_DRONES && PowerBars(system) > health) SetReplicaPower(replica, system, health);
                 }
             }
             for (const SystemState &state : systems)
             {
-                // Weapons power follows the weapons below, one by one.
+                // Weapons and drones power follows the weapons and drones, one by one (below, and DuelsDrones.cpp):
+                // raising drone power by itself would launch the replica's drones in slot order.
                 ShipSystem *system = replica->GetSystem(state.id);
-                if (state.id == SYS_WEAPONS || !system) continue;
+                if (state.id == SYS_WEAPONS || state.id == SYS_DRONES || !system) continue;
                 if (PowerBars(system) != state.power) SetReplicaPower(replica, system, state.power);
                 if (PowerBars(system) != state.power) LogPowerMiss(system, state.power);
             }
@@ -633,6 +649,9 @@ namespace Duels
                 }
             }
 
+            // Drones after the systems, so the reactor power they need is free.
+            Drones::ApplyState(Net::HasClock() ? Net::PeerToLocalTime(sentAt) : WallMs());
+
             // Again, as switching the battery sets its own lock. Between updates the replica counts its lock timers on
             // (ShipSystem::OnLoop), so the lock display runs smoothly.
             ApplyLocks(replica, systems);
@@ -643,25 +662,12 @@ namespace Duels
         // Shots
         // --------------------------------------------------------------------------------------------------------
 
-        void OnOwnProjectile(ProjectileFactory *weapon, Projectile *projectile)
+        // Tells the opponent about a shot of ours at their ship: where it goes and what the defender needs to build the
+        // same projectile. A drone's shot starts in their space, at the drone.
+        static void SendShot(Projectile *projectile, const WeaponBlueprint *blueprint, int slot, SpaceDrone *drone)
         {
             MatchState &m = g_match;
-            if (!Net::IsConnected() || !m.replicaReady || !projectile || projectile->destinationSpace != 1) return;
-            ShipManager *ship = G_->GetShipManager(0);
-            int slot = WeaponSlot(ship, weapon);
-            if (slot < 0 || !weapon->blueprint) return;
-
-            const WeaponBlueprint *blueprint = weapon->blueprint;
             int type = blueprint->type;
-            if (!Networked(type))
-            {
-                if (m.unsupportedLogged.insert(blueprint->name).second)
-                {
-                    Announce(blueprint->name + " is not networked yet; the opponent won't see it");
-                }
-                return;
-            }
-
             double now = WallMs();
             OutShot shot;
             shot.projectile = projectile;
@@ -671,10 +677,11 @@ namespace Duels
             shot.type = type;
             shot.weapon = blueprint->name;
             shot.spawnMs = now;
+            shot.drone = drone != nullptr;
             m.out.push_back(shot);
 
-            double leg = slot < MAX_SLOTS && m.legEstimate[slot] > 0.0 ? m.legEstimate[slot]
-                         : (type == WEAPON_MISSILES ? 560.0 : 330.0);
+            double leg = drone ? 0.0 : slot < MAX_SLOTS && m.legEstimate[slot] > 0.0 ? m.legEstimate[slot]
+                                                                                        : (type == WEAPON_MISSILES ? 560.0 : 330.0);
             Writer w;
             w.U32(shot.netId);
             w.U8((uint8_t)slot);
@@ -710,11 +717,55 @@ namespace Duels
                 w.U8(shard);
                 w.U8(projectile->damage.iDamage == 0 && blueprint->damage.iDamage > 0 ? 1 : 0);
             }
+            // Where it comes from: a weapon of our ship, or one of our drones (position in their space, and its aim).
+            w.Bool(drone != nullptr);
+            if (drone)
+            {
+                w.F32(projectile->position.x);
+                w.F32(projectile->position.y);
+                w.F32(drone->aimingAngle);
+            }
             Net::Send(MSG_SHOT, w, true);
             ++m.shotsSent;
         }
 
-        static void SendResult(InShot &shot, uint8_t outcome, int damage)
+        static bool CanNetwork(const WeaponBlueprint *blueprint)
+        {
+            if (Networked(blueprint->type)) return true;
+            if (g_match.unsupportedLogged.insert(blueprint->name).second)
+            {
+                Announce(blueprint->name + " is not networked yet; the opponent won't see it");
+            }
+            return false;
+        }
+
+        void OnOwnProjectile(ProjectileFactory *weapon, Projectile *projectile)
+        {
+            MatchState &m = g_match;
+            if (!Net::IsConnected() || !m.replicaReady || !projectile || projectile->destinationSpace != 1) return;
+            ShipManager *ship = G_->GetShipManager(0);
+            int slot = WeaponSlot(ship, weapon);
+            if (slot < 0 || !weapon->blueprint || !CanNetwork(weapon->blueprint)) return;
+            SendShot(projectile, weapon->blueprint, slot, nullptr);
+        }
+
+        void OnOwnDroneProjectile(SpaceDrone *drone, Projectile *projectile)
+        {
+            if (!projectile || !drone || drone->iShipId != 0) return;
+            if (projectile->currentSpace == drone->iShipId)
+            {
+                // A defense drone's shot in our space: it may hit their shots and drones here; they see a copy.
+                Drones::OnOwnDroneShotInOwnSpace(drone, projectile);
+                return;
+            }
+            MatchState &m = g_match;
+            if (!Net::IsConnected() || !m.replicaReady || projectile->currentSpace != 1 || !drone->weaponBlueprint) return;
+            int slot = Drones::SlotOf(G_->GetShipManager(0), drone);
+            if (slot < 0 || !CanNetwork(drone->weaponBlueprint)) return;
+            SendShot(projectile, drone->weaponBlueprint, slot, drone);
+        }
+
+        static void SendResult(InShot &shot, uint8_t outcome, int damage, Pointf point = Pointf(0.f, 0.f))
         {
             double now = WallMs();
             shot.outcome = outcome;
@@ -724,9 +775,47 @@ namespace Duels
             w.U32(shot.netId);
             w.U8(outcome);
             w.I8((int8_t)damage);
+            if (outcome == OUTCOME_DOWNED)
+            {
+                w.F32(point.x);
+                w.F32(point.y);
+            }
             Net::Send(MSG_RESULT, w, true);
             ++g_match.verdictsSent;
             g_match.stateDirty = true;   // the damage should arrive together with the verdict
+        }
+
+        // A flak shard's own look; the harmless ones do no damage (as CustomWeapons.cpp builds them).
+        static void MakeShard(Projectile *projectile, const WeaponBlueprint *blueprint, int shard, bool fakeShard)
+        {
+            const WeaponBlueprint::MiniProjectile &mini = blueprint->miniProjectiles[shard < (int)blueprint->miniProjectiles.size() ? shard : 0];
+            projectile->flight_animation = G_->GetAnimationControl()->GetAnimation(mini.image);
+            projectile->flight_animation.SetCurrentFrame(random32() % std::max(1, projectile->flight_animation.info.numFrames));
+            projectile->flight_animation.Stop();
+            if (!fakeShard && !mini.fake) return;
+            Damage &damage = projectile->damage;
+            damage.iDamage = 0;
+            damage.iShieldPiercing = 0;
+            damage.fireChance = 0;
+            damage.breachChance = 0;
+            damage.stunChance = 0;
+            damage.iIonDamage = 0;
+            damage.iSystemDamage = 0;
+            damage.iPersDamage = 0;
+            damage.bHullBuster = false;
+            damage.ownerId = -1;
+            damage.selfId = -1;
+            damage.bLockdown = false;
+            damage.crystalShard = false;
+            damage.bFriendlyFire = true;
+            damage.iStun = 0;
+            projectile->death_animation.fScale = 0.25f;
+        }
+
+        static void PlayLaunchSound(const WeaponBlueprint *blueprint)
+        {
+            if (blueprint->effects.launchSounds.empty()) return;
+            G_->GetSoundControl()->PlaySoundMix(blueprint->effects.launchSounds[random32() % blueprint->effects.launchSounds.size()], -1.f, false);
         }
 
         static void CreateIncomingShot(Reader &r)
@@ -758,6 +847,15 @@ namespace Duels
                 shard = r.U8();
                 fakeShard = r.U8() != 0;
             }
+            bool fromDrone = r.Bool();
+            Pointf origin;
+            float droneAim = 0.f;
+            if (fromDrone)
+            {
+                origin.x = r.F32();
+                origin.y = r.F32();
+                droneAim = r.F32();
+            }
             if (!r.Ok()) return;
             MatchState &m = g_match;
             ++m.shotsReceived;
@@ -769,127 +867,153 @@ namespace Duels
             shot.weapon = weaponName;
             shot.receivedMs = now;
             shot.spawnMs = Net::HasClock() ? Net::PeerToLocalTime(peerSpawn) : now;
+            shot.drone = fromDrone;
 
             ShipManager *replica = G_->GetShipManager(1);
             ShipManager *own = G_->GetShipManager(0);
             ProjectileFactory *weapon = nullptr;
-            if (replica && replica->weaponSystem)
+            const WeaponBlueprint *blueprint = nullptr;
+            SpaceDrone *drone = nullptr;
+            if (fromDrone)
+            {
+                // A drone's weapon is a plain blueprint; the drone itself is the replica's (a puppet) in that slot.
+                blueprint = G_->GetBlueprints()->GetWeaponBlueprint(weaponName);
+                if (blueprint && blueprint->name != weaponName) blueprint = nullptr;
+                if (replica && replica->droneSystem && slot < (int)replica->droneSystem->drones.size())
+                {
+                    Drone *candidate = replica->droneSystem->drones[slot];
+                    if (candidate->type == 1 || candidate->type == 5) drone = static_cast<SpaceDrone*>(candidate);
+                }
+            }
+            else if (replica && replica->weaponSystem)
             {
                 std::vector<ProjectileFactory*> list = replica->GetWeaponList();
                 if (slot < (int)list.size() && list[slot]->blueprint && list[slot]->blueprint->name == weaponName) weapon = list[slot];
+                blueprint = weapon ? weapon->blueprint : nullptr;
             }
-            const WeaponBlueprint *blueprint = weapon ? weapon->blueprint : nullptr;
-            if (!weapon || !blueprint || !own || blueprint->type != type || !Networked(type))
+            if (!blueprint || !own || blueprint->type != type || !Networked(type) || (!fromDrone && !weapon))
             {
-                Log("Match: shot %u from %s slot %d cannot be shown (no such weapon on the replica)", netId,
-                    weaponName.c_str(), slot);
+                Log("Match: shot %u from %s %s %d cannot be shown (no such %s on the replica)", netId, weaponName.c_str(),
+                    fromDrone ? "drone" : "slot", slot, fromDrone ? "drone weapon" : "weapon");
                 SendResult(shot, OUTCOME_GONE, 0);
                 return;
             }
 
-            // Like ProjectileFactory::Update does it (CustomWeapons.cpp), at the replica's weapon mount.
-            Point fireLocation = weapon->weaponVisual.GetFireLocation() + weapon->localPosition;
-            if (type == WEAPON_MISSILES)
-            {
-                if (weapon->currentFiringAngle == 0.f) fireLocation.x += 16;
-                else if (weapon->currentFiringAngle == 270.f) fireLocation.y -= 16;
-            }
-            Pointf position((float)fireLocation.x, (float)fireLocation.y);
             Projectile *projectile = nullptr;
-            switch (type)
+            if (fromDrone)
             {
-            case WEAPON_LASER:
-            case WEAPON_BURST:
-            {
-                LaserBlast *laser = new LaserBlast(position, 1, 0, target);
-                laser->OnInit();
-                projectile = laser;
-                break;
-            }
-            case WEAPON_MISSILES:
-                projectile = new Missile(position, 1, 0, target, weapon->currentFiringAngle);
-                break;
-            case WEAPON_BEAM:
-            {
-                BeamWeapon *beam = new BeamWeapon(position, 1, 0, target, target2, blueprint->length, &own->_targetable,
-                                                  weapon->currentFiringAngle);
-                beam->SetWeaponAnimation(&weapon->weaponVisual);
-                projectile = beam;
-                break;
-            }
-            default:
-            {
-                BombProjectile *bomb = new BombProjectile(position, 1, 0, target);
-                bomb->superShieldBypass = bombBypass;
-                projectile = bomb;
-                break;
-            }
-            }
-            projectile->entryAngle = weapon->currentEntryAngle;
-            projectile->Initialize(*blueprint);
-            projectile->heading = weapon->currentFiringAngle;
-            if (type == WEAPON_BURST && !blueprint->miniProjectiles.empty())
-            {
-                // The shard's own look; the harmless ones do no damage (as CustomWeapons.cpp builds them).
-                const WeaponBlueprint::MiniProjectile &mini = blueprint->miniProjectiles[shard < (int)blueprint->miniProjectiles.size() ? shard : 0];
-                projectile->flight_animation = G_->GetAnimationControl()->GetAnimation(mini.image);
-                projectile->flight_animation.SetCurrentFrame(random32() % std::max(1, projectile->flight_animation.info.numFrames));
-                projectile->flight_animation.Stop();
-                if (fakeShard || mini.fake)
+                // As SpaceDrone::GetNextProjectile builds it: in our space from the start, at the drone, owned by the
+                // replica (the constructor takes the space as the owner).
+                switch (type)
                 {
-                    Damage &damage = projectile->damage;
-                    damage.iDamage = 0;
-                    damage.iShieldPiercing = 0;
-                    damage.fireChance = 0;
-                    damage.breachChance = 0;
-                    damage.stunChance = 0;
-                    damage.iIonDamage = 0;
-                    damage.iSystemDamage = 0;
-                    damage.iPersDamage = 0;
-                    damage.bHullBuster = false;
-                    damage.ownerId = -1;
-                    damage.selfId = -1;
-                    damage.bLockdown = false;
-                    damage.crystalShard = false;
-                    damage.bFriendlyFire = true;
-                    damage.iStun = 0;
-                    projectile->death_animation.fScale = 0.25f;
-                }
-            }
-            else
-            {
-                projectile->flight_animation = weapon->flight_animation;
-            }
-            G_->GetWorld()->space.AddProjectile(projectile);
-
-            // The weapon fires once per volley: a flak volley's shards arrive together.
-            bool sameVolley = type == WEAPON_BURST && slot < MAX_SLOTS && now - m.lastFireMs[slot] < 100.0;
-            if (slot < MAX_SLOTS) m.lastFireMs[slot] = now;
-            if (!sameVolley)
-            {
-                weapon->weaponVisual.StartFire();
-                if (!blueprint->effects.launchSounds.empty())
+                case WEAPON_LASER:
+                case WEAPON_BURST:
                 {
-                    G_->GetSoundControl()->PlaySoundMix(blueprint->effects.launchSounds[random32() % blueprint->effects.launchSounds.size()], -1.f, false);
+                    LaserBlast *laser = new LaserBlast(origin, 0, 0, target);
+                    laser->heading = -1.f;
+                    laser->OnInit();
+                    projectile = laser;
+                    break;
                 }
-            }
-
-            // Timing: our copy should enter our space when theirs entered the replica's space on their screen, less
-            // the one-way latency, so the verdict is back when their shot reaches our shields. The flight out of the
-            // enemy window runs faster to make up for the time the message took. A beam has no flight: it reaches
-            // across at once, and its sweep keeps the weapon's own pace.
-            double oneWay = Net::RttMs() * 0.5;
-            if (type == WEAPON_BEAM)
-            {
+                case WEAPON_MISSILES:
+                    projectile = new Missile(origin, 0, 0, target, droneAim);
+                    break;
+                case WEAPON_BEAM:
+                    projectile = new BeamWeapon(origin, 0, 0, target, target2, blueprint->length, &own->_targetable, droneAim);
+                    break;
+                default:
+                {
+                    BombProjectile *bomb = new BombProjectile(origin, 0, 0, target);
+                    bomb->superShieldBypass = bombBypass;
+                    projectile = bomb;
+                    break;
+                }
+                }
+                projectile->Initialize(*blueprint);
+                projectile->ownerId = 1;
+                if (type == WEAPON_BURST && !blueprint->miniProjectiles.empty()) MakeShard(projectile, blueprint, shard, fakeShard);
+                else if (drone) projectile->flight_animation = drone->weapon_animation;
+                G_->GetWorld()->space.AddProjectile(projectile);
+                PlayLaunchSound(blueprint);
+                // No flight between the spaces to hide the delay in: it goes at once and makes up the one-way latency
+                // over its first frames, so the attacker's copy waits at our shields for about that long, not the round
+                // trip. A beam keeps its pace; a bomb has no flight.
                 shot.releaseAt = 0.0;
                 shot.speedUp = 1;
+                if (type != WEAPON_BEAM && type != WEAPON_BOMB) shot.catchUpMs = Net::RttMs() * 0.5;
             }
             else
             {
-                shot.releaseAt = shot.spawnMs + ownLeg - oneWay;
-                double available = shot.releaseAt - now;
-                shot.speedUp = available >= NATURAL_OPPONENT_LEG_MS ? 1
-                               : std::min(8, (int)std::ceil(NATURAL_OPPONENT_LEG_MS / std::max(available, 120.0)));
+                // Like ProjectileFactory::Update does it (CustomWeapons.cpp), at the replica's weapon mount.
+                Point fireLocation = weapon->weaponVisual.GetFireLocation() + weapon->localPosition;
+                if (type == WEAPON_MISSILES)
+                {
+                    if (weapon->currentFiringAngle == 0.f) fireLocation.x += 16;
+                    else if (weapon->currentFiringAngle == 270.f) fireLocation.y -= 16;
+                }
+                Pointf position((float)fireLocation.x, (float)fireLocation.y);
+                switch (type)
+                {
+                case WEAPON_LASER:
+                case WEAPON_BURST:
+                {
+                    LaserBlast *laser = new LaserBlast(position, 1, 0, target);
+                    laser->OnInit();
+                    projectile = laser;
+                    break;
+                }
+                case WEAPON_MISSILES:
+                    projectile = new Missile(position, 1, 0, target, weapon->currentFiringAngle);
+                    break;
+                case WEAPON_BEAM:
+                {
+                    BeamWeapon *beam = new BeamWeapon(position, 1, 0, target, target2, blueprint->length, &own->_targetable,
+                                                      weapon->currentFiringAngle);
+                    beam->SetWeaponAnimation(&weapon->weaponVisual);
+                    projectile = beam;
+                    break;
+                }
+                default:
+                {
+                    BombProjectile *bomb = new BombProjectile(position, 1, 0, target);
+                    bomb->superShieldBypass = bombBypass;
+                    projectile = bomb;
+                    break;
+                }
+                }
+                projectile->entryAngle = weapon->currentEntryAngle;
+                projectile->Initialize(*blueprint);
+                projectile->heading = weapon->currentFiringAngle;
+                if (type == WEAPON_BURST && !blueprint->miniProjectiles.empty()) MakeShard(projectile, blueprint, shard, fakeShard);
+                else projectile->flight_animation = weapon->flight_animation;
+                G_->GetWorld()->space.AddProjectile(projectile);
+
+                // The weapon fires once per volley: a flak volley's shards arrive together.
+                bool sameVolley = type == WEAPON_BURST && slot < MAX_SLOTS && now - m.lastFireMs[slot] < 100.0;
+                if (slot < MAX_SLOTS) m.lastFireMs[slot] = now;
+                if (!sameVolley)
+                {
+                    weapon->weaponVisual.StartFire();
+                    PlayLaunchSound(blueprint);
+                }
+
+                // Timing: our copy should enter our space when theirs entered the replica's space on their screen, less
+                // the one-way latency, so the verdict is back when their shot reaches our shields. The flight out of the
+                // enemy window runs faster to make up for the time the message took. A beam has no flight: it reaches
+                // across at once, and its sweep keeps the weapon's own pace.
+                double oneWay = Net::RttMs() * 0.5;
+                if (type == WEAPON_BEAM)
+                {
+                    shot.releaseAt = 0.0;
+                    shot.speedUp = 1;
+                }
+                else
+                {
+                    shot.releaseAt = shot.spawnMs + ownLeg - oneWay;
+                    double available = shot.releaseAt - now;
+                    shot.speedUp = available >= NATURAL_OPPONENT_LEG_MS ? 1
+                                   : std::min(8, (int)std::ceil(NATURAL_OPPONENT_LEG_MS / std::max(available, 120.0)));
+                }
             }
             shot.projectile = projectile;
             shot.selfId = projectile->selfId;
@@ -901,6 +1025,12 @@ namespace Duels
             uint32_t netId = r.U32();
             uint8_t outcome = r.U8();
             int damage = r.I8();
+            Pointf point;
+            if (outcome == OUTCOME_DOWNED)
+            {
+                point.x = r.F32();
+                point.y = r.F32();
+            }
             if (!r.Ok()) return;
             ++g_match.verdictsReceived;
             for (OutShot &shot : g_match.out)
@@ -911,10 +1041,42 @@ namespace Duels
                     shot.verdict = outcome;
                     shot.damage = damage;
                     shot.verdictMs = WallMs();
+                    shot.downPoint = point;
                 }
                 return;
             }
             Log("Match: verdict %s for shot %u, which is gone already", OutcomeName(outcome), netId);
+        }
+
+        // The attacker's shot ran into something in the attacker's own space: its copy on our screen goes too.
+        static void ApplyShotDowned(Reader &r)
+        {
+            uint32_t netId = r.U32();
+            float x = r.F32();
+            float y = r.F32();
+            if (!r.Ok()) return;
+            WorldManager *world = G_->GetWorld();
+            for (InShot &shot : g_match.in)
+            {
+                if (shot.netId != netId) continue;
+                if (shot.outcome == PENDING)
+                {
+                    shot.outcome = OUTCOME_DOWNED;
+                    shot.decisionMs = WallMs();
+                }
+                Projectile *projectile = shot.projectile;
+                bool alive = world && projectile &&
+                             std::find(world->space.projectiles.begin(), world->space.projectiles.end(), projectile) != world->space.projectiles.end() &&
+                             projectile->selfId == shot.selfId;
+                if (alive && !projectile->startedDeath)
+                {
+                    projectile->death_animation.Start(true);
+                    projectile->startedDeath = true;
+                    projectile->missed = true;
+                }
+                Log("Match: shot %u ran into something on the attacker's side (%.0f, %.0f)", netId, x, y);
+                return;
+            }
         }
 
         int ProjectileUpdates(Projectile *projectile)
@@ -931,6 +1093,13 @@ namespace Duels
                 shot->released = true;
                 shot->releasedMs = now;
             }
+            if (shot->catchUpMs > 0.0)
+            {
+                // Three updates a frame gain two frames of flight each frame (SpeedFactor is 16 per second).
+                double frameMs = std::max(1.0, (double)G_->GetCFPS()->GetSpeedFactor() * 62.5);
+                shot->catchUpMs -= 2.0 * frameMs;
+                return 3;
+            }
             return 1;
         }
 
@@ -945,13 +1114,68 @@ namespace Duels
                    shields->CollisionTest(projectile->position.x, projectile->position.y, damage).collision_type != 0;
         }
 
+        // A shot of ours that the defender shot down (or that ran into a drone there) explodes on our screen too.
+        static void ExplodeOutShot(OutShot &shot)
+        {
+            Projectile *projectile = shot.projectile;
+            if (!projectile || shot.exploded) return;
+            shot.exploded = true;
+            if (!projectile->startedDeath)
+            {
+                projectile->death_animation.Start(true);
+                projectile->startedDeath = true;
+                projectile->missed = true;
+                if (!projectile->hitSolidSound.empty()) G_->GetSoundControl()->PlaySoundMix(projectile->hitSolidSound, -1.f, false);
+            }
+            Drones::EndVisualShotsNear(projectile->position.x, projectile->position.y, projectile->currentSpace);
+        }
+
+        static bool IsShipOrDrone(Collideable *other)
+        {
+            for (int shipId = 0; shipId < 2; ++shipId)
+            {
+                ShipManager *ship = G_->GetShipManager(shipId);
+                if (ship && other == &ship->_collideable) return true;
+            }
+            WorldManager *world = G_->GetWorld();
+            if (!world) return false;
+            for (SpaceDrone *drone : world->space.drones)
+            {
+                if (other == &drone->_collideable) return true;
+            }
+            return false;
+        }
+
         bool BeginCollisionCheck(Projectile *projectile, Collideable *other)
         {
             g_forced = nullptr;
             ShipManager *replica = G_->GetShipManager(1);
-            if (!replica || other != &replica->_collideable) return true;
+            if (!replica) return true;
+            if (g_match.replicaReady && GetState().aiOff[1])
+            {
+                // Whose space decides (DuelsDrones.h). Copies of the opponent's drone shots never collide. In their
+                // space only our shots at their ship count, by the defender's verdict. In ours, a shot hits another
+                // shot only when one of them is our drones' (a defense drone's); everything else there is as in FTL.
+                if (Drones::IsVisualShot(projectile)) return false;
+                if (projectile->currentSpace == 1)
+                {
+                    if (other != &replica->_collideable) return false;
+                }
+                else if (!IsShipOrDrone(other))
+                {
+                    // Collideable is a Projectile's first base: anything but a ship or a drone is a projectile.
+                    Projectile *hit = static_cast<Projectile*>(other);
+                    return Drones::IsOwnDroneShot(projectile) || Drones::IsOwnDroneShot(hit);
+                }
+            }
+            if (other != &replica->_collideable) return true;
             OutShot *shot = FindOut(projectile);
             if (!shot) return true;
+            if (shot->verdict == OUTCOME_DOWNED)
+            {
+                ExplodeOutShot(*shot);
+                return false;
+            }
 
             if (shot->verdict == PENDING)
             {
@@ -1146,14 +1370,42 @@ namespace Duels
                 bool alive = live.count(shot.projectile) && shot.projectile->selfId == shot.selfId;
                 if (alive)
                 {
-                    if (shot.transferMs < 0.0 && shot.projectile->currentSpace == 1)
+                    Projectile *projectile = shot.projectile;
+                    if (shot.transferMs < 0.0 && projectile->currentSpace == 1)
                     {
                         shot.transferMs = now;
-                        if (shot.slot < MAX_SLOTS)
+                        if (!shot.drone && shot.slot < MAX_SLOTS)
                         {
                             double leg = now - shot.spawnMs;
                             double &estimate = m.legEstimate[shot.slot];
                             estimate = estimate > 0.0 ? estimate * 0.7 + leg * 0.3 : leg;
+                        }
+                    }
+                    // It ran into something in our own space before it left (one of their drones): that is ours to
+                    // decide, and the defender's copy goes too.
+                    if (shot.verdict == PENDING && projectile->startedDeath && projectile->currentSpace == 0)
+                    {
+                        shot.verdict = OUTCOME_DOWNED;
+                        shot.verdictMs = now;
+                        shot.exploded = true;
+                        Writer w;
+                        w.U32(shot.netId);
+                        w.F32(projectile->position.x);
+                        w.F32(projectile->position.y);
+                        Net::Send(MSG_SHOT_DOWNED, w, true);
+                    }
+                    // Shot down on the defender's screen: it explodes where that happened. It is about there now, as
+                    // the defender's copy flies ahead of ours by the latency; at the latest where it stops coming closer.
+                    if (shot.verdict == OUTCOME_DOWNED && !shot.exploded)
+                    {
+                        float dx = projectile->position.x - shot.downPoint.x, dy = projectile->position.y - shot.downPoint.y;
+                        float distance = std::sqrt(dx * dx + dy * dy);
+                        bool passed = distance > shot.downDistance + 0.5f;
+                        shot.downDistance = std::min(shot.downDistance, distance);
+                        if (projectile->currentSpace == 1 &&
+                            (distance < 15.f || passed || shot.holdStartMs >= 0.0 || now - shot.verdictMs > 500.0))
+                        {
+                            ExplodeOutShot(shot);
                         }
                     }
                     if (shot.verdict == PENDING && shot.holdStartMs >= 0.0 && now - shot.holdStartMs > HOLD_TIMEOUT_MS)
@@ -1189,6 +1441,14 @@ namespace Duels
                 bool alive = live.count(shot.projectile) && shot.projectile->selfId == shot.selfId;
                 if (alive)
                 {
+                    // It exploded in our space before our shields: one of our defense drones shot it down, or it ran
+                    // into a drone. (Hits on our ship decide it first; beams and bombs can't be shot down.)
+                    Projectile *projectile = shot.projectile;
+                    if (shot.outcome == PENDING && projectile->startedDeath && projectile->currentSpace == 0 &&
+                        shot.type != WEAPON_BEAM && shot.type != WEAPON_BOMB)
+                    {
+                        SendResult(shot, OUTCOME_DOWNED, 0, projectile->position);
+                    }
                     ++i;
                     continue;
                 }
@@ -1209,7 +1469,7 @@ namespace Duels
         }
 
         // Everything the state sync carries, as one comparable line: hull, shields, systems (id:power/health, and
-        // Ln while locked), weapons.
+        // Ln while locked), weapons, drones.
         static std::string Signature(ShipManager *ship)
         {
             std::ostringstream out;
@@ -1227,6 +1487,7 @@ namespace Duels
             {
                 for (ProjectileFactory *weapon : ship->GetWeaponList()) out << (weapon->powered ? '1' : '0');
             }
+            out << ',' << Drones::Signature(ship);
             return out.str();
         }
 
@@ -1243,7 +1504,7 @@ namespace Duels
                 std::string signature = Signature(ship);
                 if (signature == m.lastSignature[shipId]) continue;
                 m.lastSignature[shipId] = signature;
-                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons");
+                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones");
                 Row row;
                 row << now << Net::LocalToPeerTime(0.0) << (shipId == 0 ? "own" : "replica") << signature;
                 m.syncCsv.WriteRow(row.str());
@@ -1291,6 +1552,13 @@ namespace Duels
                     break;
                 case MSG_RESULT:
                     ApplyResult(reader);
+                    break;
+                case MSG_SHOT_DOWNED:
+                    ApplyShotDowned(reader);
+                    break;
+                case Drones::MSG_DRONE_HIT:
+                case Drones::MSG_DRONE_SHOT:
+                    Drones::OnMessage(type, reader);
                     break;
                 case MSG_DEFEAT:
                     Announce("the opponent's ship is destroyed - you win this round");
@@ -1382,7 +1650,7 @@ namespace Duels
                 << (m.replicaReady ? " built" : "") << (m.peerReady ? ", ours built there" : "")
                 << ", states applied " << m.statesApplied << ", shots out " << m.shotsSent << " in " << m.shotsReceived
                 << ", verdicts sent " << m.verdictsSent << " received " << m.verdictsReceived << ", hold timeouts "
-                << m.holdTimeouts;
+                << m.holdTimeouts << ", " << Drones::Status();
             return out.str();
         }
     }

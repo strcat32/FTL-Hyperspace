@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "Duels.h"
+#include "DuelsDrones.h"
 #include "DuelsMatch.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
@@ -186,7 +187,7 @@ HOOK_METHOD_PRIORITY(SpaceManager, UpdateProjectile, -2000, (Projectile *project
     for (int run = 0; run < runs; ++run)
     {
         super(projectile);
-        if (projectile->dead || projectile->currentSpace != space) break;
+        if (projectile->dead || projectile->startedDeath || projectile->currentSpace != space) break;
     }
 }
 
@@ -249,6 +250,70 @@ HOOK_METHOD_PRIORITY(ShipManager, DamageBeam, -2000, (Pointf location1, Pointf l
     bool hit = super(location1, location2, dmg);
     Duels::Match::ObserveBeam(this, hit, hullBefore);
     return hit;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Drones in a network duel (DuelsDrones.cpp): our drones act; the replica's drones are puppets that follow their owner.
+// ---------------------------------------------------------------------------------------------
+
+// A drone's shot (combat and defense drones): ours at the replica goes like a weapon's shot, a defense drone's in our
+// space is shown to the opponent. A puppet never fires on its own.
+HOOK_METHOD_PRIORITY(SpaceDrone, GetNextProjectile, -2000, () -> Projectile*)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SpaceDrone::GetNextProjectile -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Drones::MayFire(this)) return nullptr;
+    Projectile *projectile = super();
+    if (projectile) Duels::Match::OnOwnDroneProjectile(this, projectile);
+    return projectile;
+}
+
+// After every drone moved this frame: the puppets take their owners' positions (the frame is drawn after this).
+HOOK_METHOD_PRIORITY(SpaceManager, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SpaceManager::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    super();
+    Duels::Drones::AfterSpaceLoop();
+}
+
+// A projectile runs into a drone: we report hits on the opponent's drones in our space.
+HOOK_METHOD_PRIORITY(SpaceDrone, CollisionMoving, -2000, (Pointf start, Pointf finish, Damage damage, bool raytrace) -> CollisionResponse)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SpaceDrone::CollisionMoving -> Begin (DuelsHooks.cpp)\n")
+    bool exploding = explosion.tracker.running;
+    float ionStunBefore = ionStun;
+    CollisionResponse response = super(start, finish, damage, raytrace);
+    Duels::Drones::ObserveDroneCollision(this, exploding, ionStunBefore);
+    return response;
+}
+
+// A stunned or hacked drone may explode each second: that roll belongs to the drone's owner.
+HOOK_METHOD_PRIORITY(Drone, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Drone::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Drones::RunsOwnLoop(this)) return;
+    super();
+}
+
+// The replica's hull repair drone repairs nothing here: the owner's hull comes with the state.
+HOOK_METHOD_PRIORITY(ShipManager, DamageTarget, -2000, (Pointf location, Damage damage) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::DamageTarget -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Drones::BlocksReplicaRepair(this, damage.iDamage)) return;
+    super(location, damage);
+}
+
+// Nor does the replica's shield drone add super shields here (Hyperspace rewrites this loop; its pulse still shows).
+HOOK_METHOD_PRIORITY(SuperShieldDrone, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SuperShieldDrone::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Drones::IsPuppet(this) || !shieldSystem)
+    {
+        super();
+        return;
+    }
+    std::pair<int, int> superShield = shieldSystem->shields.power.super;
+    super();
+    shieldSystem->shields.power.super = superShield;
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -11,6 +11,7 @@ struct Pointf;
 struct Projectile;
 struct ProjectileFactory;
 struct ShipManager;
+struct SpaceDrone;
 
 // A duel between two players over the network (Step 2), under split authority: each game owns its own ship
 // (ship 0). The opponent is ship 1, a replica driven by the owner's messages.
@@ -42,12 +43,17 @@ namespace Duels
         // ProjectileFactory::GetProjectile released a projectile of one of our weapons.
         void OnOwnProjectile(ProjectileFactory *weapon, Projectile *projectile);
 
+        // SpaceDrone::GetNextProjectile released a projectile of one of our drones: a combat drone's shot at the replica
+        // goes like a weapon's; a defense drone's shot in our space is shown to the opponent (DuelsDrones.cpp).
+        void OnOwnDroneProjectile(SpaceDrone *drone, Projectile *projectile);
+
         // SpaceManager::UpdateProjectile: returns how many times to run the update this frame (0 = hold, 1 = normal,
         // more = catch up).
         int ProjectileUpdates(Projectile *projectile);
 
-        // Projectile::CollisionCheck against a ship: false = skip this check (our shot waits for the verdict).
-        // Sets up the forced outcome for the calls below when a verdict exists.
+        // Projectile::CollisionCheck: false = skip this check. In a duel, what may collide follows whose space it is
+        // (DuelsDrones.h), and our shot at the replica waits for the verdict. Sets up the forced outcome for the calls
+        // below when a verdict exists.
         bool BeginCollisionCheck(Projectile *projectile, Collideable *other);
         void EndCollisionCheck();
 
