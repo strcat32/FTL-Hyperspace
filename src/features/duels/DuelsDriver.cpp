@@ -2,6 +2,7 @@
 #include "CommandConsole.h"
 #include "Duels.h"
 #include "DuelsConsole.h"
+#include "DuelsHud.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsRelay.h"
@@ -13,6 +14,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 namespace Duels
@@ -160,6 +162,24 @@ namespace Duels
         return !server.empty();
     }
 
+    // Commands any player may use. The others change ships or automate play, so they need debug mode.
+    static bool IsPlayerVerb(const std::string &verb)
+    {
+        static const std::set<std::string> verbs = {
+            "console", "debug", "host", "join", "leave", "name", "net", "netstats", "note", "quit", "relay", "say",
+            "screenshot", "status", "stop", "trace", "tracepower", "version", "window"};
+        return verbs.count(verb) != 0;
+    }
+
+    void EnableDebug(const char *why)
+    {
+        State &state = GetState();
+        if (state.debug) return;
+        state.debug = true;
+        Match::SetDebug(true);
+        Log("Debug mode on (%s): test commands work, and the duels of this game are debug duels", why);
+    }
+
     bool Execute(const Command &cmd, std::string &message)
     {
         if (cmd.args.empty())
@@ -170,6 +190,38 @@ namespace Duels
 
         State &state = GetState();
         const std::string &verb = cmd.args[0];
+
+        if (!state.debug && !IsPlayerVerb(verb))
+        {
+            message = "'" + verb + "' is a test command: it needs debug mode (debug on)";
+            return false;
+        }
+        if (verb == "debug")
+        {
+            if (ArgIs(cmd, 1, "on"))
+            {
+                if (!state.debug && Net::IsConnected())
+                {
+                    message = "debug mode can't start in the middle of a duel: leave it first";
+                    return false;
+                }
+                EnableDebug("debug on");
+            }
+            else if (ArgIs(cmd, 1, "off") && state.debug)
+            {
+                message = "debug mode stays on until the game restarts";
+                return false;
+            }
+            else if (cmd.args.size() > 1 && !ArgIs(cmd, 1, "off"))
+            {
+                message = "usage: debug [on|off]";
+                return false;
+            }
+            message = state.debug ? "debug mode on: test commands work, and the duels of this game are debug duels "
+                                    "(until the game restarts)"
+                                  : "debug mode off";
+            return true;
+        }
 
         if (verb == "status")
         {
@@ -372,6 +424,14 @@ namespace Duels
         {
             message = Match::Status();
             Log("%s", message.c_str());
+            return true;
+        }
+        if (verb == "netstats")
+        {
+            bool on;
+            if (!ParseOnOff(cmd, 1, on)) { message = "usage: netstats on|off"; return false; }
+            Hud::SetNetStats(on);
+            message = std::string("network numbers ") + (on ? "shown (bottom left)" : "hidden");
             return true;
         }
         if (verb == "netsim")

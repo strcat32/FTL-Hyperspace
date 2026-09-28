@@ -14,7 +14,7 @@ struct CommandGui;
 namespace Duels
 {
     // Version of the Duels module (the Hyperspace version stays upstream's, so mods' version checks keep working).
-    static const char *const VERSION = "0.5.0-dev";
+    static const char *const VERSION = "0.6.0-dev";
 
     struct State
     {
@@ -23,6 +23,7 @@ namespace Duels
         bool trace = false;                // write duels_frames.csv and duels_projectiles.csv
         bool quitRequested = false;        // set by the "quit" verb; the harness exits the game
         bool tracePower = false;           // log every power-up of a replaced ship's systems, with the caller
+        bool debug = false;                // test commands allowed; stays on until the game restarts (EnableDebug)
         double gameTime = 0.0;             // simulated seconds (SpeedFactor / 16 per WorldManager::OnLoop)
 
         // Timed script (from the console "duel script <file>" or the autotest harness).
@@ -44,6 +45,11 @@ namespace Duels
 
     // Executes one command immediately. Returns false and fills `message` on failure.
     bool Execute(const Command &cmd, std::string &message);
+
+    // Debug mode: test commands (refits, damage, scripts, ...) and Hyperspace's own commands work. It comes on with
+    // "debug on", DUELS_DEBUG=1 or a test scenario, stays on until the game restarts, and the other player of every
+    // duel after it is told (rules, section 4). `why` goes to the log.
+    void EnableDebug(const char *why);
 
     // Starts a timed script; its times are seconds from now.
     bool StartScript(const std::string &path, std::string &message);

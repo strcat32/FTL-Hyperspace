@@ -409,7 +409,7 @@ namespace Duels
         size_t at = cmd.text.find("keys");
         if (!gui || at == std::string::npos)
         {
-            message = "usage: keys <text with {f1} {enter} {esc} {up} {down} {back}>";
+            message = "usage: keys <text with {f1} {tab} {console} {chat} {enter} {esc} {up} {down} {back}>";
             return false;
         }
         std::string text = cmd.text.substr(at + 4);
@@ -422,6 +422,14 @@ namespace Duels
                 size_t end = text.find('}', i);
                 std::string key = end == std::string::npos ? "" : text.substr(i + 1, end - i - 1);
                 if (key == "f1") gui->KeyDown(SDLK_F1, false);
+                else if (key == "tab") gui->KeyDown(SDLK_TAB, false);
+                else if (key == "console" || key == "chat")
+                {
+                    // The hotkey as set in Options > Controls; a letter key also arrives as a typed character.
+                    SDLKey hotkey = Settings::GetHotkey(key == "chat" ? "duels_chat" : "console");
+                    gui->KeyDown(hotkey, false);
+                    if (hotkey >= 32 && hotkey < 127) gui->OnTextInput((int)hotkey);
+                }
                 else if (key == "esc") gui->KeyDown(SDLK_ESCAPE, false);
                 else if (key == "up") gui->KeyDown(SDLK_UP, false);
                 else if (key == "down") gui->KeyDown(SDLK_DOWN, false);

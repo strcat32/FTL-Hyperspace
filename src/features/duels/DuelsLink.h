@@ -58,6 +58,7 @@ namespace Duels
             uint32_t packetsReceived = 0;
             uint32_t packetsRejected = 0;
             uint32_t duplicatePackets = 0;
+            uint32_t packetsMissed = 0;       // gaps in the other side's packet numbers not filled yet: lost packets
             uint32_t reliableSent = 0;
             uint32_t reliableResent = 0;
             uint32_t reliableDelivered = 0;

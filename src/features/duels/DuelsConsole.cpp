@@ -26,15 +26,17 @@ namespace Duels
             std::deque<std::string> lines;
             std::vector<std::string> commands;
             size_t commandPos = 0;
+            int openKey = 0;               // the key that opened it, which may still arrive as a typed character
+            double openKeyUntilMs = 0.0;
         };
 
         static ConsoleState g_console;
 
         // The verbs a line can start with, "DUEL" left out (DuelsDriver.cpp and DuelsShipControl.cpp).
         static const std::set<std::string> VERBS = {
-            "ai", "aimcheck", "arm", "autofire", "battery", "cloak", "console", "crew", "describe", "door", "drone",
+            "ai", "aimcheck", "arm", "autofire", "battery", "cloak", "console", "crew", "debug", "describe", "door", "drone",
             "droneparts", "dronepower", "export", "fire", "host", "import", "install", "ionize", "join", "keys", "leave",
-            "name", "nebula", "net", "netsim", "nopause", "note", "pausetest", "power", "quit", "relay", "say", "screenshot",
+            "name", "nebula", "net", "netsim", "netstats", "nopause", "note", "pausetest", "power", "quit", "relay", "say", "screenshot",
             "script", "spawn", "status", "stop", "supershield", "trace", "tracepower", "upgrade", "version", "view",
             "weapon", "window"};
 
@@ -138,15 +140,52 @@ namespace Duels
             if (!command.empty()) gui->RunCommand(command);
         }
 
+        // The console's key is Hyperspace's "console" hotkey (Options > Controls; Tab by default in FTL: Duels). F1
+        // only while that is unbound: FTL selects crew member 1 with F1. The chat key opens it with "say " typed in.
+        static bool IsConsoleKey(int key)
+        {
+            int bound = (int)Settings::GetHotkey("console");
+            return bound > 0 ? key == bound : key == SDLK_F1;
+        }
+
+        void MigrateKeys()
+        {
+            // Hyperspace's console key used to be backslash, which many keyboards (German ones, for example) can't
+            // type; a saved backslash becomes Tab, FTL: Duels' default.
+            SettingValues *settings = G_->GetSettings();
+            if (!settings) return;
+            for (std::vector<HotkeyDesc> &page : settings->hotkeys)
+            {
+                for (HotkeyDesc &hotkey : page)
+                {
+                    if (hotkey.name == "console" && hotkey.key == SDLK_BACKSLASH)
+                    {
+                        hotkey.key = SDLK_TAB;
+                        Log("Console key: backslash changed to Tab (Options > Controls)");
+                    }
+                }
+            }
+        }
+
+        static bool IsChatKey(int key)
+        {
+            int bound = (int)Settings::GetHotkey("duels_chat");
+            return bound > 0 && key == bound;
+        }
+
         bool KeyDown(CommandGui *gui, int key)
         {
             if (!g_console.open)
             {
-                if (key != SDLK_F1 || !CanOpen(gui)) return false;
+                bool chat = IsChatKey(key);
+                if ((!chat && !IsConsoleKey(key)) || !CanOpen(gui)) return false;
                 Open();
+                if (chat) StartInput("say ");
+                g_console.openKey = key;
+                g_console.openKeyUntilMs = WallMs() + 150.0;
                 return true;
             }
-            if (key == SDLK_F1 || key == SDLK_ESCAPE)
+            if (IsConsoleKey(key) || key == SDLK_ESCAPE)
             {
                 Close();
                 return true;
@@ -168,6 +207,11 @@ namespace Duels
         bool TextInput(int ch)
         {
             if (!g_console.open || !g_console.input) return false;
+            // The key that just opened the console isn't typed into it.
+            int openKey = g_console.openKey;
+            g_console.openKey = 0;
+            bool sameKey = ch == openKey || (openKey >= 'a' && openKey <= 'z' && ch == openKey - 'a' + 'A');
+            if (openKey && sameKey && WallMs() < g_console.openKeyUntilMs) return true;
             g_console.input->OnTextInput(ch);
             return true;
         }

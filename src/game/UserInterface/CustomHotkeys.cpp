@@ -9,8 +9,10 @@ static std::vector<CustomHotkey> customHotkeys =
     {"drone4", SDLKey::SDLK_8, 1, 15},
     {"drone5", SDLKey::SDLK_9, 1, 16},
     {"drone6", SDLKey::SDLK_0, 1, 17},
-    {"console", SDLKey::SDLK_BACKSLASH, 0, 21},
-    {"speed", SDLKey::SDLK_BACKQUOTE, 0, 22},
+    // FTL: Duels: the console on Tab (many keyboards, e.g. German ones, have no backslash key), and the chat key in
+    // the place of Hyperspace's speed toggle (a duel runs at normal speed).
+    {"console", SDLKey::SDLK_TAB, 0, 21},
+    {"duels_chat", SDLKey::SDLK_b, 0, 22},
     {"info", SDLKey::SDLK_RALT, 0, 11},
     {"temporal", SDLKey::SDLK_SEMICOLON, 2, 11},
     {"un_temporal", SDLKey::SDLK_UNKNOWN, 2, -1},

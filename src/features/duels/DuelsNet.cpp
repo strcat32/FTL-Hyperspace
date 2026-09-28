@@ -24,6 +24,11 @@ namespace Duels
 
         static const double JOIN_TIMEOUT_MS = 10000.0;
         static const double SILENCE_TIMEOUT_MS = 10000.0;
+        // Through a relay, after the other player went quiet: whether we still reach the relay ourselves (its
+        // heartbeat answers come every 3 s while nothing else does), and how long to wait for the relay to say the
+        // other player is gone.
+        static const double RELAY_CONTACT_MS = 8000.0;
+        static const double RELAY_VERDICT_WAIT_MS = 5000.0;
 
         struct DelayedPacket
         {
@@ -52,6 +57,8 @@ namespace Duels
             Relay::Client relayClient;
             std::string relayCode;
             std::string relayServer;   // the relay's address as typed
+            bool debug = false;        // ours, and the other player's from the handshake
+            bool peerDebug = false;
 
             // Test conditions
             double delayMs = 0.0;
@@ -115,6 +122,7 @@ namespace Duels
             writer.Str(g_session.version);
             writer.Str(g_session.build);
             writer.Str(g_session.name);
+            writer.U8(g_session.debug ? 1 : 0);   // flags: 1 = debug mode
         }
 
         // Pushes the link's packets through the simulated conditions to the socket (through the relay: inside its
@@ -179,7 +187,7 @@ namespace Duels
             }
         }
 
-        static void Disconnect(const std::string &reason, bool notifyPeer)
+        static void Disconnect(const std::string &reason, bool notifyPeer, bool opponentGone = false)
         {
             Session &s = g_session;
             Phase before = s.phase;
@@ -197,7 +205,7 @@ namespace Duels
             }
             Log("Net: disconnected (%s)", reason.c_str());
             Close();
-            if (before == Phase::Connected && s.listener) s.listener->OnDisconnected(reason);
+            if (before == Phase::Connected && s.listener) s.listener->OnDisconnected(reason, opponentGone);
         }
 
         static bool CheckIdentity(Reader &reader, std::string &peerName, std::string &problem)
@@ -206,11 +214,13 @@ namespace Duels
             std::string version = reader.Str();
             std::string build = reader.Str();
             peerName = reader.Str();
+            uint8_t flags = reader.U8();
             if (!reader.Ok())
             {
                 problem = "malformed handshake";
                 return false;
             }
+            g_session.peerDebug = (flags & 1) != 0;
             if (protocol != PROTOCOL_VERSION || version != g_session.version)
             {
                 char buffer[200];
@@ -281,7 +291,7 @@ namespace Duels
             if (type == MSG_BYE)
             {
                 std::string reason = reader.Str();
-                Disconnect("the other player left: " + reason, false);
+                Disconnect("the other player left: " + reason, false, true);
                 return;
             }
             if (type >= FIRST_GAME_MESSAGE && s.phase == Phase::Connected && s.listener)
@@ -303,6 +313,9 @@ namespace Duels
             g_session.version = version;
             g_session.build = build;
         }
+
+        void SetDebugFlag(bool debug) { g_session.debug = debug; }
+        bool PeerDebug() { return g_session.peerDebug; }
 
         bool Host(uint16_t port, bool loopbackOnly, std::string &message)
         {
@@ -457,7 +470,7 @@ namespace Duels
                 case Relay::Event::PeerLeft:
                     if (s.phase == Phase::Connected)
                     {
-                        Disconnect("the other player left the relay", false);
+                        Disconnect("the other player left or lost the connection", false, true);
                         return false;
                     }
                     // Still waiting for the handshake: wait for the next guest.
@@ -559,8 +572,24 @@ namespace Duels
             }
             if (s.phase == Phase::Connected && s.link.HasReceived() && now - s.link.LastReceiveTime() > SILENCE_TIMEOUT_MS)
             {
-                Disconnect("connection lost", false);
-                return;
+                // A direct connection can't tell which side lost it. Through a relay, the relay knows who is still
+                // there and says so (EVENT 2 for the other player, above); without contact to the relay ourselves,
+                // we are the one cut off.
+                if (!s.relay)
+                {
+                    Disconnect("connection lost", false);
+                    return;
+                }
+                if (!s.relayClient.HasContact(now, RELAY_CONTACT_MS))
+                {
+                    Disconnect("connection lost: no contact to the relay", false);
+                    return;
+                }
+                if (now - s.link.LastReceiveTime() > SILENCE_TIMEOUT_MS + RELAY_VERDICT_WAIT_MS)
+                {
+                    Disconnect("the other player lost the connection", false, true);
+                    return;
+                }
             }
             if (s.peer.Valid()) Flush();
         }
@@ -569,6 +598,26 @@ namespace Duels
         bool IsConnected() { return g_session.phase == Phase::Connected; }
         bool IsHost() { return g_session.host; }
         std::string PeerName() { return g_session.peerName; }
+
+        Numbers GetNumbers()
+        {
+            const Session &s = g_session;
+            Numbers n;
+            n.connected = s.phase == Phase::Connected;
+            n.relay = s.relay;
+            n.relayCode = s.relayCode;
+            n.rttMs = s.link.RttMs();
+            n.bestRttMs = s.link.BestRttMs();
+            const Link::Stats &st = s.link.GetStats();
+            n.packetsSent = st.packetsSent;
+            n.packetsReceived = st.packetsReceived;
+            n.packetsMissed = st.packetsMissed;
+            n.bytesSent = st.bytesSent;
+            n.bytesReceived = st.bytesReceived;
+            n.reliableResent = st.reliableResent;
+            n.pendingReliable = s.link.PendingReliable();
+            return n;
+        }
 
         std::string Status()
         {

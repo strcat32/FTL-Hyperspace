@@ -50,8 +50,9 @@ namespace Duels
             // true); anything else may add events.
             bool Receive(const uint8_t *data, size_t size, double now, std::vector<uint8_t> &payload, std::vector<Event> &events);
 
-            // What to send to the relay now: handshake retries, pings (they keep the router's mapping and the room
-            // alive). May add an Error event (no answer).
+            // What to send to the relay now: handshake retries, and a heartbeat PING when nothing has come from the
+            // relay for a while (it keeps the router's mapping and the room alive, and shows whether we still reach
+            // the relay). While the other player's packets flow, no pings are needed. May add an Error event.
             void Update(double now, std::vector<std::vector<uint8_t>> &packets, std::vector<Event> &events);
 
             // A link packet for the other player as a DATA packet. False while there is no room.
@@ -64,6 +65,8 @@ namespace Duels
             const std::string &Code() const { return code; }
             uint64_t MatchSeed() const { return matchSeed; }
             double RttMs() const { return rttMs; }
+            // Whether a valid packet came from the relay within the last `withinMs` (in the room).
+            bool HasContact(double now, double withinMs) const { return state == State::InRoom && now - lastReceivedMs <= withinMs; }
 
             static bool IsRoomCode(const std::string &text);
 
@@ -89,7 +92,8 @@ namespace Duels
             uint32_t highestSeq = 0;
             uint64_t seenMask = 0;
             uint64_t matchSeed = 0;
-            double lastPingMs = -1.0e9;   // a PING every second in the room: keeps NAT open, measures the round trip
+            double lastPingMs = -1.0e9;
+            double lastReceivedMs = -1.0e9;   // the last valid packet from the relay
             double rttMs = -1.0;
         };
     }

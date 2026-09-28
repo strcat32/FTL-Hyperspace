@@ -35,7 +35,7 @@ namespace Duels
         static const size_t REQUEST_MIN_SIZE = 96;
         static const double RETRY_MS = 500.0;
         static const double HANDSHAKE_TIMEOUT_MS = 10000.0;
-        static const double PING_INTERVAL_MS = 1000.0;
+        static const double QUIET_MS = 3000.0;   // no packet from the relay for this long: a heartbeat PING
         static const char *const CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
         static void Header(Writer &w, uint8_t type)
@@ -213,7 +213,7 @@ namespace Duels
                     clientId = id;
                     std::memcpy(key, bytes, sizeof(key));
                     state = State::InRoom;
-                    lastPingMs = now;
+                    lastReceivedMs = now;
                     events.push_back(Event{Event::RoomCreated, code, 0});
                 }
                 else if (type == JOINED && !creating && haveCookie)
@@ -230,7 +230,7 @@ namespace Duels
                     std::memcpy(key, newKey, sizeof(key));
                     matchSeed = seed;
                     state = State::InRoom;
-                    lastPingMs = now;
+                    lastReceivedMs = now;
                     events.push_back(Event{Event::RoomJoined, hostName, seed});
                 }
                 else if (type == ERROR_)
@@ -255,6 +255,7 @@ namespace Duels
             uint32_t id = r.U32();
             uint32_t seq = r.U32();
             if (!r.Ok() || id != clientId || !AcceptSeq(seq)) return false;
+            lastReceivedMs = now;
             size_t bodySize = size - HEADER_SIZE - 8 - TAG_SIZE;
             const uint8_t *body = data + HEADER_SIZE + 8;
             if (type == RELAYED)
@@ -308,8 +309,7 @@ namespace Duels
                 }
                 return;
             }
-            // Also while the duel's packets flow: the round trip to the relay shows which leg is slow.
-            if (state == State::InRoom && now - lastPingMs >= PING_INTERVAL_MS)
+            if (state == State::InRoom && now - lastReceivedMs >= QUIET_MS && now - lastPingMs >= QUIET_MS)
             {
                 Writer w;
                 Header(w, PING);

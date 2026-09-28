@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsConsole.h"
 #include "DuelsMatch.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
@@ -9,6 +10,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 
 namespace Duels
 {
@@ -120,9 +122,33 @@ namespace Duels
         g_lastFrameMs = now;
     }
 
+    // Test runs play silently (DUELS_MUTE=1, set by the test runners). Sound and music go to 0 on every frame, since
+    // the options menu would set them back.
+    static void MuteForTests()
+    {
+        static int mute = -1;
+        if (mute < 0)
+        {
+            const char *value = getenv("DUELS_MUTE");
+            mute = value && value[0] == '1' ? 1 : 0;
+            if (mute) Log("Sound and music off (DUELS_MUTE)");
+        }
+        SoundControl *sound = mute ? G_->GetSoundControl() : nullptr;
+        if (!sound) return;
+        if (sound->GetSoundVolume() != 0.f) sound->SetSoundVolume(0.f);
+        if (sound->GetMusicVolume() != 0.f) sound->SetMusicVolume(0.f);
+    }
+
     void OnFrame()
     {
-        if (++g_frame == 1) Log("FTL:Duels module %s loaded", VERSION);
+        if (++g_frame == 1)
+        {
+            Log("FTL:Duels module %s loaded", VERSION);
+            const char *debug = getenv("DUELS_DEBUG");
+            if (debug && debug[0] == '1') EnableDebug("DUELS_DEBUG");
+            Console::MigrateKeys();
+        }
+        MuteForTests();
         PlaceOnTestDisplay();
         Match::OnFrame(WallMs());
         View::OnFrame();

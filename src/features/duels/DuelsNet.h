@@ -13,7 +13,7 @@ namespace Duels
     namespace Net
     {
         static const uint16_t DEFAULT_PORT = 47620;
-        static const uint16_t PROTOCOL_VERSION = 1;   // bump whenever a message changes
+        static const uint16_t PROTOCOL_VERSION = 2;   // bump whenever a message changes
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;
@@ -32,7 +32,9 @@ namespace Duels
             virtual ~Listener() {}
             virtual void OnConnected() = 0;
             virtual void OnMessage(uint8_t type, Reader &reader) = 0;
-            virtual void OnDisconnected(const std::string &reason) = 0;
+            // opponentGone: the other player left, or lost the connection while we still reach the relay. False
+            // when we are the one cut off, or when nobody can tell (a direct connection that went quiet).
+            virtual void OnDisconnected(const std::string &reason, bool opponentGone) = 0;
             // Things the player should see: the relay's room code, the relay refusing, ...
             virtual void OnNotice(const std::string &text) { (void)text; }
         };
@@ -40,6 +42,9 @@ namespace Duels
         void SetListener(Listener *listener);
         // Sent in the handshake. Versions must match exactly; a different build only gets a warning in the log.
         void SetIdentity(const std::string &playerName, const std::string &version, const std::string &build);
+        // Debug mode (Duels.h) goes with the handshake, so the other player knows.
+        void SetDebugFlag(bool debug);
+        bool PeerDebug();
 
         // Hosting on loopback only (both games on this computer) avoids the Windows Firewall prompt.
         // Joining a loopback address uses a loopback socket for the same reason.
@@ -64,6 +69,19 @@ namespace Duels
         bool IsHost();
         std::string PeerName();
         std::string Status();
+
+        // The connection's numbers, for the on-screen network display (DuelsHud.cpp). Counters run since connecting.
+        struct Numbers
+        {
+            bool connected = false;
+            bool relay = false;
+            std::string relayCode;
+            double rttMs = -1.0, bestRttMs = -1.0;
+            uint32_t packetsSent = 0, packetsReceived = 0, packetsMissed = 0, bytesSent = 0, bytesReceived = 0;
+            uint32_t reliableResent = 0;
+            size_t pendingReliable = 0;
+        };
+        Numbers GetNumbers();
 
         // Game messages (type >= FIRST_GAME_MESSAGE). Returns false if not connected or the message is too big.
         bool Send(uint8_t type, const Writer &body, bool reliable);

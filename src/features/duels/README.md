@@ -1,8 +1,8 @@
 # FTL: Duels module
 
-This module turns Hyperspace into the base of **FTL: Duels**, a 1v1 real-time PvP mode for FTL: Faster Than Light. It lives in this folder. Outside it there are a few small changes: one line in `CMakeLists.txt` links Winsock (`ws2_32`) for the netcode, and two functions added to Hyperspace's function list for Windows (`libzhlgen/test/functions/win32/1.6.9/`): `graphics_read_pixels` in `Global.zhl` (screenshots) and `BatterySystem::SetTurnedOn` in `BatterySystem.zhl` (the backup battery's button).
+This module turns Hyperspace into the base of **FTL: Duels**, a 1v1 real-time PvP mode for FTL: Faster Than Light. It lives in this folder. Outside it there are a few small changes: one line in `CMakeLists.txt` links Winsock (`ws2_32`) for the netcode, and two functions added to Hyperspace's function list for Windows (`libzhlgen/test/functions/win32/1.6.9/`): `graphics_read_pixels` in `Global.zhl` (screenshots) and `BatterySystem::SetTurnedOn` in `BatterySystem.zhl` (the backup battery's button). In `src/game/UserInterface/CustomHotkeys.cpp`, the console key defaults to Tab (many keyboards have no backslash key), and the chat key ("duels_chat", B) takes the place of Hyperspace's speed toggle.
 
-## Current state: network duel (step 2, 0.5.0-dev)
+## Current state: network duel (step 2, 0.6.0-dev)
 
 - **Two players over UDP:** one hosts, the other joins, directly or through a relay server. Each game owns its own ship; the opponent is ship 1, a replica built from the opponent's loadout and driven by their messages (split authority).
 - **State sync:** 10 times a second, hull, shields, system power and damage, weapon power and charge, the lock on each system (ion damage, and the backup battery while it runs and cools down) with its timer, and the battery. The replica's power is set the way the owner's changed: taken away as ion and damage take it, added as the power bars add it; subsystems (a nebula switches the sensors off) take the owner's value and keep it, whatever this game's environment does.
@@ -11,7 +11,9 @@ This module turns Hyperspace into the base of **FTL: Duels**, a 1v1 real-time Pv
 - **Timing:** the defender's copy flies out of the enemy window faster, to make up for the network delay. It enters the defender's space when the attacker's copy entered the enemy window on the attacker's screen.
 - **Duel view:** our ship stays as FTL draws it. The enemy window grows to the left up to a gap after it, and moves below the jump and menu buttons when it reaches them. The opponent's ship is drawn in it as large as it fits (about 0.65 for a Kestrel), mirrored so it faces us, with its icons the right way round, on the same centre line as ours. It is drawn with smooth filtering. In windows larger than 1280 x 720, frames are drawn at the window's size, so it keeps its detail. Mouse input goes through the inverse transforms: aiming at rooms, beam lines, crew orders, doors and tooltips work as usual. (`view equal on` draws both ships at one scale instead.)
 - **Relay:** players who can't reach each other directly (routers) connect through a relay server (`server/relay` in the FTL: Duels repository, Rust). The host opens a room and gets a six-character code; the other player joins with it. After a cookie handshake, every packet is signed with a key per player, and the relay forwards the duel's packets without reading them. Protocol: `docs/design/relay-protocol.md` in the FTL: Duels repository.
-- **Console:** F1 opens it where the game prints its messages (top left, under the status bar): the last 12 messages and an input line with a caret. It stays open after a command until F1 or Escape; Up and Down bring back earlier lines. `DUEL` can be left out, and `HS <command>` runs Hyperspace's own commands. Letters come out as typed. The corner label and the window title say "FTL: Duels".
+- **Console:** the console key (Options → Controls; Tab by default, so F1 selects crew member 1 as in FTL) opens it where the game prints its messages (top left, under the status bar): the last 12 messages and an input line with a caret. It stays open after a command until the key or Escape; Up and Down bring back earlier lines. `DUEL` can be left out, and `HS <command>` runs Hyperspace's own commands (in debug mode). Letters come out as typed. The chat key (B by default) opens it with `say ` typed in. The corner label and the window title say "FTL: Duels".
+- **Debug mode:** commands that change ships or automate play (refits, damage, AI, scripts, `keys`, Hyperspace's commands, ...) work only in debug mode: `debug on`, `DUELS_DEBUG=1`, or a test scenario. It stays on until the game restarts, and the other player of every duel after it is told ("DEBUG DUEL").
+- **Connection:** round trips come from the game's own packets; the link sends a heartbeat only after 1 s without traffic, and the relay gets a PING only after 3 s without a packet from it. A peer silent for 10 s is gone. Through a relay, the relay decides who is still there: the player who still reaches it wins the fight, the other one is told the connection is lost. A game that leaves or closes says so at once. `netstats on` shows the round trip, losses and traffic in three lines at the bottom left.
 - **From step 1:** enemy AI replaced by commands, no pause, speed locked to normal, tracing, and the autotest harness that plays a scripted match without a human.
 
 Results and findings: `docs/dev/step2-results.md` in the FTL: Duels repository.
@@ -22,7 +24,7 @@ The same commands are used by scenario scripts, the in-game console (F1, then `<
 
 | Group | Verbs |
 |---|---|
-| Network duel | `host [port] [local]`, `join <address> [port]`, `relay [server[:port]]`, `host relay [server[:port]]`, `join relay <code\|@file> [server[:port]]`, `leave`, `net` (status), `name <player>`, `say <text>`, `netsim <delay ms> [jitter ms] [loss %]` |
+| Network duel | `debug [on]`, `netstats on\|off`, `host [port] [local]`, `join <address> [port]`, `relay [server[:port]]`, `host relay [server[:port]]`, `join relay <code\|@file> [server[:port]]`, `leave`, `net` (status), `name <player>`, `say <text>`, `netsim <delay ms> [jitter ms] [loss %]` |
 | Session | `version`, `status`, `nopause on\|off`, `trace on\|off`, `tracepower on\|off`, `ai <ship> on\|off`, `script <file>`, `stop`, `note <text>`, `quit` |
 | Power and weapons | `power <ship> <system> <level>`, `weapon <ship> <slot> on\|off`, `fire <ship> <slot> room <room>`, `autofire <ship> <slot> on\|off` |
 | Crew and systems | `crew <ship> <index> room <room>`, `door <ship> <id> open\|close`, `cloak <ship>` |
@@ -34,7 +36,8 @@ The same commands are used by scenario scripts, the in-game console (F1, then `<
 - `relay` sets the relay server for `host relay` and `join relay` (UDP port 47700 by default); both also take it directly. `host relay` announces the room code, which the other player passes to `join relay` (or `@file`: the code is read from that file, for tests).
 - With `trace on`, a duel writes `duels_shots.csv` (every shot, both directions) and `duels_sync.csv` (every change of our ship and of the replica).
 - `screenshot` saves the next frame from FTL's own frame buffer, so it works with the window covered or the computer locked.
-- `keys` types into the game through its own input handlers: characters as they are, and `{f1}`, `{enter}`, `{esc}`, `{up}`, `{down}`, `{back}` for keys (console tests).
+- `keys` types into the game through its own input handlers: characters as they are, and `{f1}`, `{tab}`, `{console}` and `{chat}` (the hotkeys as set in the options), `{enter}`, `{esc}`, `{up}`, `{down}`, `{back}` for keys (console tests).
+- Scenario directive `@nodebug`: a test scenario without debug mode (`tests/scenarios/debug-check.txt`).
 - Test runs keep the games off the main monitor: with `DUELS_DISPLAY` (`x,y,width,height` of another monitor) and `DUELS_DISPLAY_SCALE`, window positions count from that monitor's corner and are scaled; `DUELS_WINDOW` (`x,y`) places the window there at start (`DuelsWin32.h`).
 - `arm`, `upgrade`, `install`, `drone` and `droneparts` prepare test ships (e.g. flak, beams and bombs, a backup battery, drone control with drones); in a duel, before connecting, so the loadout carries them. `battery` and `dronepower` press the battery's and a drone's button; `ionize` does ion damage to a system, as an ion shot does; `supershield` gives a ship a Zoltan super shield; `nebula` puts our ship under a nebula beacon's effect (sensors off), in this game only.
 
@@ -51,7 +54,8 @@ The same commands are used by scenario scripts, the in-game console (F1, then `<
 | `DuelsDrones.*` | Drones: their state in the sync, the replica's drones as puppets, drone hits, copies of the opponent's defense drone shots |
 | `DuelsNet.*` | Session: host/join (directly or through the relay), handshake, timeouts, test conditions |
 | `DuelsRelay.*`, `DuelsCrypto.*` | The relay client (cookie handshake, room codes, signed packets; no game headers, unit-tested outside the game) and SHA-256/HMAC for it |
-| `DuelsConsole.*` | The console: input line, recent messages, command history |
+| `DuelsConsole.*` | The console: input line, recent messages, command history, the console and chat keys |
+| `DuelsHud.*` | What FTL: Duels draws over the interface: the network numbers |
 | `DuelsLink.*`, `DuelsWire.h` | Reliable-UDP link and message encoding (no game headers; unit-tested outside the game) |
 | `DuelsSocket.*` | UDP sockets (Windows, and POSIX for later) |
 | `DuelsView.*` | The duel view: layout, the enemy window's size and frame, both ships' transforms, mouse mapping |

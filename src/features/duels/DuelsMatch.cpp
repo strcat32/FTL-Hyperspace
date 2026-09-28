@@ -1590,6 +1590,13 @@ namespace Duels
             {
                 ResetMatch();
                 Announce("connected to " + Net::PeerName() + (Net::IsHost() ? " (you host)" : ""));
+                // Test commands can change ships, so both players see a debug duel for what it is.
+                bool ours = GetState().debug, theirs = Net::PeerDebug();
+                if (ours || theirs)
+                {
+                    Announce(std::string("DEBUG DUEL: test commands are on (") + (ours ? "yours on" : "yours off") + ", " +
+                             Net::PeerName() + "'s " + (theirs ? "on" : "off") + ")");
+                }
             }
 
             void OnNotice(const std::string &text) override
@@ -1597,9 +1604,23 @@ namespace Duels
                 Announce(text);
             }
 
-            void OnDisconnected(const std::string &reason) override
+            void OnDisconnected(const std::string &reason, bool opponentGone) override
             {
-                Announce("disconnected: " + reason);
+                // A fight still going on when the other player is gone is won by the player still here (rules,
+                // section 3). Rejoining a running match comes with the match flow.
+                ShipManager *own = G_->GetShipManager(0);
+                ShipManager *replica = G_->GetShipManager(1);
+                bool fighting = g_match.replicaReady && own && replica && own->ship.hullIntegrity.first > 0 &&
+                                replica->ship.hullIntegrity.first > 0;
+                if (fighting && opponentGone)
+                {
+                    Log("Match: fight won, the opponent is gone (%s)", reason.c_str());
+                    Announce(reason + " - you win this fight");
+                }
+                else
+                {
+                    Announce("disconnected: " + reason);
+                }
                 FlushShotLog();
                 ResetMatch();
             }
@@ -1722,6 +1743,11 @@ namespace Duels
             FlushShotLog();
             Net::Leave("left the duel");
             ResetMatch();
+        }
+
+        void SetDebug(bool debug)
+        {
+            Net::SetDebugFlag(debug);
         }
 
         bool Say(const std::string &text)

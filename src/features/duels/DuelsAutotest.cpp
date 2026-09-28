@@ -12,6 +12,7 @@
 //
 // Scenario files are ordinary duel scripts plus optional directives:
 //   @timeout <seconds>     hard limit for the whole run (default 180)
+//   @nodebug               don't switch debug mode on (it is on for every other scenario: test commands need it)
 namespace Duels
 {
     enum class Phase
@@ -61,6 +62,7 @@ namespace Duels
         g_auto.startMs = WallMs();
         std::vector<std::string> directives;
         std::string error;
+        bool noDebug = false;
         if (!LoadScript(AUTOTEST_FILE, g_auto.script, directives, error))
         {
             Log("Autotest: %s", error.c_str());
@@ -75,10 +77,12 @@ namespace Duels
             double value;
             words >> key;
             if (key == "@timeout" && (words >> value)) g_auto.timeoutS = value;
+            else if (key == "@nodebug") noDebug = true;
             else Log("Autotest: unknown directive '%s'", directive.c_str());
         }
 
         Log("Autotest: scenario with %u commands, timeout %.0f s", (unsigned)g_auto.script.size(), g_auto.timeoutS);
+        if (!noDebug) EnableDebug("test scenario");
         Enter(Phase::WaitMenu);
     }
 

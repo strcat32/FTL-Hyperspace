@@ -22,6 +22,9 @@ namespace Duels
 
         // Hook entry points. Each returns true when the console took the key, character or text event.
         bool KeyDown(CommandGui *gui, int key);
+
+        // Once at start: an old saved console key that many keyboards can't type (backslash) becomes Tab.
+        void MigrateKeys();
         bool TextInput(int ch);
         bool TextEvent(CommandGui *gui, int event);
 

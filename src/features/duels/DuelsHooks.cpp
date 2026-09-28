@@ -3,6 +3,7 @@
 #include "Duels.h"
 #include "DuelsConsole.h"
 #include "DuelsDrones.h"
+#include "DuelsHud.h"
 #include "DuelsMatch.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
@@ -68,6 +69,13 @@ HOOK_METHOD_PRIORITY(CommandGui, RunCommand, -100, (std::string& command) -> voi
     boost::to_upper(name);
     if (name != "DUEL")
     {
+        // Hyperspace's own commands (scrap, hull, crew, ...) are test commands too.
+        if (!Duels::GetState().debug)
+        {
+            Duels::Log("console: %s -> refused (debug mode is off)", command.c_str());
+            Duels::Console::Print("DUEL: Hyperspace's commands need debug mode (debug on)");
+            return;
+        }
         super(command);
         return;
     }
@@ -663,6 +671,7 @@ HOOK_METHOD_PRIORITY(CommandGui, OnTextEvent, -2000, (CEvent::TextEvent event) -
 HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> MouseControl::OnRender -> Begin (DuelsHooks.cpp)\n")
+    Duels::Hud::Render();
     if (!Duels::Console::Render()) return super();
     PrintHelper *printer = PrintHelper::GetInstance();
     int x = printer->x;

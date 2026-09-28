@@ -39,6 +39,8 @@ namespace Duels
         bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message);
         void Leave();
         bool Say(const std::string &text);
+        // Debug mode on (Duels::EnableDebug): the handshake tells the other player.
+        void SetDebug(bool debug);
         std::string Status();
 
         // --- hook entry points ---

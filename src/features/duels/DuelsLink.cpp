@@ -13,7 +13,7 @@ namespace Duels
     // Header flags
     static const uint8_t FLAG_ACKS = 1;   // the ack fields are valid (we have received something)
 
-    static const double KEEPALIVE_MS = 100.0;
+    static const double KEEPALIVE_MS = 1000.0;      // a heartbeat when nothing else went out (the game sends 10 states a second)
     static const double ACK_DELAY_MS = 15.0;         // acks go out at most about once per frame
     static const double CLOCK_WINDOW_MS = 10000.0;   // clock samples older than this are forgotten
     static const size_t MAX_PACKETS_PER_UPDATE = 16;
@@ -232,6 +232,7 @@ namespace Duels
             uint16_t shift = (uint16_t)(seq - remoteSeq);
             remoteBits = shift >= 32 ? (shift == 32 ? 0x80000000u : 0u) : ((remoteBits << shift) | (1u << (shift - 1)));
             remoteSeq = seq;
+            stats.packetsMissed += shift - 1u;   // skipped numbers; a late arrival takes one back below
         }
         else
         {
@@ -250,6 +251,7 @@ namespace Duels
             {
                 stale = true;
             }
+            if (!duplicate && stats.packetsMissed > 0) --stats.packetsMissed;
         }
         if (duplicate)
         {
