@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsCapture.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
 #include "DuelsWin32.h"
@@ -430,7 +431,9 @@ namespace Duels
             return false;
         }
 
-        if (kind == "space") gui->KeyDown(SDLK_SPACE, false);
+        if (kind == "f1") gui->KeyDown(SDLK_F1, false);
+        else if (kind == "escape") gui->KeyDown(SDLK_ESCAPE, false);
+        else if (kind == "space") gui->KeyDown(SDLK_SPACE, false);
         else if (kind == "setpaused") gui->SetPaused(true, false);
         else if (kind == "autopause") gui->SetPaused(true, true);
         else if (kind == "menu") gui->KeyDown(SDLK_ESCAPE, false);
@@ -446,7 +449,7 @@ namespace Duels
         }
         else
         {
-            message = "usage: pausetest space|setpaused|autopause|menu|upgrades|blur|focus|minimize|restore";
+            message = "usage: pausetest f1|escape|space|setpaused|autopause|menu|upgrades|blur|focus|minimize|restore";
             return false;
         }
         message = "pause trigger '" + kind + "' sent";
@@ -455,14 +458,14 @@ namespace Duels
 
     static bool DoWindow(const Command &cmd, std::string &message)
     {
-        int x, y;
-        if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y))
+        int x, y, width = 0, height = 0;
+        if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y) || (cmd.args.size() > 3 && (!ArgInt(cmd, 3, width) || !ArgInt(cmd, 4, height))))
         {
-            message = "usage: window <x> <y>";
+            message = "usage: window <x> <y> [width height]";
             return false;
         }
         std::string details;
-        bool found = MoveGameWindow(x, y, details);
+        bool found = MoveGameWindow(x, y, width, height, details);
         message = found ? "window moved: " + details : "game window not found";
         return found;
     }
@@ -475,10 +478,9 @@ namespace Duels
             message = "usage: screenshot <file.bmp>";
             return false;
         }
-        std::string details;
-        bool found = CaptureGameWindow(path, details);
-        message = found ? path + ": " + details : "game window not found";
-        return found;
+        RequestCapture(path);
+        message = "saving the next frame as " + path;
+        return true;
     }
 
     bool ExecuteShipCommand(const Command &cmd, std::string &message)

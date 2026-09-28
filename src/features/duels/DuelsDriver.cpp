@@ -1,9 +1,12 @@
 #include "Global.h"
+#include "CommandConsole.h"
 #include "Duels.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsShipControl.h"
+#include "DuelsView.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <sstream>
 
@@ -37,6 +40,79 @@ namespace Duels
             << " script=" << (state.scriptStartMs >= 0.0 ? "running" : "idle")
             << " enemy=" << (G_->GetShipManager(1) ? "present" : "none");
         return out.str();
+    }
+
+    // Moves the mouse over the center of every room of both ships, as they are drawn now, through the game's own mouse
+    // handling (CommandGui::MouseMove), and checks what the game makes of it: the opponent's room it would target, and
+    // the room of our ship under the mouse for crew orders and doors (CrewControl) and for clicks
+    // (GetWorldCoordinates). "full" starts at the window's pixels and goes through CApp::TranslateMouse (window size,
+    // scaling) first.
+    static bool AimCheck(bool full, std::string &message)
+    {
+        CApp *app = G_->GetCApp();
+        CommandGui *gui = app ? app->gui : nullptr;
+        ShipManager *enemy = G_->GetShipManager(1);
+        ShipManager *own = G_->GetShipManager(0);
+        if (!gui || !enemy || !own)
+        {
+            message = "needs an enemy ship";
+            return false;
+        }
+        CombatControl &combat = gui->combatControl;
+        Pointf savedMouse = combat.lastMouse;
+
+        // The screen pixel under a point, as the game gets it; with `full`, from the window pixel that
+        // CApp::TranslateMouse maps to it (the inverse of its arithmetic).
+        auto moveTo = [&](float x, float y) {
+            Point at((int)std::floor(x), (int)std::floor(y));
+            if (full)
+            {
+                int windowX = (int)std::floor((at.x + 0.5f + app->modifier_x) / app->mouseModifier_x + app->x_bar);
+                int windowY = (int)std::floor((at.y + 0.5f + app->modifier_y) / app->mouseModifier_y + app->y_bar);
+                at = app->TranslateMouse(windowX, windowY);
+            }
+            gui->MouseMove(at.x, at.y);
+            return at;
+        };
+
+        int rooms = (int)enemy->ship.vRoomList.size();
+        int hits = 0;
+        std::ostringstream misses;
+        for (int room = 0; room < rooms; ++room)
+        {
+            Pointf center = enemy->GetRoomCenter(room);
+            float x, y;
+            if (!View::ShipToScreen(1, center.x, center.y, x, y)) continue;
+            Point at = moveTo(x, y);
+            if (combat.selectedRoom == room) ++hits;
+            else misses << " " << room << "->" << combat.selectedRoom << "@" << at.x << "," << at.y;
+        }
+
+        int ownRooms = (int)own->ship.vRoomList.size();
+        int ownHits = 0;
+        std::ostringstream ownMisses;
+        for (int room = 0; room < ownRooms; ++room)
+        {
+            Pointf center = own->GetRoomCenter(room);
+            float x, y;
+            if (!View::ShipToScreen(0, center.x, center.y, x, y)) continue;
+            Point at = moveTo(x, y);
+            Point mouse = gui->crewControl.worldCurrentMouse;
+            Point click = gui->GetWorldCoordinates(at, false);
+            int underMouse = own->ship.GetSelectedRoomId(mouse.x, mouse.y, true);
+            int underClick = own->ship.GetSelectedRoomId(click.x, click.y, true);
+            if (underMouse == room && underClick == room) ++ownHits;
+            else ownMisses << " " << room << "->" << underMouse << "/" << underClick << "@" << at.x << "," << at.y;
+        }
+        gui->MouseMove((int)savedMouse.x, (int)savedMouse.y);
+
+        std::ostringstream out;
+        out << (full ? "aimcheck (window pixels): " : "aimcheck: ") << "opponent " << hits << "/" << rooms << " rooms"
+            << (hits == rooms ? "" : " (misses:" + misses.str() + ")") << ", ours " << ownHits << "/" << ownRooms << " rooms"
+            << (ownHits == ownRooms ? "" : " (misses:" + ownMisses.str() + ")") << " | " << View::Describe();
+        message = out.str();
+        Log("%s", message.c_str());
+        return hits == rooms && ownHits == ownRooms;
     }
 
     bool Execute(const Command &cmd, std::string &message)
@@ -103,6 +179,48 @@ namespace Duels
         {
             // Free text marker for the log, e.g. "note opening upgrade screen now".
             message = cmd.text;
+            return true;
+        }
+
+        // Enemy window and console
+        if (verb == "view")
+        {
+            if (ArgIs(cmd, 1, "auto")) View::SetMode(View::Mode::Auto);
+            else if (ArgIs(cmd, 1, "fit"))
+            {
+                // Any enemy, for checks in single player; a spawned player ship gets its shields placed as in a duel.
+                View::SetMode(View::Mode::Fit);
+                View::UsePlayerShieldPosition(G_->GetShipManager(1));
+            }
+            else if (ArgIs(cmd, 1, "off")) View::SetMode(View::Mode::Off);
+            else if (cmd.args.size() > 1) { message = "usage: view [auto|fit|off]"; return false; }
+            // The layout follows at the next frame.
+            View::OnFrame();
+            message = View::Describe();
+            Log("%s", message.c_str());
+            return true;
+        }
+        if (verb == "aimcheck") return AimCheck(ArgIs(cmd, 1, "full"), message);
+        if (verb == "console")
+        {
+            // console [text]: opens the console with that text typed in (for screenshots and tests).
+            CApp *app = G_->GetCApp();
+            if (!app || !app->gui || !OpenConsole(app->gui))
+            {
+                message = "the console can't open now";
+                return false;
+            }
+            std::string text = cmd.text.substr(cmd.text.find("console") + 7);
+            size_t start = text.find_first_not_of(' ');
+            text = start == std::string::npos ? "" : text.substr(start);
+            CommandConsole *console = CommandConsole::GetInstance();
+            if (console->textInput)
+            {
+                console->textInput->SetText(text);
+                console->textInput->pos = (int)console->textInput->text.size();
+            }
+            app->gui->inputBox.inputText = text;
+            message = "console open";
             return true;
         }
 

@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+struct CommandGui;
+
 // FTL:Duels — 1v1 real-time PvP on top of Hyperspace.
 // Step 1 (offline replica): drive the enemy ship from commands, keep the simulation from pausing,
 // and trace frame timing and projectile flights to CSV files in the game directory.
@@ -12,7 +14,7 @@
 namespace Duels
 {
     // Version of the Duels module (the Hyperspace version stays upstream's, so mods' version checks keep working).
-    static const char *const VERSION = "0.2.0-dev";
+    static const char *const VERSION = "0.2.1-dev";
 
     struct State
     {
@@ -55,4 +57,7 @@ namespace Duels
     // Autotest harness (DuelsAutotest.cpp): runs a scenario from duels_autotest.txt without a human.
     void AutotestOnFrame();
     bool AutotestActive();
+
+    // Opens the command console (F1), if nothing else has the focus (DuelsHooks.cpp).
+    bool OpenConsole(CommandGui *gui);
 }

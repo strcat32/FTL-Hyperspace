@@ -9,9 +9,7 @@ namespace Duels
     bool MinimizeGameWindow(std::string &details);
     bool RestoreGameWindow(std::string &details);
 
-    // Moves the window's top-left corner to screen position x, y (two games side by side for tests).
-    bool MoveGameWindow(int x, int y, std::string &details);
-
-    // Saves what the game window shows (even when covered by other windows) as a 24-bit BMP.
-    bool CaptureGameWindow(const std::string &path, std::string &details);
+    // Moves the window's top-left corner to screen position x, y (two games side by side for tests); with a
+    // width and height > 0, also sizes its drawing area.
+    bool MoveGameWindow(int x, int y, int width, int height, std::string &details);
 }

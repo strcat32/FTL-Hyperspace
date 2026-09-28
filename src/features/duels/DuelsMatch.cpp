@@ -8,6 +8,7 @@
 #include "DuelsNet.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
+#include "DuelsView.h"
 #include "DuelsWire.h"
 
 #include <algorithm>
@@ -337,6 +338,7 @@ namespace Duels
                 Log("Match: replica weapons replaced (%u)", (unsigned)weapons.size());
             }
 
+            View::UsePlayerShieldPosition(replica);
             g_match.opponentShip = blueprint;
             g_match.replicaReady = true;
             Net::Send(MSG_READY, Writer(), true);
@@ -923,6 +925,8 @@ namespace Duels
         {
             Init();
             Net::Update(now);
+            // The enemy window fits and mirrors the opponent's ship while it is a duel replica.
+            View::SetDuelOpponent(g_match.replicaReady && G_->GetShipManager(1) != nullptr);
             if (!Net::IsConnected()) return;
 
             MatchState &m = g_match;

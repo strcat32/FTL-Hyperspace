@@ -3,8 +3,10 @@
 #include "Duels.h"
 #include "DuelsMatch.h"
 #include "DuelsShipControl.h"
+#include "DuelsView.h"
 
 #include <boost/algorithm/string.hpp>
+#include <cmath>
 
 // ---------------------------------------------------------------------------------------------
 // Frame tick and loop counters
@@ -215,4 +217,293 @@ HOOK_METHOD_PRIORITY(ShipManager, DamageArea, -2000, (Pointf location, Damage dm
     hit = super(location, dmg, forceHit);
     Duels::Match::ObserveDamageArea(this, hit, hullBefore);
     return hit;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Duel view (DuelsView.cpp): both ships at one scale, the opponent mirrored in a grown enemy window, mouse input
+// mapped back to each ship's coordinates.
+// ---------------------------------------------------------------------------------------------
+
+HOOK_METHOD_PRIORITY(CombatControl, RenderTarget, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::RenderTarget -> Begin (DuelsHooks.cpp)\n")
+    Duels::View::BeginTarget();
+    Duels::View::BeginDecorations();
+    super();
+    Duels::View::EndDecorations();
+    Duels::View::EndTarget();
+}
+
+// Hyperspace's ship icons and event timers in the enemy window show tooltips from here.
+HOOK_METHOD_PRIORITY(CommandGui, MouseMove, -2000, (int mX, int mY) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::MouseMove -> Begin (DuelsHooks.cpp)\n")
+    Duels::View::BeginDecorations();
+    super(mX, mY);
+    Duels::View::EndDecorations();
+}
+
+HOOK_METHOD_PRIORITY(CachedPrimitive, OnRender, -2000, (const GL_Color &color) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CachedPrimitive::OnRender -> Begin (DuelsHooks.cpp)\n")
+    float dx, dy;
+    if (!Duels::View::HullBarShift(this, dx, dy)) return super(color);
+    CSurface::GL_PushMatrix();
+    CSurface::GL_Translate(dx, dy, 0.f);
+    super(color);
+    CSurface::GL_PopMatrix();
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, RenderPlayerShip, -2000, (Point &shipCenter, float jumpScale) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::RenderPlayerShip -> Begin (DuelsHooks.cpp)\n")
+    Duels::View::BeginPlayerShip();
+    super(shipCenter, jumpScale);
+    Duels::View::EndPlayerShip();
+}
+
+// Inside RenderTarget's and RenderPlayerShip's own push and translate: the transform covers the ship, its space
+// (projectiles), and the charge bars and aiming marks drawn after it; their pop removes it.
+HOOK_METHOD_PRIORITY(CompleteShip, OnRenderShip, -2000, (bool unk1, bool unk2) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CompleteShip::OnRenderShip -> Begin (DuelsHooks.cpp)\n")
+    Duels::View::ApplyShipTransform(shipManager);
+    super(unk1, unk2);
+}
+
+// "MISS", damage numbers: readable, at normal size, although drawn inside a scaled or mirrored ship.
+HOOK_METHOD_PRIORITY(DamageMessage, OnRender, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> DamageMessage::OnRender -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::View::Transforming())
+    {
+        super();
+        return;
+    }
+    float sx, sy;
+    Duels::View::InverseScale(sx, sy);
+    CSurface::GL_PushMatrix();
+    CSurface::GL_Translate(position.x, position.y, 0.f);
+    CSurface::GL_Scale(sx, sy, 1.f);
+    CSurface::GL_Translate(-position.x, -position.y, 0.f);
+    super();
+    CSurface::GL_PopMatrix();
+}
+
+extern Point g_enemyShipCorner;   // Hyperspace, CustomWeapons.cpp
+
+// Hyperspace keeps the opponent's weapon charge bars on screen, reckoning with where FTL would draw its ship; ours is
+// scaled and mirrored inside the window. Its check passes while our transform is on.
+HOOK_METHOD_PRIORITY(WeaponAnimation, RenderChargeBar, -2000, (float alpha) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> WeaponAnimation::RenderChargeBar -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::View::Transforming()) return super(alpha);
+    Point saved = g_enemyShipCorner;
+    int width = (int)(anim.info.frameWidth * anim.fScale);
+    int barX = bMirrored ? renderPoint.x + mountPoint.x - width - 18 : renderPoint.x - mountPoint.x + width + 10;
+    int barY = renderPoint.y - mountPoint.y;
+    g_enemyShipCorner = Point(640 - barX, 360 - barY);
+    super(alpha);
+    g_enemyShipCorner = saved;
+}
+
+// The enemy window: its size, its frame, and the opponent's system boxes at their usual place.
+HOOK_METHOD_PRIORITY(CombatControl, GetHostileBoxSize, -2000, () -> Point)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::GetHostileBoxSize -> Begin (DuelsHooks.cpp)\n")
+    Point size = super();
+    Duels::View::AdjustHostileBoxSize(this, size);
+    return size;
+}
+
+HOOK_METHOD_PRIORITY(CombatControl, DrawHostileBox, -2000, (GL_Color color, int stencilBit) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::DrawHostileBox -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::View::DrawHostileBox(this, color, stencilBit)) super(color, stencilBit);
+}
+
+HOOK_METHOD_PRIORITY(CombatControl, UpdateSysBoxes, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::UpdateSysBoxes -> Begin (DuelsHooks.cpp)\n")
+    Duels::View::BeginSysBoxes(this);
+    super();
+    Duels::View::EndSysBoxes(this);
+}
+
+namespace
+{
+    // A beam weapon whose first point is placed: its line follows the mouse, in or out of the enemy window.
+    bool AimingBeam(CombatControl *combat)
+    {
+        ProjectileFactory *weapon = combat->weapControl.armedWeapon;
+        return weapon && weapon->blueprint && weapon->blueprint->type == 2 && !combat->aimingPoints.empty();
+    }
+
+    // A point in the opponent's ship coordinates as the screen point that FTL's own "minus the ship's origin" expects.
+    Point TargetScreenPoint(CombatControl *combat, float shipX, float shipY)
+    {
+        return Point(combat->position.x + combat->targetPosition.x + (int)std::floor(shipX),
+                     combat->position.y + combat->targetPosition.y + (int)std::floor(shipY));
+    }
+}
+
+// FTL reads lastMouse minus a ship's position here: the opponent's rooms and the beam line (UpdateAiming), and our
+// drones and rooms (weapons aimed at our own ship). The weapon buttons and system boxes got the real point before.
+HOOK_METHOD_PRIORITY(CombatControl, UpdateTarget, -2000, () -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::UpdateTarget -> Begin (DuelsHooks.cpp)\n")
+    Pointf real = lastMouse;
+    float targetX, targetY, ownX, ownY;
+    bool inside = false;
+    if (!Duels::View::TargetShipPoint(real.x, real.y, targetX, targetY, inside) ||
+        !Duels::View::OwnShipPoint(real.x, real.y, ownX, ownY))
+    {
+        return super();
+    }
+
+    bool atTarget = inside || AimingBeam(this);
+    lastMouse = atTarget ? Pointf(position.x + targetPosition.x + targetX, position.y + targetPosition.y + targetY)
+                         : Pointf(playerShipPosition.x + ownX, playerShipPosition.y + ownY);
+    bool result = super();
+    lastMouse = real;
+
+    // The other ship's arithmetic ran on a point that isn't over that ship: nothing of it is under the mouse.
+    if (atTarget)
+    {
+        currentDrone = nullptr;
+        if (selectedSelfRoom != -1 && shipManager) shipManager->ship.SetSelectedRoom(-1);
+        selectedSelfRoom = -1;
+    }
+    else
+    {
+        if (selectedRoom != -1 && currentTarget && currentTarget->shipManager) currentTarget->shipManager->ship.SetSelectedRoom(-1);
+        selectedRoom = -1;
+    }
+    return result;
+}
+
+HOOK_METHOD_PRIORITY(CombatControl, GetSelectedCrew, -2000, (int mX, int mY) -> CrewMember*)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::GetSelectedCrew -> Begin (DuelsHooks.cpp)\n")
+    float shipX, shipY;
+    bool inside = false;
+    if (!Duels::View::TargetShipPoint((float)mX, (float)mY, shipX, shipY, inside)) return super(mX, mY);
+    if (!inside) return nullptr;
+    Point point = TargetScreenPoint(this, shipX, shipY);
+    return super(point.x, point.y);
+}
+
+HOOK_METHOD_PRIORITY(CombatControl, GetSelectedCrew, -2000, (int x, int y, int firstX, int firstY) -> std::vector<CrewMember*>)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::GetSelectedCrew (area) -> Begin (DuelsHooks.cpp)\n")
+    float shipX, shipY, firstShipX, firstShipY;
+    bool inside = false, firstInside = false;
+    if (!Duels::View::TargetShipPoint((float)x, (float)y, shipX, shipY, inside) ||
+        !Duels::View::TargetShipPoint((float)firstX, (float)firstY, firstShipX, firstShipY, firstInside))
+    {
+        return super(x, y, firstX, firstY);
+    }
+    Point point = TargetScreenPoint(this, shipX, shipY);
+    Point first = TargetScreenPoint(this, firstShipX, firstShipY);
+    return super(point.x, point.y, first.x, first.y);
+}
+
+HOOK_METHOD_PRIORITY(CombatControl, GetCrewTooltip, -2000, (int x, int y) -> std::string)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::GetCrewTooltip -> Begin (DuelsHooks.cpp)\n")
+    float shipX, shipY;
+    bool inside = false;
+    if (!Duels::View::TargetShipPoint((float)x, (float)y, shipX, shipY, inside)) return super(x, y);
+    if (!inside) return std::string();
+    Point point = TargetScreenPoint(this, shipX, shipY);
+    return super(point.x, point.y);
+}
+
+// Our ship: crew selection, crew orders, doors and tooltips work in its coordinates, which FTL computes as the mouse
+// minus the ship's position, in CommandGui::MouseMove (passed on here) and GetWorldCoordinates (for clicks).
+HOOK_METHOD_PRIORITY(CrewControl, MouseMove, -2000, (int mX, int mY, int wX, int wY) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewControl::MouseMove -> Begin (DuelsHooks.cpp)\n")
+    float shipX, shipY;
+    if (Duels::View::OwnShipPoint((float)mX, (float)mY, shipX, shipY))
+    {
+        wX = (int)std::floor(shipX);
+        wY = (int)std::floor(shipY);
+    }
+    super(mX, mY, wX, wY);
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, GetWorldCoordinates, -2000, (Point point, bool fromTarget) -> Point)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::GetWorldCoordinates -> Begin (DuelsHooks.cpp)\n")
+    float shipX, shipY;
+    bool inside = false;
+    if (fromTarget && combatControl.currentTarget)
+    {
+        if (Duels::View::TargetShipPoint((float)point.x, (float)point.y, shipX, shipY, inside))
+        {
+            return Point((int)std::floor(shipX), (int)std::floor(shipY));
+        }
+    }
+    else if (Duels::View::OwnShipPoint((float)point.x, (float)point.y, shipX, shipY))
+    {
+        return Point((int)std::floor(shipX), (int)std::floor(shipY));
+    }
+    return super(point, fromTarget);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Console: F1 opens it on every keyboard. Hyperspace's key is "\", which German and many other layouts only
+// produce with AltGr, and FTL doesn't see it there. A ">" marks the input line.
+// ---------------------------------------------------------------------------------------------
+
+namespace Duels
+{
+    // The same conditions as Hyperspace's own console key (CommandConsole.cpp).
+    bool OpenConsole(CommandGui *gui)
+    {
+        CommandConsole *console = CommandConsole::GetInstance();
+        if (!console->enabled || gui->inputBox.bOpen) return false;
+        if (gui->writeErrorDialog.bOpen || gui->menuBox.bOpen || gui->gameOverScreen.bOpen) return false;
+        if (gui->shipComplete && gui->shipComplete->shipManager && gui->shipComplete->shipManager->bJumping) return false;
+        for (FocusWindow *window : gui->focusWindows)
+        {
+            if (window->bOpen) return false;
+        }
+        gui->inputBox.StartInput();
+        return true;
+    }
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::KeyDown -> Begin (DuelsHooks.cpp)\n")
+    if (key == SDLK_F1 && Duels::OpenConsole(this)) return;
+    super(key, shiftHeld);
+}
+
+// The console's text line (Hyperspace creates it without a prompt) starts with "> ".
+HOOK_METHOD_PRIORITY(InputBox, OnRender, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> InputBox::OnRender -> Begin (DuelsHooks.cpp)\n")
+    struct TextInput *input = CommandConsole::GetInstance()->textInput;   // "struct": InputBox has a TextInput() method
+    if (input && input->prompt.empty()) input->prompt = "> ";
+    super();
+}
+
+// A player ship as the duel opponent keeps the player's shield position (vanilla adds 110 px for enemies).
+HOOK_METHOD_PRIORITY(Ship, GetBaseEllipse, -2000, () -> Globals::Ellipse)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Ship::GetBaseEllipse -> Begin (DuelsHooks.cpp)\n")
+    Globals::Ellipse ellipse = super();
+    if (Duels::View::PlayerShieldPosition(iShipId)) ellipse.center.y -= 110;
+    return ellipse;
+}
+
+// The enemy window's header texts (ship class, relationship) clear the hull bar of a player ship.
+HOOK_STATIC_PRIORITY(freetype, easy_printRightAlign, -2000, (int fontSize, float x, float y, const std::string &text) -> Pointf)
+{
+    LOG_HOOK("HOOK_STATIC_PRIORITY -> freetype::easy_printRightAlign -> Begin (DuelsHooks.cpp)\n")
+    Duels::View::AdjustHeaderText(fontSize, x, y, text);
+    return super(fontSize, x, y, text);
 }

@@ -537,6 +537,9 @@ cleanup __cdecl float font_text_width(freetype::font_data& fontData, const char*
 ".55660fefc089e583e4f083ec30": // 00624fc0
 cleanup __cdecl void graphics_clear(float r, float g, float b, float a, float depth, unsigned int stencil);
 
+".5589e557565383e4f083ec208b45188b55088b4d0c8b5d10": // 006251d0
+cleanup __cdecl int graphics_read_pixels(int x, int y, int w, int h, void *buffer);
+
 ".80????????????7507c38db6000000005589e55756": // 0062a0c0
 __cdecl void input_update();
 
