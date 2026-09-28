@@ -1,0 +1,2 @@
+"578d7c240883e4f0ff77fc5589e557565389cb83ec5c8b378b7f04e8????????":  // unique sig
+__thiscall void BatterySystem::SetTurnedOn(BatterySystem *this, bool on, bool force); // 00608b80 DWARF original prototype

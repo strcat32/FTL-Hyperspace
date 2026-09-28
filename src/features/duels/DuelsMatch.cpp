@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -368,6 +369,82 @@ namespace Duels
         // State: our ship ten times a second; the replica follows
         // --------------------------------------------------------------------------------------------------------
 
+        // A system's power bars as its owner set them: from the reactor and from a running battery. (Bonus power,
+        // from Zoltan crew for example, comes with the crew on each side.)
+        static int PowerBars(const ShipSystem *system)
+        {
+            return system->powerState.first + system->iBatteryPower;
+        }
+
+        // Sets a replica system's power bars to the owner's, with the owner's lock already on it. Power goes down the
+        // way ion and damage take it (which passes locks; shields keep a lone bar only while locked, as the owner's
+        // did), and up the way the power bars add it.
+        static void SetReplicaPower(ShipManager *replica, ShipSystem *system, int level)
+        {
+            if (!system->bNeedsPower)
+            {
+                // Subsystems (piloting, sensors, doors, battery) need no reactor power, and their power can't be
+                // changed by hand; only the environment changes it (a nebula switches the sensors off).
+                system->powerState.first = std::max(0, std::min(level, system->powerState.second));
+                return;
+            }
+            for (int guard = 0; guard < 32 && PowerBars(system) != level; ++guard)
+            {
+                bool changed;
+                if (PowerBars(system) > level)
+                {
+                    changed = system->ForceDecreasePower(1);
+                }
+                else
+                {
+                    // The owner's power only rises under a lock as it ends; lift the replica's for the step.
+                    int lock = system->iLockCount;
+                    system->iLockCount = 0;
+                    changed = replica->IncreaseSystemPower(system->iSystemType);
+                    system->iLockCount = lock;
+                }
+                if (!changed) break;
+            }
+        }
+
+        // The replica's lock timers run this far behind the owner's, so a lock ends when the owner's update says so,
+        // not by the replica's own count (that would repower the system on its own).
+        static const float LOCK_TIMER_LAG_S = 0.25f;
+
+        struct SystemState { int id; int power; int health; int lock; float lockTime; float lockGoal; };
+
+        static void ApplyLocks(ShipManager *replica, const std::vector<SystemState> &systems)
+        {
+            for (const SystemState &state : systems)
+            {
+                ShipSystem *system = replica->GetSystem(state.id);
+                if (!system) continue;
+                system->iLockCount = state.lock;
+                if (state.lock > 0)
+                {
+                    system->lockTimer.running = true;
+                    system->lockTimer.currTime = std::max(0.f, state.lockTime - LOCK_TIMER_LAG_S);
+                    system->lockTimer.currGoal = state.lockGoal;
+                }
+            }
+        }
+
+        // A replica system that could not take its owner's power (logged once per new combination).
+        static void LogPowerMiss(const ShipSystem *system, int wanted)
+        {
+            static std::map<int, std::pair<int, int>> logged;
+            std::pair<int, int> now(wanted, PowerBars(system));
+            auto found = logged.find(system->iSystemType);
+            if (found != logged.end() && found->second == now) return;
+            logged[system->iSystemType] = now;
+            Log("Match: replica %s has %d power bars (reactor %d, battery %d, bonus %d, effective %d), the owner %d; "
+                "reactor %d/%d, battery power %d/%d", SystemName(system->iSystemType), now.second,
+                system->powerState.first, system->iBatteryPower, system->iBonusPower,
+                const_cast<ShipSystem*>(system)->GetEffectivePower(), wanted, PowerManager::GetPowerManager(1)->currentPower.first,
+                PowerManager::GetPowerManager(1)->currentPower.second, PowerManager::GetPowerManager(1)->batteryPower.first,
+                PowerManager::GetPowerManager(1)->batteryPower.second);
+        }
+
         static void SendState(double now)
         {
             ShipManager *ship = G_->GetShipManager(0);
@@ -385,12 +462,30 @@ namespace Duels
                 w.F32(shields->shields.charger);
             }
 
+            // Per system: power, health and the lock. Ion damage locks a system for one timer period per ion charge
+            // (lock count 1-5, its timer counts each period); a running battery holds its own lock at -1, and its
+            // cooldown afterwards is a lock like the ion one.
             w.U8((uint8_t)ship->vSystemList.size());
             for (ShipSystem *system : ship->vSystemList)
             {
                 w.U8((uint8_t)system->iSystemType);
-                w.U8((uint8_t)std::max(0, system->powerState.first));
+                w.U8((uint8_t)std::max(0, PowerBars(system)));
                 w.U8((uint8_t)std::max(0, system->healthState.first));
+                w.I8((int8_t)std::max(-1, std::min(system->iLockCount, 127)));
+                if (system->iLockCount > 0)
+                {
+                    w.F32(system->lockTimer.currTime);
+                    w.F32(system->lockTimer.currGoal);
+                }
+            }
+
+            // The backup battery: on, and how far its 30 seconds have run.
+            BatterySystem *battery = ship->batterySystem;
+            w.Bool(battery != nullptr);
+            if (battery)
+            {
+                w.Bool(battery->bTurnedOn);
+                w.F32(battery->timer.currTime);
             }
 
             std::vector<ProjectileFactory*> weapons = ship->weaponSystem ? ship->GetWeaponList() : std::vector<ProjectileFactory*>();
@@ -419,14 +514,19 @@ namespace Duels
                 shieldLayers = r.U8();
                 shieldCharge = r.F32();
             }
-            struct SystemState { int id; int power; int health; };
             std::vector<SystemState> systems(r.U8());
             for (SystemState &system : systems)
             {
                 system.id = r.U8();
                 system.power = r.U8();
                 system.health = r.U8();
+                system.lock = r.I8();
+                system.lockTime = system.lock > 0 ? r.F32() : 0.f;
+                system.lockGoal = system.lock > 0 ? r.F32() : 0.f;
             }
+            bool hasBattery = r.Bool();
+            bool batteryOn = hasBattery && r.Bool();
+            float batteryTime = hasBattery ? r.F32() : 0.f;
             struct WeaponState { bool powered; float charge; };
             std::vector<WeaponState> weapons(r.U8());
             for (WeaponState &weapon : weapons)
@@ -446,6 +546,19 @@ namespace Duels
 
             replica->ship.hullIntegrity.first = std::min(hull, replica->ship.hullIntegrity.second);
 
+            // The owner's locks first (ion, and the battery's): power is then set the way the owner's was changed.
+            ApplyLocks(replica, systems);
+
+            // The battery before the systems: the extra power it gives must be there for them to draw on. Its timer
+            // runs behind the owner's like the lock timers, so it goes off when the owner's does.
+            BatterySystem *battery = replica->batterySystem;
+            if (hasBattery && battery)
+            {
+                if (batteryOn && !battery->bTurnedOn) battery->SetTurnedOn(true, true);
+                else if (!batteryOn && battery->bTurnedOn) battery->SetTurnedOn(false, false);
+                if (battery->bTurnedOn) battery->timer.currTime = std::max(0.f, batteryTime - LOCK_TIMER_LAG_S);
+            }
+
             // Damage first, so power never exceeds what the system can hold.
             for (const SystemState &state : systems)
             {
@@ -455,14 +568,16 @@ namespace Duels
                 if (system->healthState.first != health)
                 {
                     system->healthState.first = health;
-                    if (system->powerState.first > health) SetSystemPower(replica, state.id, health);
+                    if (PowerBars(system) > health) SetReplicaPower(replica, system, health);
                 }
             }
             for (const SystemState &state : systems)
             {
                 // Weapons power follows the weapons below, one by one.
-                if (state.id == SYS_WEAPONS || !replica->GetSystem(state.id)) continue;
-                if (replica->GetSystemPower(state.id) != state.power) SetSystemPower(replica, state.id, state.power);
+                ShipSystem *system = replica->GetSystem(state.id);
+                if (state.id == SYS_WEAPONS || !system) continue;
+                if (PowerBars(system) != state.power) SetReplicaPower(replica, system, state.power);
+                if (PowerBars(system) != state.power) LogPowerMiss(system, state.power);
             }
 
             if (hasShields && replica->shieldSystem)
@@ -482,6 +597,10 @@ namespace Duels
                     weapon->cooldown.first = std::min(weapons[slot].charge, weapon->cooldown.second);
                 }
             }
+
+            // Again, as switching the battery sets its own lock. Between updates the replica counts its lock timers on
+            // (ShipSystem::OnLoop), so the lock display runs smoothly.
+            ApplyLocks(replica, systems);
             ++g_match.statesApplied;
         }
 
@@ -1054,14 +1173,17 @@ namespace Duels
             }
         }
 
-        // Everything the state sync carries, as one comparable line: hull, shields, systems (id:power/health), weapons.
+        // Everything the state sync carries, as one comparable line: hull, shields, systems (id:power/health, and
+        // Ln while locked), weapons.
         static std::string Signature(ShipManager *ship)
         {
             std::ostringstream out;
             out << ship->ship.hullIntegrity.first << ',' << (ship->shieldSystem ? ship->shieldSystem->shields.power.first : -1) << ',';
             for (ShipSystem *system : ship->vSystemList)
             {
-                out << system->iSystemType << ':' << system->powerState.first << '/' << system->healthState.first << ' ';
+                out << system->iSystemType << ':' << PowerBars(system) << '/' << system->healthState.first;
+                if (system->iLockCount != 0) out << 'L' << system->iLockCount;   // ion lock; -1 = battery running
+                out << ' ';
             }
             out << ',';
             if (ship->weaponSystem)

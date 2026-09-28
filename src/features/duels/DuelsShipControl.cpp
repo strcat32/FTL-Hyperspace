@@ -220,6 +220,82 @@ namespace Duels
         return true;
     }
 
+    // install <ship> <system>: adds a system the ship's layout has room for, at level 1 (tests, e.g. a battery).
+    static bool DoInstall(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int system = cmd.args.size() > 2 ? ParseSystem(cmd.args[2]) : -1;
+        if (system < 0)
+        {
+            message = "usage: install <ship> <system>";
+            return false;
+        }
+        if (!ship->HasSystem(system))
+        {
+            ship->AddSystem(system);
+            if (!ship->HasSystem(system))
+            {
+                message = std::string("the ship's layout has no room for ") + SYSTEM_NAMES[system];
+                return false;
+            }
+            // The player's system bar gets a box for it, as after buying one.
+            if (ship->iShipId == 0 && G_->GetWorld() && G_->GetWorld()->commandGui)
+            {
+                G_->GetWorld()->commandGui->sysControl.CreateSystemBoxes();
+            }
+        }
+        message = std::string(SYSTEM_NAMES[system]) + " level " + std::to_string(ship->GetSystem(system)->powerState.second);
+        return true;
+    }
+
+    // battery <ship> on|off: the backup battery's button.
+    static bool DoBattery(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        bool on;
+        if (!ArgOnOff(cmd, 2, on))
+        {
+            message = "usage: battery <ship> on|off";
+            return false;
+        }
+        BatterySystem *battery = ship->batterySystem;
+        if (!battery)
+        {
+            message = "ship has no battery";
+            return false;
+        }
+        battery->SetTurnedOn(on, false);
+        message = std::string("battery ") + (battery->bTurnedOn ? "on" : "off") + ", extra power " +
+                  std::to_string(PowerManager::GetPowerManager(ship->iShipId)->batteryPower.second);
+        return battery->bTurnedOn == on;
+    }
+
+    // ionize <ship> <system> <amount>: ion damage to a system, as an ion shot does (tests of the ion lock).
+    static bool DoIonize(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int system = cmd.args.size() > 2 ? ParseSystem(cmd.args[2]) : -1;
+        int amount;
+        if (system < 0 || !ArgInt(cmd, 3, amount) || amount < 1)
+        {
+            message = "usage: ionize <ship> <system> <amount>";
+            return false;
+        }
+        ShipSystem *target = ship->GetSystem(system);
+        if (!target)
+        {
+            message = std::string("ship has no ") + SYSTEM_NAMES[system];
+            return false;
+        }
+        target->IonDamage(amount);
+        message = std::string(SYSTEM_NAMES[system]) + " lock " + std::to_string(target->iLockCount) + ", power " +
+                  std::to_string(target->powerState.first);
+        return true;
+    }
+
     static bool DoWeapon(const Command &cmd, std::string &message)
     {
         ShipManager *ship = ArgShip(cmd, 1, message);
@@ -558,6 +634,9 @@ namespace Duels
         if (verb == "weapon") return DoWeapon(cmd, message);
         if (verb == "arm") return DoArm(cmd, message);
         if (verb == "upgrade") return DoUpgrade(cmd, message);
+        if (verb == "install") return DoInstall(cmd, message);
+        if (verb == "battery") return DoBattery(cmd, message);
+        if (verb == "ionize") return DoIonize(cmd, message);
         if (verb == "fire") return DoFire(cmd, message);
         if (verb == "autofire") return DoAutofire(cmd, message);
         if (verb == "crew") return DoCrew(cmd, message);
