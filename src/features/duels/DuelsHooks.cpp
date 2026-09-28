@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "Duels.h"
+#include "DuelsMatch.h"
 #include "DuelsShipControl.h"
 
 #include <boost/algorithm/string.hpp>
@@ -157,4 +158,61 @@ HOOK_METHOD_PRIORITY(CFPS, OnLoop, -1000, () -> void)
         speedLevel = 0;
     }
     super();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Network duel (DuelsMatch.cpp): shots, their timing, and hits decided by the defender.
+// All outermost, so the game's and Hyperspace's own code runs inside, unchanged, whenever the duel isn't involved.
+// ---------------------------------------------------------------------------------------------
+
+// A projectile leaves one of our weapons: tell the opponent (exact target point, spawn time).
+HOOK_METHOD_PRIORITY(ProjectileFactory, GetProjectile, -2000, () -> Projectile*)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ProjectileFactory::GetProjectile -> Begin (DuelsHooks.cpp)\n")
+    Projectile *projectile = super();
+    if (projectile && iShipId == 0) Duels::Match::OnOwnProjectile(this, projectile);
+    return projectile;
+}
+
+// Timing of the opponent's shots on our screen: 0 updates = wait, more than 1 = catch up.
+HOOK_METHOD_PRIORITY(SpaceManager, UpdateProjectile, -2000, (Projectile *projectile) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SpaceManager::UpdateProjectile -> Begin (DuelsHooks.cpp)\n")
+    int runs = Duels::Match::ProjectileUpdates(projectile);
+    int space = projectile->currentSpace;
+    for (int run = 0; run < runs; ++run)
+    {
+        super(projectile);
+        if (projectile->dead || projectile->currentSpace != space) break;
+    }
+}
+
+// Our shot at the replica waits for the defender's verdict, then plays out that verdict.
+HOOK_METHOD_PRIORITY(Projectile, CollisionCheck, -2000, (Collideable *other) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Projectile::CollisionCheck -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Match::BeginCollisionCheck(this, other)) return;
+    super(other);
+    Duels::Match::EndCollisionCheck();
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, CollisionShield, -2000, (Pointf start, Pointf finish, Damage damage, bool raytrace) -> CollisionResponse)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::CollisionShield -> Begin (DuelsHooks.cpp)\n")
+    CollisionResponse forced;
+    if (Duels::Match::ForcedShieldResponse(this, start, finish, damage, forced)) return forced;
+    CollisionResponse response = super(start, finish, damage, raytrace);
+    Duels::Match::ObserveShield(this, response);
+    return response;
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, DamageArea, -2000, (Pointf location, Damage dmg, bool forceHit) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::DamageArea -> Begin (DuelsHooks.cpp)\n")
+    bool hit = false;
+    if (Duels::Match::ForcedDamageArea(this, location, hit)) return hit;
+    int hullBefore = ship.hullIntegrity.first;
+    hit = super(location, dmg, forceHit);
+    Duels::Match::ObserveDamageArea(this, hit, hullBefore);
+    return hit;
 }

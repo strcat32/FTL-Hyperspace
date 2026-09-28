@@ -241,6 +241,9 @@ elseif(WIN32)
     # OpenGL, just raw OpenGL goodness
     target_link_libraries(Hyperspace PRIVATE OpenGL::GL)
 
+    # FTL: Duels netcode (src/features/duels/DuelsSocket.cpp)
+    target_link_libraries(Hyperspace PRIVATE ws2_32)
+
     target_compile_definitions(Hyperspace PRIVATE BUILD_DLL)
 endif()
 

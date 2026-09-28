@@ -74,6 +74,78 @@ namespace Duels
         details = Describe(window);
         return true;
     }
+
+    bool MoveGameWindow(int x, int y, std::string &details)
+    {
+        HWND window = GameWindow();
+        if (!window) return false;
+        SetWindowPos(window, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        details = Describe(window);
+        return true;
+    }
+
+    bool CaptureGameWindow(const std::string &path, std::string &details)
+    {
+        HWND window = GameWindow();
+        if (!window) return false;
+        RECT client;
+        GetClientRect(window, &client);
+        int width = client.right - client.left;
+        int height = client.bottom - client.top;
+        if (width <= 0 || height <= 0)
+        {
+            details = "the window has no area (minimized?)";
+            return true;
+        }
+
+        HDC screen = GetDC(NULL);
+        HDC memory = CreateCompatibleDC(screen);
+        BITMAPINFO info;
+        ZeroMemory(&info, sizeof(info));
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = height;   // bottom-up, as BMP files store it
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 24;
+        info.bmiHeader.biCompression = BI_RGB;
+        void *pixels = NULL;
+        HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, NULL, 0);
+        HGDIOBJ previous = SelectObject(memory, bitmap);
+        // FTL draws through Direct3D here, which PrintWindow can't read (black). Copy the window's area from the
+        // composited screen instead; that needs the window to be visible, e.g. two games side by side.
+        POINT origin = {0, 0};
+        ClientToScreen(window, &origin);
+        BOOL printed = BitBlt(memory, 0, 0, width, height, screen, origin.x, origin.y, SRCCOPY | CAPTUREBLT);
+        SelectObject(memory, previous);
+
+        bool saved = false;
+        if (printed && pixels)
+        {
+            int stride = ((width * 3 + 3) / 4) * 4;
+            BITMAPFILEHEADER file;
+            ZeroMemory(&file, sizeof(file));
+            file.bfType = 0x4D42;   // "BM"
+            file.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+            file.bfSize = file.bfOffBits + stride * height;
+            FILE *out = fopen(path.c_str(), "wb");
+            if (out)
+            {
+                fwrite(&file, sizeof(file), 1, out);
+                fwrite(&info.bmiHeader, sizeof(BITMAPINFOHEADER), 1, out);
+                fwrite(pixels, stride * height, 1, out);
+                fclose(out);
+                saved = true;
+            }
+        }
+        DeleteObject(bitmap);
+        DeleteDC(memory);
+        ReleaseDC(NULL, screen);
+
+        char buffer[160];
+        snprintf(buffer, sizeof(buffer), "%dx%d %s", width, height, saved ? "saved" : (printed ? "could not write the file" : "screen copy failed"));
+        details = buffer;
+        return true;
+    }
 }
 
 #else
@@ -82,6 +154,8 @@ namespace Duels
 {
     bool MinimizeGameWindow(std::string &details) { details = "not supported"; return false; }
     bool RestoreGameWindow(std::string &details) { details = "not supported"; return false; }
+    bool MoveGameWindow(int, int, std::string &details) { details = "not supported"; return false; }
+    bool CaptureGameWindow(const std::string &, std::string &details) { details = "not supported"; return false; }
 }
 
 #endif

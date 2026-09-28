@@ -8,10 +8,11 @@
 // FTL:Duels — 1v1 real-time PvP on top of Hyperspace.
 // Step 1 (offline replica): drive the enemy ship from commands, keep the simulation from pausing,
 // and trace frame timing and projectile flights to CSV files in the game directory.
+// Step 2 (network duel): two games over UDP; each owns its ship, the opponent is a replica (DuelsMatch.h).
 namespace Duels
 {
     // Version of the Duels module (the Hyperspace version stays upstream's, so mods' version checks keep working).
-    static const char *const VERSION = "0.1.0-dev";
+    static const char *const VERSION = "0.2.0-dev";
 
     struct State
     {

@@ -1,7 +1,10 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsMatch.h"
+#include "DuelsNet.h"
 #include "DuelsShipControl.h"
 
+#include <cstdlib>
 #include <sstream>
 
 namespace Duels
@@ -100,6 +103,67 @@ namespace Duels
         {
             // Free text marker for the log, e.g. "note opening upgrade screen now".
             message = cmd.text;
+            return true;
+        }
+
+        // Network duel
+        if (verb == "name")
+        {
+            if (cmd.raw.size() < 2) { message = "usage: name <player name>"; return false; }
+            Match::SetPlayerName(cmd.raw[1]);
+            message = "player name " + cmd.raw[1];
+            return true;
+        }
+        if (verb == "host")
+        {
+            // host [port] [local]: "local" accepts only a second game on this computer (no firewall prompt).
+            int port = Net::DEFAULT_PORT;
+            size_t next = 1;
+            if (ArgInt(cmd, next, port)) ++next;
+            bool local = ArgIs(cmd, next, "local");
+            if (port <= 0 || port > 65535) { message = "usage: host [port] [local]"; return false; }
+            return Match::Host((uint16_t)port, local, message);
+        }
+        if (verb == "join")
+        {
+            int port = Net::DEFAULT_PORT;
+            if (cmd.raw.size() < 2 || (cmd.args.size() > 2 && !ArgInt(cmd, 2, port)) || port <= 0 || port > 65535)
+            {
+                message = "usage: join <address> [port]";
+                return false;
+            }
+            return Match::Join(cmd.raw[1], (uint16_t)port, message);
+        }
+        if (verb == "leave")
+        {
+            Match::Leave();
+            message = "left";
+            return true;
+        }
+        if (verb == "net")
+        {
+            message = Match::Status();
+            Log("%s", message.c_str());
+            return true;
+        }
+        if (verb == "netsim")
+        {
+            // netsim <delay ms> [jitter ms] [loss %]: test conditions for our outgoing packets
+            if (cmd.args.size() < 2) { message = "usage: netsim <delay ms> [jitter ms] [loss %]"; return false; }
+            double delay = std::atof(cmd.args[1].c_str());
+            double jitter = cmd.args.size() > 2 ? std::atof(cmd.args[2].c_str()) : 0.0;
+            double loss = cmd.args.size() > 3 ? std::atof(cmd.args[3].c_str()) : 0.0;
+            Net::Simulate(delay, jitter, loss);
+            message = "simulating " + cmd.args[1] + " ms delay";
+            return true;
+        }
+        if (verb == "say")
+        {
+            std::string text = cmd.text.substr(cmd.text.find("say") + 3);
+            size_t start = text.find_first_not_of(' ');
+            text = start == std::string::npos ? "" : text.substr(start);
+            if (!Match::Say(text)) { message = "not connected"; return false; }
+            message = "said: " + text;
             return true;
         }
 

@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsMatch.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
 
@@ -119,6 +120,7 @@ namespace Duels
     void OnFrame()
     {
         if (++g_frame == 1) Log("FTL:Duels module %s loaded", VERSION);
+        Match::OnFrame(WallMs());
         RunDueScriptCommands();
         AutotestOnFrame();
         TraceFrame();
@@ -133,6 +135,7 @@ namespace Duels
 
     void Shutdown()
     {
+        Match::Leave();
         g_state.trace = false;
         g_frames.Close();
         CloseProjectileTrace();

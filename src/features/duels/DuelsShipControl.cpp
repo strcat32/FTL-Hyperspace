@@ -102,6 +102,31 @@ namespace Duels
     }
 
     // -----------------------------------------------------------------------------------------
+    // Shared helpers
+    // -----------------------------------------------------------------------------------------
+
+    bool SetSystemPower(ShipManager *ship, int system, int level)
+    {
+        // User-style changes, like the power bars in the UI. ForceDecreaseSystemPower is the ion/damage path:
+        // the game restores that power on its own later (Step 1 finding).
+        ShipSystem *shipSystem = ship->GetSystem(system);
+        if (!shipSystem) return false;
+        for (int guard = 0; guard < 32; ++guard)
+        {
+            int power = ship->GetSystemPower(system);
+            if (power == level) break;
+            bool changed = power < level ? ship->IncreaseSystemPower(system) : shipSystem->DecreasePower(false);
+            if (!changed) break;
+        }
+        return ship->GetSystemPower(system) == level;
+    }
+
+    const char *SystemName(int system)
+    {
+        return system >= 0 && system < SYSTEM_COUNT ? SYSTEM_NAMES[system] : "?";
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Verbs
     // -----------------------------------------------------------------------------------------
 
@@ -122,21 +147,10 @@ namespace Duels
             return false;
         }
 
-        // User-style changes, like the power bars in the UI. ForceDecreaseSystemPower is the ion/damage path:
-        // the game restores that power on its own later (Step 1 finding).
-        ShipSystem *shipSystem = ship->GetSystem(system);
-        for (int guard = 0; guard < 32; ++guard)
-        {
-            int power = ship->GetSystemPower(system);
-            if (power == level) break;
-            bool changed = power < level ? ship->IncreaseSystemPower(system) : shipSystem->DecreasePower(false);
-            if (!changed) break;
-        }
-
-        int power = ship->GetSystemPower(system);
-        message = std::string(SYSTEM_NAMES[system]) + " power " + std::to_string(power) + "/" +
+        bool reached = SetSystemPower(ship, system, level);
+        message = std::string(SYSTEM_NAMES[system]) + " power " + std::to_string(ship->GetSystemPower(system)) + "/" +
                   std::to_string(ship->GetSystemPowerMax(system));
-        return power == level;
+        return reached;
     }
 
     static bool DoWeapon(const Command &cmd, std::string &message)
@@ -288,7 +302,7 @@ namespace Duels
         return true;
     }
 
-    static bool SpawnEnemy(const std::string &blueprint, std::string &message)
+    bool SpawnEnemy(const std::string &blueprint, std::string &message)
     {
         WorldManager *world = G_->GetWorld();
         CommandGui *gui = world ? world->commandGui : nullptr;
@@ -369,8 +383,14 @@ namespace Duels
         for (int system = 0; system < SYSTEM_COUNT; ++system)
         {
             if (!ship->HasSystem(system)) continue;
-            Log("  system %-10s room %2d power %d/%d", SYSTEM_NAMES[system], ship->GetSystemRoom(system),
-                ship->GetSystemPower(system), ship->GetSystemPowerMax(system));
+            ShipSystem *shipSystem = ship->GetSystem(system);
+            Log("  system %-10s room %2d power %d/%d health %d/%d", SYSTEM_NAMES[system], ship->GetSystemRoom(system),
+                ship->GetSystemPower(system), ship->GetSystemPowerMax(system), shipSystem->healthState.first,
+                shipSystem->healthState.second);
+        }
+        if (ship->shieldSystem)
+        {
+            Log("  shield layers %d charge %.2f", ship->shieldSystem->shields.power.first, ship->shieldSystem->shields.charger);
         }
         if (ship->weaponSystem)
         {
@@ -433,9 +453,39 @@ namespace Duels
         return true;
     }
 
+    static bool DoWindow(const Command &cmd, std::string &message)
+    {
+        int x, y;
+        if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y))
+        {
+            message = "usage: window <x> <y>";
+            return false;
+        }
+        std::string details;
+        bool found = MoveGameWindow(x, y, details);
+        message = found ? "window moved: " + details : "game window not found";
+        return found;
+    }
+
+    static bool DoScreenshot(const Command &cmd, std::string &message)
+    {
+        std::string path = Raw(cmd, 1);
+        if (path.empty())
+        {
+            message = "usage: screenshot <file.bmp>";
+            return false;
+        }
+        std::string details;
+        bool found = CaptureGameWindow(path, details);
+        message = found ? path + ": " + details : "game window not found";
+        return found;
+    }
+
     bool ExecuteShipCommand(const Command &cmd, std::string &message)
     {
         const std::string &verb = cmd.args[0];
+        if (verb == "window") return DoWindow(cmd, message);
+        if (verb == "screenshot") return DoScreenshot(cmd, message);
         if (verb == "power") return DoPower(cmd, message);
         if (verb == "weapon") return DoWeapon(cmd, message);
         if (verb == "fire") return DoFire(cmd, message);

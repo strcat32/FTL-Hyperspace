@@ -12,6 +12,15 @@ namespace Duels
     // describe, pausetest, quit. Ship ids are 0 (player) and 1 (enemy); "the opponent" is 1 - id.
     bool ExecuteShipCommand(const Command &cmd, std::string &message);
 
+    // Spawns a ship blueprint (a player ship, too) as the enemy, ship 1.
+    bool SpawnEnemy(const std::string &blueprint, std::string &message);
+
+    // Sets a system's power the way the player's power bars do. Returns true if the level was reached.
+    bool SetSystemPower(ShipManager *ship, int system, int level);
+
+    // "shields", "engines", ... for system ids 0-15.
+    const char *SystemName(int system);
+
     // Called from the ShipAI::OnLoop hook while a ship's AI is replaced by commands.
     // Clears whatever the AI had aimed, once per ship.
     void OnAiTakeover(ShipManager *ship);
