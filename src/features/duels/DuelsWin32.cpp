@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 namespace Duels
 {
@@ -102,6 +103,46 @@ namespace Duels
         details = Describe(window);
         return true;
     }
+
+    bool MapToTestDisplay(int &x, int &y, int &width, int &height)
+    {
+        const char *display = getenv("DUELS_DISPLAY");
+        int left, top, displayWidth, displayHeight;
+        if (!display || sscanf(display, "%d,%d,%d,%d", &left, &top, &displayWidth, &displayHeight) != 4) return false;
+        double scale = 1.0;
+        if (const char *text = getenv("DUELS_DISPLAY_SCALE")) scale = atof(text);
+        if (!(scale > 0.1 && scale <= 1.0)) scale = 1.0;
+        if ((width <= 0 || height <= 0) && scale < 1.0)
+        {
+            width = 1280;
+            height = 720;
+        }
+        x = left + (int)(x * scale);
+        y = top + (int)(y * scale);
+        if (width > 0 && height > 0)
+        {
+            width = (int)(width * scale);
+            height = (int)(height * scale);
+        }
+        return true;
+    }
+
+    void PlaceOnTestDisplay()
+    {
+        static bool placed = false;
+        if (placed) return;
+        const char *position = getenv("DUELS_WINDOW");
+        int x, y;
+        if (!position || sscanf(position, "%d,%d", &x, &y) != 2)
+        {
+            placed = true;   // not asked for
+            return;
+        }
+        int width = 0, height = 0;
+        std::string details;
+        if (!MapToTestDisplay(x, y, width, height)) return;
+        placed = MoveGameWindow(x, y, width, height, details);
+    }
 }
 
 #else
@@ -111,6 +152,8 @@ namespace Duels
     bool MinimizeGameWindow(std::string &details) { details = "not supported"; return false; }
     bool RestoreGameWindow(std::string &details) { details = "not supported"; return false; }
     bool MoveGameWindow(int, int, int, int, std::string &details) { details = "not supported"; return false; }
+    bool MapToTestDisplay(int &, int &, int &, int &) { return false; }
+    void PlaceOnTestDisplay() {}
     bool SetGameWindowTitle(const char *, std::string &details) { details = "not supported"; return false; }
 }
 

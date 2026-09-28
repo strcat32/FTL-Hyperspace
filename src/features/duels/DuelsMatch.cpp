@@ -4,6 +4,7 @@
 #include "HSVersion.h"
 #include "Systems.h"
 #include "Duels.h"
+#include "DuelsConsole.h"
 #include "DuelsDrones.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
@@ -141,6 +142,7 @@ namespace Duels
             double lastStateSent = -1.0e9;
             bool stateDirty = false;
             uint32_t statesApplied = 0;
+            std::map<int, int> subsystemPower;   // the owner's, by system id (piloting, sensors, doors, battery)
 
             uint32_t nextNetId = 1;
             std::vector<OutShot> out;
@@ -170,6 +172,7 @@ namespace Duels
             m.havePeerState = false;
             m.stateDirty = false;
             m.statesApplied = 0;
+            m.subsystemPower.clear();
             m.out.clear();
             m.in.clear();
             for (int i = 0; i < MAX_SLOTS; ++i)
@@ -186,7 +189,7 @@ namespace Duels
         static void Announce(const std::string &text)
         {
             Log("Match: %s", text.c_str());
-            PrintHelper::GetInstance()->AddMessage("DUEL: " + text);
+            Console::Print("DUEL: " + text);
         }
 
         static bool InGame()
@@ -318,6 +321,9 @@ namespace Duels
             {
                 Log("Match: an enemy (%s) is already present; it stays", replica->myBlueprint.blueprintName.c_str());
             }
+            // The replica's shields go where the player's own ship has them (DuelsView) from the moment it exists:
+            // our combat drones pick their orbit from its shield ellipse as soon as it is our target.
+            View::UsePlayerShieldPosition(nullptr);
             if (!replica)
             {
                 std::string message;
@@ -398,6 +404,15 @@ namespace Duels
             if (replica->droneSystem) replica->ModifyDroneCount(droneParts - replica->GetDroneCount());
 
             View::UsePlayerShieldPosition(replica);
+            // Combat drones already bound to it took their waypoint from its shields before they moved; they take a
+            // new one around the right ellipse (else the first shot can start inside the shields).
+            if (ShipManager *own = G_->GetShipManager(0))
+            {
+                for (SpaceDrone *drone : own->spaceDrones)
+                {
+                    if (drone->type == 1 && drone->movementTarget == &replica->_targetable) drone->SetMovementTarget(&replica->_targetable);
+                }
+            }
             g_match.opponentShip = blueprint;
             g_match.replicaReady = true;
             Net::Send(MSG_READY, Writer(), true);
@@ -423,7 +438,8 @@ namespace Duels
             if (!system->bNeedsPower)
             {
                 // Subsystems (piloting, sensors, doors, battery) need no reactor power, and their power can't be
-                // changed by hand; only the environment changes it (a nebula switches the sensors off).
+                // changed by hand; only the environment changes it (a nebula switches the sensors off). This game's
+                // loop sets it again every frame from this game's environment, so HoldReplicaSubsystems holds it.
                 system->powerState.first = std::max(0, std::min(level, system->powerState.second));
                 return;
             }
@@ -443,6 +459,19 @@ namespace Duels
                     system->iLockCount = lock;
                 }
                 if (!changed) break;
+            }
+        }
+
+        void HoldReplicaSubsystems(ShipManager *ship)
+        {
+            if (!ship || ship->iShipId != 1 || !g_match.replicaReady || ship != G_->GetShipManager(1)) return;
+            for (const std::pair<const int, int> &entry : g_match.subsystemPower)
+            {
+                ShipSystem *system = ship->GetSystem(entry.first);
+                if (system && !system->bNeedsPower)
+                {
+                    system->powerState.first = std::max(0, std::min(entry.second, system->powerState.second));
+                }
             }
         }
 
@@ -625,6 +654,7 @@ namespace Duels
                 // raising drone power by itself would launch the replica's drones in slot order.
                 ShipSystem *system = replica->GetSystem(state.id);
                 if (state.id == SYS_WEAPONS || state.id == SYS_DRONES || !system) continue;
+                if (!system->bNeedsPower) g_match.subsystemPower[state.id] = state.power;
                 if (PowerBars(system) != state.power) SetReplicaPower(replica, system, state.power);
                 if (PowerBars(system) != state.power) LogPowerMiss(system, state.power);
             }
@@ -902,6 +932,26 @@ namespace Duels
             Projectile *projectile = nullptr;
             if (fromDrone)
             {
+                // A drone fires from its orbit, outside our shields; a shot from inside them would pass them unseen.
+                // One claimed from inside (a bug, or a changed game) is moved out onto the combat drones' orbit,
+                // 1.15 x the shield ellipse, along the line from the ellipse's centre.
+                Globals::Ellipse shields = own->ship.GetBaseEllipse();
+                float dx = origin.x - shields.center.x, dy = origin.y - shields.center.y;
+                float radius = shields.a > 0.f && shields.b > 0.f
+                    ? std::sqrt(dx * dx / (shields.a * shields.a) + dy * dy / (shields.b * shields.b)) : 2.f;
+                if (radius < 1.f)
+                {
+                    if (radius < 0.001f)
+                    {
+                        dx = 0.f;
+                        dy = -shields.b;
+                        radius = 1.f;
+                    }
+                    Pointf moved(shields.center.x + dx * 1.15f / radius, shields.center.y + dy * 1.15f / radius);
+                    Log("Match: drone shot %u starts inside our shields at (%.0f, %.0f); moved out to (%.0f, %.0f)", netId,
+                        origin.x, origin.y, moved.x, moved.y);
+                    origin = moved;
+                }
                 // As SpaceDrone::GetNextProjectile builds it: in our space from the start, at the drone, owned by the
                 // replica (the constructor takes the space as the owner).
                 switch (type)
@@ -1354,6 +1404,24 @@ namespace Duels
         }
 
         // Shots whose projectile is gone are logged and forgotten; transfers feed the timing estimates.
+        // The duel ends (leave, disconnect, quit) with shots still flying: they go into duels_shots.csv as they stand.
+        static void FlushShotLog()
+        {
+            MatchState &m = g_match;
+            for (const OutShot &shot : m.out)
+            {
+                LogShot("out", shot.netId, shot.weapon, shot.spawnMs, -1.0, shot.transferMs, -1.0, shot.holdStartMs, -1.0,
+                        shot.verdictMs, shot.verdict, shot.damage, 1);
+            }
+            for (const InShot &shot : m.in)
+            {
+                LogShot("in", shot.netId, shot.weapon, shot.spawnMs, shot.receivedMs, shot.transferMs, shot.releasedMs, -1.0,
+                        shot.decisionMs, -1.0, shot.outcome, shot.damage, shot.speedUp);
+            }
+            m.out.clear();
+            m.in.clear();
+        }
+
         static void TrackShots(double now)
         {
             MatchState &m = g_match;
@@ -1524,9 +1592,15 @@ namespace Duels
                 Announce("connected to " + Net::PeerName() + (Net::IsHost() ? " (you host)" : ""));
             }
 
+            void OnNotice(const std::string &text) override
+            {
+                Announce(text);
+            }
+
             void OnDisconnected(const std::string &reason) override
             {
                 Announce("disconnected: " + reason);
+                FlushShotLog();
                 ResetMatch();
             }
 
@@ -1629,8 +1703,23 @@ namespace Duels
             return Net::Join(host, port, message);
         }
 
+        bool HostRelay(const std::string &server, uint16_t port, std::string &message)
+        {
+            Init();
+            ResetMatch();
+            return Net::HostRelay(server, port, message);
+        }
+
+        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message)
+        {
+            Init();
+            ResetMatch();
+            return Net::JoinRelay(server, port, code, message);
+        }
+
         void Leave()
         {
+            FlushShotLog();
             Net::Leave("left the duel");
             ResetMatch();
         }

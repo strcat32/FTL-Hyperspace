@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "Duels.h"
+#include "DuelsConsole.h"
 #include "DuelsDrones.h"
 #include "DuelsNet.h"
 #include "DuelsTrace.h"
@@ -18,8 +19,12 @@ namespace Duels
 {
     namespace Drones
     {
-        // Puppets are drawn this far behind their owner's state: one update interval, plus room for jitter.
-        static const double INTERPOLATION_DELAY_MS = 150.0;
+        // Puppets are drawn behind their owner's updates by how old those are when they arrive (the latency), plus one
+        // update interval and room for jitter, so there is always an update ahead to move towards. When one is lost,
+        // they go on along their last movement for a while.
+        static const double UPDATE_INTERVAL_MS = 100.0;
+        static const double JITTER_ROOM_MS = 40.0;
+        static const double MAX_EXTRAPOLATION_MS = 150.0;
         static const size_t MAX_SAMPLES = 16;
 
         // Per drone slot in the state message.
@@ -85,6 +90,8 @@ namespace Duels
             std::vector<TrackedShot> own;          // our drones' shots in our space
             std::set<std::string> notNetworked;    // drones announced as not networked yet
             uint32_t hitsSent = 0, hitsReceived = 0, shotCopies = 0;
+            double updateAgeMs = -1.0;             // how old the owner's updates are when they arrive (smoothed)
+            CsvFile trace;                         // duels_drones.csv with "trace on": where each puppet is drawn
         };
 
         static DroneState g_drones;
@@ -97,6 +104,7 @@ namespace Duels
             g_drones.visual.clear();
             g_drones.own.clear();
             g_drones.notNetworked.clear();
+            g_drones.updateAgeMs = -1.0;
         }
 
         // The replica's AI is replaced while it is a duel opponent (or a command-driven enemy).
@@ -165,7 +173,7 @@ namespace Duels
                     g_drones.notNetworked.insert(drone->blueprint->name).second)
                 {
                     Log("Drones: %s is not networked yet", drone->blueprint->name.c_str());
-                    PrintHelper::GetInstance()->AddMessage("DUEL: " + drone->blueprint->name + " is not networked yet; the opponent won't see it");
+                    Console::Print("DUEL: " + drone->blueprint->name + " is not networked yet; the opponent won't see it");
                 }
                 uint8_t flags = 0;
                 if (drone->powered) flags |= FLAG_POWERED;
@@ -252,6 +260,10 @@ namespace Duels
         {
             if (!g_drones.havePending) return;
             g_drones.havePending = false;
+            // Rises at once with a late update, settles slowly: the puppets' delay follows the worst recent latency.
+            double age = std::max(0.0, WallMs() - localTime);
+            double &smoothed = g_drones.updateAgeMs;
+            smoothed = smoothed < 0.0 || age > smoothed ? age : smoothed * 0.98 + age * 0.02;
             ShipManager *replica = G_->GetShipManager(1);
             if (!replica || !replica->droneSystem) return;
             std::vector<Drone*> &drones = replica->droneSystem->drones;
@@ -337,15 +349,35 @@ namespace Duels
             return angle;
         }
 
-        static Sample Interpolate(const std::deque<Sample> &samples, double t)
+        // How a puppet's place was found this frame (for the trace).
+        enum class Fit { Before, Between, Ahead, Held };
+
+        static Sample Interpolate(const std::deque<Sample> &samples, double t, Fit &fit)
         {
+            fit = Fit::Before;
             if (t <= samples.front().t) return samples.front();
+            const Sample &last = samples.back();
+            fit = Fit::Held;
+            if (t > last.t && samples.size() >= 2)
+            {
+                // No update yet for this moment (a lost or late one): on along the last movement, for a while.
+                const Sample &before = samples[samples.size() - 2];
+                double span = last.t - before.t;
+                if (span <= 1.0) return last;
+                fit = t - last.t <= MAX_EXTRAPOLATION_MS ? Fit::Ahead : Fit::Held;
+                float f = (float)(std::min(t - last.t, MAX_EXTRAPOLATION_MS) / span);
+                Sample s = last;
+                s.x = last.x + (last.x - before.x) * f;
+                s.y = last.y + (last.y - before.y) * f;
+                return s;
+            }
             for (size_t i = 1; i < samples.size(); ++i)
             {
                 const Sample &b = samples[i];
                 if (b.t < t) continue;
                 const Sample &a = samples[i - 1];
                 float f = (float)((t - a.t) / std::max(1.0, b.t - a.t));
+                fit = Fit::Between;
                 Sample s = b;
                 s.x = a.x + (b.x - a.x) * f;
                 s.y = a.y + (b.y - a.y) * f;
@@ -381,7 +413,8 @@ namespace Duels
             if (!replica || !replica->droneSystem || !Replaced()) return;
             std::vector<Drone*> &drones = replica->droneSystem->drones;
             if (g_drones.puppets.size() != drones.size()) g_drones.puppets.resize(drones.size());
-            double renderTime = WallMs() - INTERPOLATION_DELAY_MS;
+            double delay = std::max(0.0, g_drones.updateAgeMs) + UPDATE_INTERVAL_MS + JITTER_ROOM_MS;
+            double renderTime = WallMs() - delay;
 
             for (size_t slot = 0; slot < drones.size(); ++slot)
             {
@@ -393,7 +426,16 @@ namespace Duels
                 Puppet &puppet = g_drones.puppets[slot];
                 if (puppet.samples.empty() || space->explosion.tracker.running) continue;
 
-                Sample s = Interpolate(puppet.samples, renderTime);
+                Fit fit;
+                Sample s = Interpolate(puppet.samples, renderTime, fit);
+                if (GetState().trace)
+                {
+                    static const char *const FITS[] = {"before", "between", "ahead", "held"};
+                    if (!g_drones.trace.IsOpen()) g_drones.trace.Open("duels_drones.csv", "wall_ms,slot,x,y,fit,delay_ms,updates");
+                    Row row;
+                    row << WallMs() << slot << s.x << s.y << FITS[(int)fit] << delay << puppet.samples.size();
+                    g_drones.trace.WriteRow(row.str());
+                }
                 // Combat drones fly around the opponent's target (our ship, space 0), the others around their own ship.
                 int spaceId = (puppet.flags & FLAG_TARGET_SPACE) ? 0 : 1;
                 space->currentSpace = spaceId;

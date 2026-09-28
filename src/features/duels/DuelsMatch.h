@@ -34,6 +34,9 @@ namespace Duels
         void SetPlayerName(const std::string &name);
         bool Host(uint16_t port, bool loopbackOnly, std::string &message);
         bool Join(const std::string &host, uint16_t port, std::string &message);
+        // Through a relay server: the host gets a room code to give the other player, who joins with it.
+        bool HostRelay(const std::string &server, uint16_t port, std::string &message);
+        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message);
         void Leave();
         bool Say(const std::string &text);
         std::string Status();
@@ -75,5 +78,10 @@ namespace Duels
         // Beams (ShipManager::DamageBeam): ours sweeps the replica without damage; the defender's is reported when over.
         void MuteBeamDamage(ShipManager *ship, Damage &damage);
         void ObserveBeam(ShipManager *ship, bool hit, int hullBefore);
+
+        // After ShipManager::OnLoop: the replica's subsystems (piloting, sensors, doors, battery) keep their owner's
+        // power. This game's loop sets them from this game's environment, which isn't the owner's (a nebula here or
+        // there switches the sensors off).
+        void HoldReplicaSubsystems(ShipManager *ship);
     }
 }

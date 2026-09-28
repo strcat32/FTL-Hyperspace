@@ -1,6 +1,7 @@
 #include "DuelsNet.h"
 #include "Duels.h"
 #include "DuelsLink.h"
+#include "DuelsRelay.h"
 #include "DuelsSocket.h"
 #include "DuelsTrace.h"
 
@@ -46,6 +47,12 @@ namespace Duels
             double phaseStart = 0.0;
             double now = 0.0;
 
+            // Through a relay: `peer` is the relay then, and link packets travel inside its DATA packets.
+            bool relay = false;
+            Relay::Client relayClient;
+            std::string relayCode;
+            std::string relayServer;   // the relay's address as typed
+
             // Test conditions
             double delayMs = 0.0;
             double jitterMs = 0.0;
@@ -74,11 +81,24 @@ namespace Duels
 
         static void Close()
         {
-            g_session.socket.Close();
-            g_session.outbox.clear();
-            g_session.peer = NetAddress();
-            g_session.peerName.clear();
+            Session &s = g_session;
+            // Leaving a relay room at once, rather than letting it time out.
+            std::vector<uint8_t> leave;
+            if (s.relay && s.relayClient.Leave(leave) && s.socket.IsOpen()) s.socket.SendTo(s.peer, leave.data(), leave.size());
+            s.relay = false;
+            s.relayClient.Reset();
+            s.relayCode.clear();
+            s.socket.Close();
+            s.outbox.clear();
+            s.peer = NetAddress();
+            s.peerName.clear();
             SetPhase(Phase::Idle);
+        }
+
+        static void Notice(const std::string &text)
+        {
+            Log("Net: %s", text.c_str());
+            if (g_session.listener) g_session.listener->OnNotice(text);
         }
 
         static void SendControl(uint8_t type, const Writer &body)
@@ -97,15 +117,41 @@ namespace Duels
             writer.Str(g_session.name);
         }
 
-        // Pushes the link's packets through the simulated conditions to the socket.
+        // Pushes the link's packets through the simulated conditions to the socket (through the relay: inside its
+        // DATA packets, and with its handshake and pings).
         static void Flush()
         {
             Session &s = g_session;
             std::vector<Link::Bytes> packets;
+            if (s.relay)
+            {
+                std::vector<std::vector<uint8_t>> control;
+                std::vector<Relay::Event> events;
+                s.relayClient.Update(s.now, control, events);
+                for (const std::vector<uint8_t> &packet : control) s.socket.SendTo(s.peer, packet.data(), packet.size());
+                if (!events.empty())
+                {
+                    Notice("relay: " + events.front().text);
+                    Close();
+                    return;
+                }
+                // Nothing for the other player before the room exists (reliable messages wait in the link).
+                if (s.relayClient.GetState() != Relay::State::InRoom) return;
+            }
             s.link.Update(s.now, packets);
+            if (s.relay)
+            {
+                for (Link::Bytes &packet : packets)
+                {
+                    Link::Bytes wrapped;
+                    if (s.relayClient.Wrap(packet.data(), packet.size(), wrapped)) packet.swap(wrapped);
+                    else packet.clear();
+                }
+            }
             std::uniform_real_distribution<double> unit(0.0, 1.0);
             for (Link::Bytes &packet : packets)
             {
+                if (packet.empty()) continue;
                 if (s.lossPercent > 0.0 && unit(s.random) * 100.0 < s.lossPercent)
                 {
                     ++s.simulatedLosses;
@@ -307,6 +353,128 @@ namespace Duels
             return true;
         }
 
+        static bool OpenRelay(const std::string &server, uint16_t port, std::string &message)
+        {
+            Session &s = g_session;
+            if (s.phase != Phase::Idle) Disconnect("starting a new session", true);
+            NetAddress address;
+            std::string error;
+            if (!ResolveAddress(server, port, address, error))
+            {
+                message = error;
+                return false;
+            }
+            if (!s.socket.Open(0, IsLoopback(address), error))
+            {
+                message = "cannot open a UDP socket: " + error;
+                return false;
+            }
+            s.relay = true;
+            s.peer = address;
+            // As typed, for the other player (with the port if it isn't the usual one; an IPv6 address in brackets).
+            s.relayServer = server;
+            if (port != Relay::DEFAULT_PORT)
+            {
+                s.relayServer = (server.find(':') != std::string::npos ? "[" + server + "]" : server) + ":" + std::to_string(port);
+            }
+            s.random.seed(NewSessionId());
+            return true;
+        }
+
+        bool HostRelay(const std::string &server, uint16_t port, std::string &message)
+        {
+            Session &s = g_session;
+            if (!OpenRelay(server, port, message)) return false;
+            s.host = true;
+            s.link.Reset(0, s.now);
+            s.relayClient.Create(s.name, s.version, s.now);
+            SetPhase(Phase::Hosting);
+            message = "asking the relay " + s.peer.ToString() + " for a room";
+            Log("Net: %s", message.c_str());
+            return true;
+        }
+
+        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message)
+        {
+            Session &s = g_session;
+            if (!Relay::Client::IsRoomCode(code))
+            {
+                message = "a room code has 6 letters and digits, e.g. K7M4QX";
+                return false;
+            }
+            if (!OpenRelay(server, port, message)) return false;
+            s.host = false;
+            s.link.Reset(NewSessionId(), s.now);
+            s.relayClient.Join(code, s.name, s.version, s.now);
+            SetPhase(Phase::Joining);
+            message = "joining room " + code + " at the relay " + s.peer.ToString();
+            Log("Net: %s", message.c_str());
+            return true;
+        }
+
+        bool UsesRelay() { return g_session.relay; }
+        std::string RelayCode() { return g_session.relayCode; }
+        uint64_t MatchSeed() { return g_session.relay ? g_session.relayClient.MatchSeed() : 0; }
+
+        // A packet from the relay: link packets inside go on as if they came from the other player; its own events
+        // steer the session.
+        static bool FromRelay(const uint8_t *data, size_t size, Link::Bytes &payload)
+        {
+            Session &s = g_session;
+            std::vector<Relay::Event> events;
+            bool isPayload = s.relayClient.Receive(data, size, s.now, payload, events);
+            for (const Relay::Event &event : events)
+            {
+                switch (event.kind)
+                {
+                case Relay::Event::RoomCreated:
+                    s.relayCode = event.text;
+                    // The other player needs the relay's address as they reach it; a relay on this computer has
+                    // another one for them.
+                    if (IsLoopback(s.peer))
+                    {
+                        Notice("room " + event.text + " is open at the relay on this computer. The other player types:  join relay " +
+                               event.text + " <this computer's address>");
+                    }
+                    else
+                    {
+                        Notice("room " + event.text + " is open at the relay. The other player types:  join relay " + event.text +
+                               " " + s.relayServer);
+                    }
+                    break;
+                case Relay::Event::RoomJoined:
+                {
+                    s.relayCode = s.relayClient.Code();
+                    Log("Net: in room %s at the relay (host %s)", s.relayCode.c_str(), event.text.c_str());
+                    Writer body;
+                    WriteIdentity(body);
+                    SendControl(MSG_HELLO, body);
+                    break;
+                }
+                case Relay::Event::PeerJoined:
+                    Log("Net: %s entered the room", event.text.c_str());
+                    break;
+                case Relay::Event::PeerLeft:
+                    if (s.phase == Phase::Connected)
+                    {
+                        Disconnect("the other player left the relay", false);
+                        return false;
+                    }
+                    // Still waiting for the handshake: wait for the next guest.
+                    s.link.Reset(0, s.now);
+                    break;
+                case Relay::Event::RoomClosing:
+                    Disconnect("the relay closed the room", false);
+                    return false;
+                case Relay::Event::Error:
+                    Notice("relay: " + event.text);
+                    Close();
+                    return false;
+                }
+            }
+            return isPayload;
+        }
+
         void Leave(const std::string &reason)
         {
             if (g_session.phase == Phase::Idle) return;
@@ -326,6 +494,33 @@ namespace Duels
                 NetAddress from;
                 int size = s.socket.ReceiveFrom(from, buffer, sizeof(buffer));
                 if (size <= 0) break;
+
+                if (s.relay)
+                {
+                    if (from != s.peer) continue;
+                    Link::Bytes payload;
+                    if (!FromRelay(buffer, (size_t)size, payload))
+                    {
+                        if (s.phase == Phase::Idle) return;
+                        continue;
+                    }
+                    // The first packet of a guest opens the host's link session, as below.
+                    if (s.phase == Phase::Hosting && s.link.SessionId() == 0)
+                    {
+                        uint32_t sessionId = Link::PeekSession(payload.data(), payload.size());
+                        if (sessionId == 0) continue;
+                        s.link.Reset(sessionId, now);
+                        Log("Net: the other player's first packet came through the relay, starting the handshake");
+                    }
+                    delivered.clear();
+                    if (!s.link.Receive(payload.data(), payload.size(), now, delivered)) continue;
+                    for (const Link::Bytes &message : delivered)
+                    {
+                        HandleMessage(message);
+                        if (s.phase == Phase::Idle) return;
+                    }
+                    continue;
+                }
 
                 if (s.phase == Phase::Hosting && !s.peer.Valid())
                 {
@@ -347,14 +542,16 @@ namespace Duels
                 }
             }
 
-            if (s.phase == Phase::Hosting && s.peer.Valid() && now - s.link.LastReceiveTime() > JOIN_TIMEOUT_MS)
+            if (s.phase == Phase::Hosting && s.peer.Valid() && s.link.SessionId() != 0 && s.link.HasReceived() &&
+                now - s.link.LastReceiveTime() > JOIN_TIMEOUT_MS)
             {
                 // A handshake that never completed: wait for the next player instead.
                 Log("Net: %s went quiet during the handshake", s.peer.ToString().c_str());
-                s.peer = NetAddress();
+                if (!s.relay) s.peer = NetAddress();
                 s.link.Reset(0, now);
             }
-            if (s.phase == Phase::Joining && now - s.phaseStart > JOIN_TIMEOUT_MS)
+            // (Through a relay the join may first wait for the relay; its own handshake has a timeout.)
+            if (s.phase == Phase::Joining && now - s.phaseStart > JOIN_TIMEOUT_MS * (s.relay ? 2.0 : 1.0))
             {
                 Log("Net: no answer from %s", s.peer.ToString().c_str());
                 Close();
@@ -387,7 +584,23 @@ namespace Duels
                      s.peerName.empty() ? "-" : s.peerName.c_str(), s.link.RttMs(), s.link.BestRttMs(),
                      s.link.ClockOffsetMs(), st.packetsSent, st.packetsReceived, st.reliableResent,
                      (unsigned)s.link.PendingReliable(), s.delayMs, s.jitterMs, s.lossPercent, s.simulatedLosses);
-            return buffer;
+            std::string text = buffer;
+            if (s.relay)
+            {
+                snprintf(buffer, sizeof(buffer), " | through the relay %s, room %s, ", s.peer.ToString().c_str(),
+                         s.relayCode.empty() ? "(none yet)" : s.relayCode.c_str());
+                text += buffer;
+                if (s.relayClient.RttMs() < 0.0)
+                {
+                    text += "round trip to the relay not measured yet";
+                }
+                else
+                {
+                    snprintf(buffer, sizeof(buffer), "%.1f ms round trip to the relay", s.relayClient.RttMs());
+                    text += buffer;
+                }
+            }
+            return text;
         }
 
         bool Send(uint8_t type, const Writer &body, bool reliable)

@@ -379,6 +379,69 @@ namespace Duels
         return true;
     }
 
+    // nebula on|off: our ship as at a nebula beacon, or not (tests, in this game only). The beacon's event switches
+    // the sensors off with a status effect (<status type="loss" system="sensors">), which this applies or clears.
+    static bool DoNebula(const Command &cmd, std::string &message)
+    {
+        WorldManager *world = G_->GetWorld();
+        ShipManager *ship = G_->GetShipManager(0);
+        std::string mode = cmd.args.size() > 1 ? cmd.args[1] : "";
+        if (!world || !ship || (mode != "on" && mode != "off"))
+        {
+            message = "usage: nebula on|off";
+            return false;
+        }
+        world->space.bNebula = mode == "on";
+        if (world->space.bNebula) ship->SetSystemPowerLoss(SYS_SENSORS, 1);
+        else ship->ClearStatusSystem(SYS_SENSORS);
+        ShipSystem *sensors = ship->GetSystem(SYS_SENSORS);
+        message = std::string("nebula ") + (world->space.bNebula ? "on" : "off") +
+                  (sensors ? ", sensors power " + std::to_string(sensors->powerState.first) : ", no sensors");
+        return true;
+    }
+
+    // keys <text>: types into the game as the keyboard does (tests of the console). {f1}, {enter}, {esc}, {up},
+    // {down} and {back} are those keys; everything else is typed as characters.
+    static bool DoKeys(const Command &cmd, std::string &message)
+    {
+        CApp *app = G_->GetCApp();
+        CommandGui *gui = app ? app->gui : nullptr;
+        size_t at = cmd.text.find("keys");
+        if (!gui || at == std::string::npos)
+        {
+            message = "usage: keys <text with {f1} {enter} {esc} {up} {down} {back}>";
+            return false;
+        }
+        std::string text = cmd.text.substr(at + 4);
+        if (!text.empty() && text[0] == ' ') text.erase(0, 1);
+        int typed = 0;
+        for (size_t i = 0; i < text.size(); ++i)
+        {
+            if (text[i] == '{')
+            {
+                size_t end = text.find('}', i);
+                std::string key = end == std::string::npos ? "" : text.substr(i + 1, end - i - 1);
+                if (key == "f1") gui->KeyDown(SDLK_F1, false);
+                else if (key == "esc") gui->KeyDown(SDLK_ESCAPE, false);
+                else if (key == "up") gui->KeyDown(SDLK_UP, false);
+                else if (key == "down") gui->KeyDown(SDLK_DOWN, false);
+                else if (key == "enter") gui->OnTextEvent(CEvent::TEXT_CONFIRM);
+                else if (key == "back") gui->OnTextEvent(CEvent::TEXT_BACKSPACE);
+                else
+                {
+                    message = "unknown key {" + key + "}";
+                    return false;
+                }
+                i = end;
+                continue;
+            }
+            gui->OnTextInput((unsigned char)text[i]);
+            ++typed;
+        }
+        message = std::to_string(typed) + " characters typed";
+        return true;
+    }
+
     // ionize <ship> <system> <amount>: ion damage to a system, as an ion shot does (tests of the ion lock).
     static bool DoIonize(const Command &cmd, std::string &message)
     {
@@ -728,6 +791,7 @@ namespace Duels
             return false;
         }
         std::string details;
+        MapToTestDisplay(x, y, width, height);   // test runs on another monitor
         bool found = MoveGameWindow(x, y, width, height, details);
         message = found ? "window moved: " + details : "game window not found";
         return found;
@@ -761,6 +825,8 @@ namespace Duels
         if (verb == "drone") return DoDrone(cmd, message);
         if (verb == "droneparts") return DoDroneParts(cmd, message);
         if (verb == "supershield") return DoSuperShield(cmd, message);
+        if (verb == "nebula") return DoNebula(cmd, message);
+        if (verb == "keys") return DoKeys(cmd, message);
         if (verb == "dronepower") return DoDronePower(cmd, message);
         if (verb == "fire") return DoFire(cmd, message);
         if (verb == "autofire") return DoAutofire(cmd, message);

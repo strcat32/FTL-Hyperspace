@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "Duels.h"
+#include "DuelsConsole.h"
 #include "DuelsDrones.h"
 #include "DuelsMatch.h"
 #include "DuelsScreen.h"
@@ -83,7 +84,7 @@ HOOK_METHOD_PRIORITY(CommandGui, RunCommand, -100, (std::string& command) -> voi
         if (message.empty()) message = ok ? "ok" : "failed";
     }
     Duels::Log("console: %s -> %s", command.c_str(), message.c_str());
-    PrintHelper::GetInstance()->AddMessage("DUEL: " + message);
+    Duels::Console::Print("DUEL: " + message);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -241,6 +242,14 @@ HOOK_METHOD_PRIORITY(ShipManager, GetDodged, -2000, () -> bool)
     return dodged;
 }
 
+// The replica's subsystems keep their owner's power, whatever this game's environment does to them.
+HOOK_METHOD_PRIORITY(ShipManager, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    super();
+    Duels::Match::HoldReplicaSubsystems(this);
+}
+
 // A beam's sweep over the rooms behind the shields.
 HOOK_METHOD_PRIORITY(ShipManager, DamageBeam, -2000, (Pointf location1, Pointf location2, Damage dmg) -> bool)
 {
@@ -351,11 +360,43 @@ HOOK_METHOD_PRIORITY(CachedPrimitive, OnRender, -2000, (const GL_Color &color) -
         Duels::View::EndUnmirrored();
         return;
     }
+    if (float rest = Duels::View::TakeHullBarRest(this))
+    {
+        // The opponent's hull bar beyond FTL's 22 segments: the whole image first, then its right-hand part after it.
+        super(color);
+        CachedImage *image = static_cast<CachedImage*>(static_cast<CachedPrimitive*>(this));
+        float width = image->texture ? (float)image->texture->width_ * image->wScale : 0.f;
+        for (float offset = width; rest > 0.f && width > 0.f; offset += width, rest -= 1.f)
+        {
+            // SetPartial takes the texture's start and end, and draws as wide as the end: the image's last `part`
+            // is drawn at full width and squeezed back to its own width, around the image's corner.
+            // Whole segments: 22 of them, a gap pixel after each but the last (241 px for 11 px segments).
+            float segments = std::min(rest, 1.f) * 22.f;
+            float part = std::min(1.f, segments * (width + 1.f) / 22.f / width);
+            image->SetPartial(1.f - part, 0.f, 1.f, 1.f);
+            float left = (float)image->x, top = (float)image->y;
+            CSurface::GL_PushMatrix();
+            CSurface::GL_Translate(left + offset, top, 0.f);
+            CSurface::GL_Scale(part, 1.f, 1.f);
+            CSurface::GL_Translate(-left, -top, 0.f);
+            super(color);
+            CSurface::GL_PopMatrix();
+        }
+        return;
+    }
     if (!Duels::View::HullBarShift(this, x, y)) return super(color);
     CSurface::GL_PushMatrix();
     CSurface::GL_Translate(x, y, 0.f);
     super(color);
     CSurface::GL_PopMatrix();
+}
+
+// The opponent's hull bar with more hull points than FTL's enemy bar has segments (see above).
+HOOK_METHOD_PRIORITY(CachedImage, SetPartial, -2000, (float x_start, float y_start, float x_size, float y_size) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CachedImage::SetPartial -> Begin (DuelsHooks.cpp)\n")
+    Duels::View::LimitHullBar(this, x_size);
+    super(x_start, y_start, x_size, y_size);
 }
 
 // The system icons in the opponent's rooms, the right way round and at a readable size. (FTL builds each icon at its
@@ -592,33 +633,42 @@ HOOK_METHOD_PRIORITY(CommandGui, GetWorldCoordinates, -2000, (Point point, bool 
 }
 
 // ---------------------------------------------------------------------------------------------
-// Console: F1 opens it on every keyboard. Hyperspace's key is "\", which German and many other layouts only
-// produce with AltGr, and FTL doesn't see it there. A ">" marks the input line.
+// Console (DuelsConsole.cpp): F1 opens an input line where messages are printed, on every keyboard (Hyperspace's key
+// is "\", which German and many other layouts only produce with AltGr). While it is open it has the keyboard.
 // ---------------------------------------------------------------------------------------------
-
-namespace Duels
-{
-    // The same conditions as Hyperspace's own console key (CommandConsole.cpp).
-    bool OpenConsole(CommandGui *gui)
-    {
-        CommandConsole *console = CommandConsole::GetInstance();
-        if (!console->enabled || gui->inputBox.bOpen) return false;
-        if (gui->writeErrorDialog.bOpen || gui->menuBox.bOpen || gui->gameOverScreen.bOpen) return false;
-        if (gui->shipComplete && gui->shipComplete->shipManager && gui->shipComplete->shipManager->bJumping) return false;
-        for (FocusWindow *window : gui->focusWindows)
-        {
-            if (window->bOpen) return false;
-        }
-        gui->inputBox.StartInput();
-        return true;
-    }
-}
 
 HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::KeyDown -> Begin (DuelsHooks.cpp)\n")
-    if (key == SDLK_F1 && Duels::OpenConsole(this)) return;
+    if (Duels::Console::KeyDown(this, key)) return;
     super(key, shiftHeld);
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, OnTextInput, -2000, (int ch) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::OnTextInput -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Console::TextInput(ch)) return;
+    super(ch);
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, OnTextEvent, -2000, (CEvent::TextEvent event) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::OnTextEvent -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Console::TextEvent(this, (int)event)) return;
+    super(event);
+}
+
+// Over the game and under the mouse cursor. While the console is open it shows the recent messages itself, so
+// Hyperspace's message list (drawn inside) is moved out of sight for the frame.
+HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> MouseControl::OnRender -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Console::Render()) return super();
+    PrintHelper *printer = PrintHelper::GetInstance();
+    int x = printer->x;
+    printer->x = -100000;
+    super();
+    printer->x = x;
 }
 
 // The console's text line (Hyperspace creates it without a prompt) starts with "> ".

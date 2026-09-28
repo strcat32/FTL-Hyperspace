@@ -5,6 +5,7 @@
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
 #include "DuelsView.h"
+#include "DuelsWin32.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -122,6 +123,7 @@ namespace Duels
     void OnFrame()
     {
         if (++g_frame == 1) Log("FTL:Duels module %s loaded", VERSION);
+        PlaceOnTestDisplay();
         Match::OnFrame(WallMs());
         View::OnFrame();
         Screen::OnFrame();

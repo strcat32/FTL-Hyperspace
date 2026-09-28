@@ -495,6 +495,33 @@ namespace Duels
             return true;
         }
 
+        // FTL's hull bar for enemies is an image of 22 segments, drawn as far as hull / 22 of it. A player ship's 30
+        // hull point bars would run past the image's end, where its last column is stretched into a solid bar; the
+        // extra segments are drawn from the image again instead (its right-hand part), after the whole image.
+        static float g_hullBarRest = 0.f;
+
+        static bool IsTargetHullBar(const CachedImage *image)
+        {
+            CApp *app = G_->GetCApp();
+            return g_drawing == Drawing::Target && g_layout.active && app && app->gui && image == &app->gui->combatControl.healthMask;
+        }
+
+        bool LimitHullBar(const CachedImage *image, float &xSize)
+        {
+            if (xSize <= 1.f || !IsTargetHullBar(image)) return false;
+            g_hullBarRest = xSize - 1.f;
+            xSize = 1.f;
+            return true;
+        }
+
+        float TakeHullBarRest(const CachedPrimitive *image)
+        {
+            if (g_hullBarRest <= 0.f || !IsTargetHullBar(static_cast<const CachedImage*>(image))) return 0.f;
+            float rest = g_hullBarRest;
+            g_hullBarRest = 0.f;
+            return rest;
+        }
+
         bool AdjustHeaderText(int fontSize, float &x, float &y, const std::string &text)
         {
             const Layout &l = g_layout;

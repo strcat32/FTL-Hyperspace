@@ -1,14 +1,18 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "Duels.h"
+#include "DuelsConsole.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
+#include "DuelsRelay.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsView.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 
 namespace Duels
@@ -116,6 +120,46 @@ namespace Duels
         return hits == rooms && ownHits == ownRooms;
     }
 
+    // The relay server for "host relay" and "join relay" ("relay <server>[:port]").
+    static std::string g_relayServer;
+    static int g_relayPort = Relay::DEFAULT_PORT;
+
+    // "name", "name:port", "1.2.3.4:port" or "[ipv6]:port".
+    static bool ParseServer(const std::string &text, std::string &server, int &port)
+    {
+        port = Relay::DEFAULT_PORT;
+        std::string portText;
+        if (!text.empty() && text[0] == '[')
+        {
+            size_t close = text.find(']');
+            if (close == std::string::npos) return false;
+            server = text.substr(1, close - 1);
+            if (close + 1 < text.size())
+            {
+                if (text[close + 1] != ':') return false;
+                portText = text.substr(close + 2);
+            }
+        }
+        else if (std::count(text.begin(), text.end(), ':') == 1)
+        {
+            size_t colon = text.find(':');
+            server = text.substr(0, colon);
+            portText = text.substr(colon + 1);
+        }
+        else
+        {
+            server = text;   // a host name, IPv4, or an IPv6 address without a port
+        }
+        if (!portText.empty())
+        {
+            char *end = nullptr;
+            long value = std::strtol(portText.c_str(), &end, 10);
+            if (*end != '\0' || value <= 0 || value > 65535) return false;
+            port = (int)value;
+        }
+        return !server.empty();
+    }
+
     bool Execute(const Command &cmd, std::string &message)
     {
         if (cmd.args.empty())
@@ -214,21 +258,14 @@ namespace Duels
         {
             // console [text]: opens the console with that text typed in (for screenshots and tests).
             CApp *app = G_->GetCApp();
-            if (!app || !app->gui || !OpenConsole(app->gui))
+            std::string text = cmd.text.substr(cmd.text.find("console") + 7);
+            size_t start = text.find_first_not_of(' ');
+            text = start == std::string::npos ? "" : text.substr(start);
+            if (!app || !app->gui || !Console::OpenWith(app->gui, text))
             {
                 message = "the console can't open now";
                 return false;
             }
-            std::string text = cmd.text.substr(cmd.text.find("console") + 7);
-            size_t start = text.find_first_not_of(' ');
-            text = start == std::string::npos ? "" : text.substr(start);
-            CommandConsole *console = CommandConsole::GetInstance();
-            if (console->textInput)
-            {
-                console->textInput->SetText(text);
-                console->textInput->pos = (int)console->textInput->text.size();
-            }
-            app->gui->inputBox.inputText = text;
             message = "console open";
             return true;
         }
@@ -240,6 +277,70 @@ namespace Duels
             Match::SetPlayerName(cmd.raw[1]);
             message = "player name " + cmd.raw[1];
             return true;
+        }
+        if (verb == "relay")
+        {
+            // relay [server[:port]]: the relay server for "host relay" and "join relay".
+            if (cmd.raw.size() > 1)
+            {
+                std::string server;
+                int port;
+                if (!ParseServer(cmd.raw[1], server, port))
+                {
+                    message = "usage: relay <server>[:port]";
+                    return false;
+                }
+                g_relayServer = server;
+                g_relayPort = port;
+            }
+            message = g_relayServer.empty() ? "no relay server set (relay <server>[:port])"
+                                            : "relay server " + g_relayServer + " port " + std::to_string(g_relayPort);
+            return true;
+        }
+        if (verb == "host" && ArgIs(cmd, 1, "relay"))
+        {
+            // host relay [server[:port]]: a room at the relay; its code goes to the other player.
+            std::string server = g_relayServer;
+            int port = g_relayPort;
+            if (cmd.raw.size() > 2 && !ParseServer(cmd.raw[2], server, port))
+            {
+                message = "usage: host relay [server[:port]]";
+                return false;
+            }
+            if (server.empty())
+            {
+                message = "no relay server: host relay <server>[:port], or relay <server> first";
+                return false;
+            }
+            return Match::HostRelay(server, (uint16_t)port, message);
+        }
+        if (verb == "join" && ArgIs(cmd, 1, "relay"))
+        {
+            // join relay <code> [server[:port]]
+            std::string server = g_relayServer;
+            int port = g_relayPort;
+            if (cmd.raw.size() < 3 || (cmd.raw.size() > 3 && !ParseServer(cmd.raw[3], server, port)))
+            {
+                message = "usage: join relay <code> [server[:port]]";
+                return false;
+            }
+            if (server.empty())
+            {
+                message = "no relay server: join relay <code> <server>[:port], or relay <server> first";
+                return false;
+            }
+            // "@file": the code is in that file of the game folder (tests: the runner copies the host's code there).
+            std::string code = cmd.raw[2];
+            if (!code.empty() && code[0] == '@')
+            {
+                std::ifstream file(code.substr(1).c_str());
+                if (!(file >> code))
+                {
+                    message = "no room code in " + cmd.raw[2].substr(1);
+                    return false;
+                }
+            }
+            return Match::JoinRelay(server, (uint16_t)port, code, message);
         }
         if (verb == "host")
         {

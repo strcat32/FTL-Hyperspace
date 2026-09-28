@@ -33,6 +33,8 @@ namespace Duels
             virtual void OnConnected() = 0;
             virtual void OnMessage(uint8_t type, Reader &reader) = 0;
             virtual void OnDisconnected(const std::string &reason) = 0;
+            // Things the player should see: the relay's room code, the relay refusing, ...
+            virtual void OnNotice(const std::string &text) { (void)text; }
         };
 
         void SetListener(Listener *listener);
@@ -43,6 +45,15 @@ namespace Duels
         // Joining a loopback address uses a loopback socket for the same reason.
         bool Host(uint16_t port, bool loopbackOnly, std::string &message);
         bool Join(const std::string &host, uint16_t port, std::string &message);
+
+        // Through a relay server (docs/design/relay-protocol.md), for players who can't reach each other directly:
+        // the host gets a room code from the relay (announced through Listener::OnNotice), the guest joins with it.
+        bool HostRelay(const std::string &server, uint16_t port, std::string &message);
+        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message);
+        bool UsesRelay();
+        std::string RelayCode();
+        uint64_t MatchSeed();   // from the relay, 0 without one
+
         void Leave(const std::string &reason);
 
         // Once per frame (also in menus): receive, deliver, time out, send.

@@ -2,6 +2,7 @@
 
 #include <string>
 
+struct CachedImage;
 struct CachedPrimitive;
 struct CombatControl;
 struct GL_Color;
@@ -93,6 +94,12 @@ namespace Duels
         void BeginDecorations();
         void EndDecorations();
         bool HullBarShift(const CachedPrimitive *image, float &dx, float &dy);
+
+        // The opponent's hull bar (FTL's image of 22 segments) with more than 22 hull points: CachedImage::SetPartial
+        // limits it to the whole image (LimitHullBar), and CachedPrimitive::OnRender draws the rest after it
+        // (TakeHullBarRest: the fraction of the image still to draw, 0 if none).
+        bool LimitHullBar(const CachedImage *image, float &xSize);
+        float TakeHullBarRest(const CachedPrimitive *image);
 
         // Mouse: a screen point in the opponent's and in our ship's coordinates, as the ships are drawn now.
         // `inside` tells whether the point is in the enemy window. Both return false without a duel layout.
