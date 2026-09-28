@@ -272,6 +272,90 @@ namespace Duels
         return battery->bTurnedOn == on;
     }
 
+    // drone <ship> <slot> <DRONE_BLUEPRINT>: puts that drone into the slot, replacing what is there (tests; in a duel,
+    // before connecting, so the loadout carries it).
+    static bool DoDrone(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int slot;
+        if (!ArgInt(cmd, 2, slot) || cmd.raw.size() < 4)
+        {
+            message = "usage: drone <ship> <slot> <DRONE_BLUEPRINT>";
+            return false;
+        }
+        if (!ship->droneSystem)
+        {
+            message = "ship has no drone control (install <ship> drones)";
+            return false;
+        }
+        const std::string &name = cmd.raw[3];
+        DroneBlueprint *blueprint = G_->GetBlueprints()->GetDroneBlueprint(name);
+        if (!blueprint || blueprint->name != name)
+        {
+            message = "no drone blueprint " + name;
+            return false;
+        }
+        std::vector<Drone*> drones = ship->GetDroneList();
+        int count = (int)drones.size();
+        if (slot < 0 || slot > count || slot >= ship->droneSystem->slot_count)
+        {
+            message = "slot " + std::to_string(slot) + " is not free or next (" + std::to_string(count) + " drones, " +
+                      std::to_string(ship->droneSystem->slot_count) + " slots)";
+            return false;
+        }
+        if (slot < count) ship->RemoveDrone(slot);
+        ship->AddDrone(blueprint, slot);
+        std::ostringstream out;
+        out << "drones:";
+        for (Drone *drone : ship->GetDroneList()) out << " " << (drone->blueprint ? drone->blueprint->name : "?");
+        out << ", " << ship->GetDroneCount() << " drone parts";
+        message = out.str();
+        return true;
+    }
+
+    // droneparts <ship> <count>: how many drone parts the ship has.
+    static bool DoDroneParts(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int count;
+        if (!ArgInt(cmd, 2, count) || count < 0)
+        {
+            message = "usage: droneparts <ship> <count>";
+            return false;
+        }
+        ship->ModifyDroneCount(count - ship->GetDroneCount());
+        message = std::to_string(ship->GetDroneCount()) + " drone parts";
+        return ship->GetDroneCount() == count;
+    }
+
+    // dronepower <ship> <slot> on|off: the drone's button (launching it costs a drone part, as in the game).
+    static bool DoDronePower(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int slot;
+        bool on;
+        if (!ArgInt(cmd, 2, slot) || !ArgOnOff(cmd, 3, on))
+        {
+            message = "usage: dronepower <ship> <slot> on|off";
+            return false;
+        }
+        std::vector<Drone*> drones = ship->droneSystem ? ship->GetDroneList() : std::vector<Drone*>();
+        if (slot < 0 || slot >= (int)drones.size())
+        {
+            message = "no drone in slot " + std::to_string(slot);
+            return false;
+        }
+        Drone *drone = drones[slot];
+        if (on) ship->PowerDrone(drone, -1, true, false);
+        else ship->DePowerDrone(drone, true);
+        message = (drone->blueprint ? drone->blueprint->name : std::string("drone")) + (drone->powered ? " powered" : " unpowered") +
+                  (drone->deployed ? ", deployed" : "") + ", " + std::to_string(ship->GetDroneCount()) + " drone parts";
+        return drone->powered == on;
+    }
+
     // ionize <ship> <system> <amount>: ion damage to a system, as an ion shot does (tests of the ion lock).
     static bool DoIonize(const Command &cmd, std::string &message)
     {
@@ -533,7 +617,21 @@ namespace Duels
         }
         if (ship->shieldSystem)
         {
-            Log("  shield layers %d charge %.2f", ship->shieldSystem->shields.power.first, ship->shieldSystem->shields.charger);
+            Log("  shield layers %d charge %.2f super %d/%d", ship->shieldSystem->shields.power.first,
+                ship->shieldSystem->shields.charger, ship->shieldSystem->shields.power.super.first,
+                ship->shieldSystem->shields.power.super.second);
+        }
+        if (ship->droneSystem)
+        {
+            std::vector<Drone*> drones = ship->GetDroneList();
+            Log("  drone parts %d, %u drones", ship->GetDroneCount(), (unsigned)drones.size());
+            for (size_t slot = 0; slot < drones.size(); ++slot)
+            {
+                Drone *drone = drones[slot];
+                Log("  drone %u %-18s type %d power %d %s%s%s", (unsigned)slot,
+                    drone->blueprint ? drone->blueprint->name.c_str() : "?", drone->type, drone->powerRequired,
+                    drone->powered ? "on " : "off", drone->deployed ? " deployed" : "", drone->bDead ? " dead" : "");
+            }
         }
         if (ship->weaponSystem)
         {
@@ -637,6 +735,9 @@ namespace Duels
         if (verb == "install") return DoInstall(cmd, message);
         if (verb == "battery") return DoBattery(cmd, message);
         if (verb == "ionize") return DoIonize(cmd, message);
+        if (verb == "drone") return DoDrone(cmd, message);
+        if (verb == "droneparts") return DoDroneParts(cmd, message);
+        if (verb == "dronepower") return DoDronePower(cmd, message);
         if (verb == "fire") return DoFire(cmd, message);
         if (verb == "autofire") return DoAutofire(cmd, message);
         if (verb == "crew") return DoCrew(cmd, message);

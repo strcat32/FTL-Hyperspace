@@ -257,12 +257,17 @@ namespace Duels
             for (ProjectileFactory *weapon : weapons) w.Str(weapon->blueprint ? weapon->blueprint->name : "");
             w.U8((uint8_t)ship->vCrewList.size());
             for (CrewMember *crew : ship->vCrewList) w.Str(crew->species);
+            // Drones in slot order (drone messages refer to slots), and the drone parts.
+            std::vector<Drone*> drones = ship->droneSystem ? ship->GetDroneList() : std::vector<Drone*>();
+            w.U8((uint8_t)drones.size());
+            for (Drone *drone : drones) w.Str(drone->blueprint ? drone->blueprint->name : "");
+            w.I16((int16_t)ship->GetDroneCount());
 
             Net::Send(MSG_LOADOUT, w, true);
             g_match.loadoutSent = true;
-            Log("Match: loadout sent (%s, hull %d/%d, %u systems, %u weapons)", ship->myBlueprint.blueprintName.c_str(),
+            Log("Match: loadout sent (%s, hull %d/%d, %u systems, %u weapons, %u drones)", ship->myBlueprint.blueprintName.c_str(),
                 ship->ship.hullIntegrity.first, ship->ship.hullIntegrity.second, (unsigned)ship->vSystemList.size(),
-                (unsigned)weapons.size());
+                (unsigned)weapons.size(), (unsigned)drones.size());
         }
 
         static void ApplyLoadout(Reader &r)
@@ -282,6 +287,9 @@ namespace Duels
             for (std::string &weapon : weapons) weapon = r.Str();
             std::vector<std::string> crew(r.U8());
             for (std::string &species : crew) species = r.Str();
+            std::vector<std::string> drones(r.U8());
+            for (std::string &drone : drones) drone = r.Str();
+            int droneParts = r.I16();
             if (!r.Ok())
             {
                 Log("Match: malformed loadout");
@@ -357,6 +365,25 @@ namespace Duels
                 }
                 Log("Match: replica weapons replaced (%u)", (unsigned)weapons.size());
             }
+
+            // Drones likewise.
+            std::vector<Drone*> currentDrones = replica->droneSystem ? replica->GetDroneList() : std::vector<Drone*>();
+            bool sameDrones = currentDrones.size() == drones.size();
+            for (size_t slot = 0; sameDrones && slot < drones.size(); ++slot)
+            {
+                sameDrones = currentDrones[slot]->blueprint && currentDrones[slot]->blueprint->name == drones[slot];
+            }
+            if (!sameDrones && replica->droneSystem)
+            {
+                for (int slot = (int)currentDrones.size() - 1; slot >= 0; --slot) replica->RemoveDrone(slot);
+                for (size_t slot = 0; slot < drones.size(); ++slot)
+                {
+                    DroneBlueprint *drone = G_->GetBlueprints()->GetDroneBlueprint(drones[slot]);
+                    if (drone) replica->AddDrone(drone, (int)slot);
+                }
+                Log("Match: replica drones replaced (%u)", (unsigned)drones.size());
+            }
+            if (replica->droneSystem) replica->ModifyDroneCount(droneParts - replica->GetDroneCount());
 
             View::UsePlayerShieldPosition(replica);
             g_match.opponentShip = blueprint;
@@ -460,6 +487,9 @@ namespace Duels
             {
                 w.U8((uint8_t)std::max(0, shields->shields.power.first));
                 w.F32(shields->shields.charger);
+                // The Zoltan super shield (Zoltan ships, the shield overcharger drone): its layers and their cap.
+                w.U8((uint8_t)std::max(0, std::min(shields->shields.power.super.first, 255)));
+                w.U8((uint8_t)std::max(0, std::min(shields->shields.power.super.second, 255)));
             }
 
             // Per system: power, health and the lock. Ion damage locks a system for one timer period per ion charge
@@ -509,10 +539,13 @@ namespace Duels
             bool hasShields = r.Bool();
             int shieldLayers = 0;
             float shieldCharge = 0.f;
+            int superShield = 0, superShieldMax = 0;
             if (hasShields)
             {
                 shieldLayers = r.U8();
                 shieldCharge = r.F32();
+                superShield = r.U8();
+                superShieldMax = r.U8();
             }
             std::vector<SystemState> systems(r.U8());
             for (SystemState &system : systems)
@@ -584,6 +617,8 @@ namespace Duels
             {
                 replica->shieldSystem->shields.power.first = std::min(shieldLayers, 16);
                 replica->shieldSystem->shields.charger = shieldCharge;
+                replica->shieldSystem->shields.power.super.second = superShieldMax;
+                replica->shieldSystem->shields.power.super.first = std::min(superShield, superShieldMax);
             }
 
             if (replica->weaponSystem)
@@ -1178,7 +1213,9 @@ namespace Duels
         static std::string Signature(ShipManager *ship)
         {
             std::ostringstream out;
-            out << ship->ship.hullIntegrity.first << ',' << (ship->shieldSystem ? ship->shieldSystem->shields.power.first : -1) << ',';
+            out << ship->ship.hullIntegrity.first << ',' << (ship->shieldSystem ? ship->shieldSystem->shields.power.first : -1);
+            if (ship->shieldSystem && ship->shieldSystem->shields.power.super.first > 0) out << '+' << ship->shieldSystem->shields.power.super.first;
+            out << ',';
             for (ShipSystem *system : ship->vSystemList)
             {
                 out << system->iSystemType << ':' << PowerBars(system) << '/' << system->healthState.first;
