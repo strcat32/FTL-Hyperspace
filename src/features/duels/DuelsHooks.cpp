@@ -2,9 +2,11 @@
 #include "CommandConsole.h"
 #include "Duels.h"
 #include "DuelsConsole.h"
+#include "DuelsCrew.h"
 #include "DuelsDrones.h"
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
+#include "DuelsRooms.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsView.h"
@@ -250,12 +252,51 @@ HOOK_METHOD_PRIORITY(ShipManager, GetDodged, -2000, () -> bool)
     return dodged;
 }
 
+// The replica's rooms follow their owner's (DuelsRooms.cpp): its own fire spreading, oxygen and breaches don't run.
+// Outer to Hyperspace's rewrite of this function.
+HOOK_METHOD_PRIORITY(ShipManager, UpdateEnvironment, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::UpdateEnvironment -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Rooms::RunsEnvironment(this)) return;
+    super();
+}
+
 // The replica's subsystems keep their owner's power, whatever this game's environment does to them.
 HOOK_METHOD_PRIORITY(ShipManager, OnLoop, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::OnLoop -> Begin (DuelsHooks.cpp)\n")
     super();
     Duels::Match::HoldReplicaSubsystems(this);
+}
+
+// The opponent's crew in our game are puppets: their health is their owner's (DuelsCrew.cpp), so nothing here
+// changes it, and they repair nothing (the owner's state brings the replica's system health).
+HOOK_METHOD_PRIORITY(CrewMember, DirectModifyHealth, -2000, (float health) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::DirectModifyHealth -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Crew::IsPuppet(this)) return false;
+    return super(health);
+}
+
+HOOK_METHOD_PRIORITY(CrewMember, ModifyHealth, -2000, (float health) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::ModifyHealth -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Crew::IsPuppet(this)) return;
+    super(health);
+}
+
+HOOK_METHOD_PRIORITY(CrewMember, ApplyDamage, -2000, (float damage) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::ApplyDamage -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Crew::IsPuppet(this)) return false;
+    return super(damage);
+}
+
+HOOK_METHOD_PRIORITY(ShipSystem, PartialRepair, -2000, (float speed, bool autoRepair) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::PartialRepair -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Crew::MayRepair(this)) return false;
+    return super(speed, autoRepair);
 }
 
 // A beam's sweep over the rooms behind the shields.

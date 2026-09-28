@@ -5,8 +5,10 @@
 #include "Systems.h"
 #include "Duels.h"
 #include "DuelsConsole.h"
+#include "DuelsCrew.h"
 #include "DuelsDrones.h"
 #include "DuelsMatch.h"
+#include "DuelsRooms.h"
 #include "DuelsNet.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
@@ -184,6 +186,8 @@ namespace Duels
             m.lastSignature[1].clear();
             g_forced = nullptr;
             Drones::Reset();
+            Crew::Reset();
+            Rooms::Reset();
         }
 
         static void Announce(const std::string &text)
@@ -465,6 +469,8 @@ namespace Duels
         void HoldReplicaSubsystems(ShipManager *ship)
         {
             if (!ship || ship->iShipId != 1 || !g_match.replicaReady || ship != G_->GetShipManager(1)) return;
+            Crew::AfterReplicaLoop(ship);
+            Rooms::AfterReplicaLoop(ship);
             for (const std::pair<const int, int> &entry : g_match.subsystemPower)
             {
                 ShipSystem *system = ship->GetSystem(entry.first);
@@ -569,6 +575,16 @@ namespace Duels
 
             // Drones: power, launch, wreck and where they are (DuelsDrones.cpp).
             Drones::WriteState(w);
+            // Crew: where each one is and how they are (DuelsCrew.cpp); who is on board goes first, when it changed.
+            if (Crew::RosterChanged())
+            {
+                Writer roster;
+                Crew::WriteRoster(roster);
+                Net::Send(Crew::MSG_CREW_ROSTER, roster, true);
+            }
+            Crew::WriteState(w);
+            // Rooms: oxygen, fires, breaches, doors, lockdowns (DuelsRooms.cpp).
+            Rooms::WriteState(w);
 
             Net::Send(MSG_STATE, w, false);
             g_match.lastStateSent = now;
@@ -611,7 +627,7 @@ namespace Duels
                 weapon.powered = r.Bool();
                 weapon.charge = r.F32();
             }
-            if (!Drones::ReadState(r) || !r.Ok()) return;
+            if (!Drones::ReadState(r) || !Crew::ReadState(r) || !Rooms::ReadState(r) || !r.Ok()) return;
 
             // Snapshots may arrive out of order; only newer ones count.
             if (g_match.havePeerState && (uint16_t)(seq - g_match.peerStateSeq) >= 32768) return;
@@ -681,6 +697,8 @@ namespace Duels
 
             // Drones after the systems, so the reactor power they need is free.
             Drones::ApplyState(Net::HasClock() ? Net::PeerToLocalTime(sentAt) : WallMs());
+            Crew::ApplyState(Net::HasClock() ? Net::PeerToLocalTime(sentAt) : WallMs());
+            Rooms::ApplyState();
 
             // Again, as switching the battery sets its own lock. Between updates the replica counts its lock timers on
             // (ShipSystem::OnLoop), so the lock display runs smoothly.
@@ -1556,6 +1574,7 @@ namespace Duels
                 for (ProjectileFactory *weapon : ship->GetWeaponList()) out << (weapon->powered ? '1' : '0');
             }
             out << ',' << Drones::Signature(ship);
+            out << ',' << Crew::Signature(ship) << ',' << Crew::RoomSignature(ship) << ',' << Rooms::Signature(ship);
             return out.str();
         }
 
@@ -1572,7 +1591,7 @@ namespace Duels
                 std::string signature = Signature(ship);
                 if (signature == m.lastSignature[shipId]) continue;
                 m.lastSignature[shipId] = signature;
-                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones");
+                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms");
                 Row row;
                 row << now << Net::LocalToPeerTime(0.0) << (shipId == 0 ? "own" : "replica") << signature;
                 m.syncCsv.WriteRow(row.str());
@@ -1654,6 +1673,9 @@ namespace Duels
                 case Drones::MSG_DRONE_HIT:
                 case Drones::MSG_DRONE_SHOT:
                     Drones::OnMessage(type, reader);
+                    break;
+                case Crew::MSG_CREW_ROSTER:
+                    Crew::ApplyRoster(reader);
                     break;
                 case MSG_DEFEAT:
                     Announce("the opponent's ship is destroyed - you win this round");
@@ -1765,7 +1787,7 @@ namespace Duels
                 << (m.replicaReady ? " built" : "") << (m.peerReady ? ", ours built there" : "")
                 << ", states applied " << m.statesApplied << ", shots out " << m.shotsSent << " in " << m.shotsReceived
                 << ", verdicts sent " << m.verdictsSent << " received " << m.verdictsReceived << ", hold timeouts "
-                << m.holdTimeouts << ", " << Drones::Status();
+                << m.holdTimeouts << ", " << Drones::Status() << ", " << Crew::Status() << ", " << Rooms::Status();
             return out.str();
         }
     }

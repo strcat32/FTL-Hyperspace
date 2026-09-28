@@ -1,0 +1,436 @@
+#include "Global.h"
+#include "Duels.h"
+#include "DuelsCrew.h"
+#include "DuelsTrace.h"
+#include "DuelsWire.h"
+
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <sstream>
+#include <vector>
+
+namespace Duels
+{
+    namespace Crew
+    {
+        static const int SKILLS = 6;               // piloting, engines, shields, weapons, repair, combat
+        static const float PLACE_DISTANCE = 52.f;   // a puppet this far (1.5 tiles) from its owner's crew member ...
+        static const double PLACE_AFTER_MS = 1000.0;   // ... for this long is put where they are
+
+        // State flags per crew member.
+        enum : uint8_t
+        {
+            FLAG_DEAD = 1,
+            FLAG_MIND_CONTROLLED = 2,
+            FLAG_FIGHTING = 4,
+            FLAG_REPAIRING = 8,
+            FLAG_MANNING = 16
+        };
+
+        struct RosterEntry
+        {
+            uint16_t id = 0;
+            std::string species, name;
+            bool male = true;
+            int skills[SKILLS][2] = {};   // FTL's skill progress and level
+        };
+
+        struct Sample
+        {
+            double t = 0.0;
+            float x = 0.f, y = 0.f;
+            int room = -1, goalRoom = -1, goalSlot = -1;
+            int health = 0;
+            uint8_t flags = 0;
+        };
+
+        struct Puppet
+        {
+            RosterEntry roster;
+            CrewMember *crew = nullptr;   // checked against the replica's crew list before every use
+            bool haveSample = false;
+            Sample sample;
+            int movingToRoom = -1, movingToSlot = -1;
+            double farSinceMs = -1.0;
+            bool placeNow = true;          // a new puppet goes straight to its owner's position
+        };
+
+        struct CrewState
+        {
+            // Ours.
+            std::map<const CrewMember*, uint16_t> ownIds;
+            uint16_t nextId = 1;
+            std::string sentRoster;
+            // Theirs.
+            bool active = false;           // a roster came: the replica's crew are puppets now
+            std::map<uint16_t, Puppet> puppets;
+            std::vector<std::pair<uint16_t, Sample>> pending;
+            bool havePending = false;
+            uint32_t rostersApplied = 0, placed = 0, created = 0;
+        };
+
+        static CrewState g_crew;
+
+        void Reset()
+        {
+            g_crew = CrewState();
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // Our side
+        // ---------------------------------------------------------------------------------------------------------
+
+        // Our crew members on our ship (boarding comes later), with their ids.
+        static std::vector<std::pair<uint16_t, CrewMember*>> OwnCrew()
+        {
+            std::vector<std::pair<uint16_t, CrewMember*>> list;
+            ShipManager *own = G_->GetShipManager(0);
+            if (!own) return list;
+            std::map<const CrewMember*, uint16_t> ids;
+            for (CrewMember *crew : own->vCrewList)
+            {
+                if (!crew || crew->iShipId != 0 || crew->IsDrone()) continue;
+                auto found = g_crew.ownIds.find(crew);
+                uint16_t id = found != g_crew.ownIds.end() ? found->second : g_crew.nextId++;
+                ids[crew] = id;
+                list.push_back(std::make_pair(id, crew));
+            }
+            g_crew.ownIds.swap(ids);
+            std::sort(list.begin(), list.end(),
+                      [](const std::pair<uint16_t, CrewMember*> &a, const std::pair<uint16_t, CrewMember*> &b) { return a.first < b.first; });
+            return list;
+        }
+
+        static std::string BuildRoster()
+        {
+            Writer w;
+            std::vector<std::pair<uint16_t, CrewMember*>> crew = OwnCrew();
+            w.U8((uint8_t)crew.size());
+            for (const std::pair<uint16_t, CrewMember*> &entry : crew)
+            {
+                CrewMember *member = entry.second;
+                w.U16(entry.first);
+                w.Str(member->species);
+                w.Str(member->GetName());
+                w.Bool(member->blueprint.male);
+                for (int skill = 0; skill < SKILLS; ++skill)
+                {
+                    bool known = skill < (int)member->blueprint.skillLevel.size();
+                    w.U8((uint8_t)std::max(0, known ? member->blueprint.skillLevel[skill].first : 0));
+                    w.U8((uint8_t)std::max(0, known ? member->blueprint.skillLevel[skill].second : 0));
+                }
+            }
+            return std::string(w.data.begin(), w.data.end());
+        }
+
+        bool RosterChanged()
+        {
+            return BuildRoster() != g_crew.sentRoster;
+        }
+
+        void WriteRoster(Writer &w)
+        {
+            g_crew.sentRoster = BuildRoster();
+            w.data.insert(w.data.end(), g_crew.sentRoster.begin(), g_crew.sentRoster.end());
+            Log("Crew: roster sent (%u crew)", (unsigned)(g_crew.sentRoster.empty() ? 0 : (uint8_t)g_crew.sentRoster[0]));
+        }
+
+        void WriteState(Writer &w)
+        {
+            std::vector<std::pair<uint16_t, CrewMember*>> crew = OwnCrew();
+            w.U8((uint8_t)crew.size());
+            for (const std::pair<uint16_t, CrewMember*> &entry : crew)
+            {
+                CrewMember *member = entry.second;
+                uint8_t flags = 0;
+                if (member->bDead) flags |= FLAG_DEAD;
+                if (member->bMindControlled) flags |= FLAG_MIND_CONTROLLED;
+                if (member->bFighting) flags |= FLAG_FIGHTING;
+                if (member->currentRepair) flags |= FLAG_REPAIRING;
+                if (member->bActiveManning) flags |= FLAG_MANNING;
+                // Where they are heading: the final goal while walking, else where they stand.
+                int goalRoom = member->finalGoal.roomId >= 0 ? member->finalGoal.roomId : member->currentSlot.roomId;
+                int goalSlot = member->finalGoal.roomId >= 0 ? member->finalGoal.slotId : member->currentSlot.slotId;
+                w.U16(entry.first);
+                w.U8(flags);
+                w.I8((int8_t)member->iRoomId);
+                w.I16((int16_t)std::lround(member->x));
+                w.I16((int16_t)std::lround(member->y));
+                w.I8((int8_t)goalRoom);
+                w.I8((int8_t)goalSlot);
+                w.U16((uint16_t)std::max(0L, std::lround(member->health.first)));
+            }
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // Their side
+        // ---------------------------------------------------------------------------------------------------------
+
+        // The puppet's crew member if it is still on the replica (FTL cleans up dead crew itself).
+        static CrewMember *LiveCrew(ShipManager *replica, Puppet &puppet)
+        {
+            if (!puppet.crew || !replica) return puppet.crew = nullptr;
+            for (CrewMember *crew : replica->vCrewList)
+            {
+                if (crew == puppet.crew) return crew;
+            }
+            return puppet.crew = nullptr;
+        }
+
+        static void ApplySkills(CrewMember *crew, const RosterEntry &roster)
+        {
+            for (int skill = 0; skill < SKILLS && skill < (int)crew->blueprint.skillLevel.size(); ++skill)
+            {
+                crew->blueprint.skillLevel[skill].first = roster.skills[skill][0];
+                crew->blueprint.skillLevel[skill].second = roster.skills[skill][1];
+            }
+        }
+
+        // A crew member for a puppet, in the room its owner is in (room 0 until the first state).
+        static void CreateCrew(ShipManager *replica, Puppet &puppet)
+        {
+            int room = puppet.haveSample && puppet.sample.room >= 0 ? puppet.sample.room : 0;
+            CrewMember *crew = replica->AddCrewMemberFromString(puppet.roster.name, puppet.roster.species, false, room, false,
+                                                                puppet.roster.male);
+            if (!crew) return;
+            puppet.crew = crew;
+            puppet.placeNow = true;
+            puppet.movingToRoom = puppet.movingToSlot = -1;
+            ApplySkills(crew, puppet.roster);
+            ++g_crew.created;
+        }
+
+        static bool IsPuppetCrew(const CrewMember *crew)
+        {
+            for (const std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            {
+                if (entry.second.crew == crew) return true;
+            }
+            return false;
+        }
+
+        void ApplyRoster(Reader &r)
+        {
+            std::vector<RosterEntry> roster(r.U8());
+            for (RosterEntry &entry : roster)
+            {
+                entry.id = r.U16();
+                entry.species = r.Str();
+                entry.name = r.Str();
+                entry.male = r.Bool();
+                for (int skill = 0; skill < SKILLS; ++skill)
+                {
+                    entry.skills[skill][0] = r.U8();
+                    entry.skills[skill][1] = r.U8();
+                }
+            }
+            if (!r.Ok()) return;
+            ShipManager *replica = G_->GetShipManager(1);
+            if (!replica) return;
+
+            // Crew no longer on board leave the replica (the dead ones FTL cleans up itself).
+            for (auto it = g_crew.puppets.begin(); it != g_crew.puppets.end();)
+            {
+                bool kept = std::any_of(roster.begin(), roster.end(), [&](const RosterEntry &entry) { return entry.id == it->first; });
+                if (kept)
+                {
+                    ++it;
+                    continue;
+                }
+                CrewMember *crew = LiveCrew(replica, it->second);
+                if (crew && !crew->bDead) replica->RemoveCrewmember(crew);
+                it = g_crew.puppets.erase(it);
+            }
+            // The replica's own crew (its blueprint's, or anyone else not from the roster) leaves too.
+            std::vector<CrewMember*> others;
+            for (CrewMember *crew : replica->vCrewList)
+            {
+                if (crew && crew->iShipId == 1 && !crew->IsDrone() && !crew->bDead && !IsPuppetCrew(crew)) others.push_back(crew);
+            }
+            for (CrewMember *crew : others) replica->RemoveCrewmember(crew);
+
+            for (const RosterEntry &entry : roster)
+            {
+                Puppet &puppet = g_crew.puppets[entry.id];
+                bool fresh = puppet.roster.id == 0;
+                bool sameMember = !fresh && puppet.roster.species == entry.species;
+                puppet.roster = entry;
+                CrewMember *crew = LiveCrew(replica, puppet);
+                if (crew && !sameMember)
+                {
+                    replica->RemoveCrewmember(crew);
+                    puppet.crew = crew = nullptr;
+                }
+                if (!crew) CreateCrew(replica, puppet);
+                else ApplySkills(crew, entry);
+            }
+            g_crew.active = true;
+            ++g_crew.rostersApplied;
+            Log("Crew: roster applied (%u crew; %u removed from the replica's own)", (unsigned)roster.size(), (unsigned)others.size());
+        }
+
+        bool ReadState(Reader &r)
+        {
+            std::vector<std::pair<uint16_t, Sample>> samples(r.U8());
+            for (std::pair<uint16_t, Sample> &entry : samples)
+            {
+                entry.first = r.U16();
+                Sample &s = entry.second;
+                s.flags = r.U8();
+                s.room = r.I8();
+                s.x = r.I16();
+                s.y = r.I16();
+                s.goalRoom = r.I8();
+                s.goalSlot = r.I8();
+                s.health = r.U16();
+            }
+            if (!r.Ok()) return false;
+            g_crew.pending.swap(samples);
+            g_crew.havePending = true;
+            return true;
+        }
+
+        void ApplyState(double localTime)
+        {
+            if (!g_crew.havePending) return;
+            g_crew.havePending = false;
+            ShipManager *replica = G_->GetShipManager(1);
+            if (!replica || !g_crew.active) return;
+            for (std::pair<uint16_t, Sample> &entry : g_crew.pending)
+            {
+                auto found = g_crew.puppets.find(entry.first);
+                if (found == g_crew.puppets.end()) continue;   // not in a roster yet
+                Puppet &puppet = found->second;
+                entry.second.t = localTime;
+                puppet.sample = entry.second;
+                puppet.haveSample = true;
+                const Sample &s = puppet.sample;
+                CrewMember *crew = LiveCrew(replica, puppet);
+
+                // Alive again (a clone), or never made: a new crew member in their room.
+                if (!(s.flags & FLAG_DEAD) && (!crew || crew->bDead))
+                {
+                    CreateCrew(replica, puppet);
+                    crew = puppet.crew;
+                }
+                if (!crew) continue;
+                if ((s.flags & FLAG_DEAD) && !crew->bDead)
+                {
+                    crew->health.first = 0.f;
+                    crew->Kill(true);
+                    continue;
+                }
+                if (crew->bDead) continue;
+
+                crew->health.first = std::min((float)s.health, crew->health.second);
+                if (puppet.placeNow)
+                {
+                    crew->SetPosition(Point((int)s.x, (int)s.y));
+                    puppet.placeNow = false;
+                    puppet.movingToRoom = puppet.movingToSlot = -1;
+                }
+                if (s.goalRoom >= 0 && (s.goalRoom != puppet.movingToRoom || s.goalSlot != puppet.movingToSlot))
+                {
+                    crew->MoveToRoom(s.goalRoom, s.goalSlot, true);
+                    puppet.movingToRoom = s.goalRoom;
+                    puppet.movingToSlot = s.goalSlot;
+                }
+            }
+        }
+
+        void AfterReplicaLoop(ShipManager *replica)
+        {
+            if (!g_crew.active || !replica || replica != G_->GetShipManager(1)) return;
+            double now = WallMs();
+            for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            {
+                Puppet &puppet = entry.second;
+                CrewMember *crew = LiveCrew(replica, puppet);
+                if (!crew || crew->bDead || !puppet.haveSample) continue;
+                const Sample &s = puppet.sample;
+                // Their health is their owner's, whatever happened here.
+                crew->health.first = std::min((float)s.health, crew->health.second);
+                // Too far off for too long (a door closed on one side only, a lost update): put them there.
+                float dx = crew->x - s.x, dy = crew->y - s.y;
+                if (dx * dx + dy * dy <= PLACE_DISTANCE * PLACE_DISTANCE)
+                {
+                    puppet.farSinceMs = -1.0;
+                    continue;
+                }
+                if (puppet.farSinceMs < 0.0)
+                {
+                    puppet.farSinceMs = now;
+                    continue;
+                }
+                if (now - puppet.farSinceMs < PLACE_AFTER_MS) continue;
+                crew->SetPosition(Point((int)s.x, (int)s.y));
+                puppet.farSinceMs = -1.0;
+                puppet.movingToRoom = puppet.movingToSlot = -1;
+                if (s.goalRoom >= 0)
+                {
+                    crew->MoveToRoom(s.goalRoom, s.goalSlot, true);
+                    puppet.movingToRoom = s.goalRoom;
+                    puppet.movingToSlot = s.goalSlot;
+                }
+                ++g_crew.placed;
+            }
+        }
+
+        static std::string Describe(ShipManager *ship, bool rooms)
+        {
+            // Ours by our ids; the replica's by the owner's ids (the puppets').
+            std::vector<std::pair<uint16_t, CrewMember*>> list;
+            if (ship && ship == G_->GetShipManager(0))
+            {
+                for (const std::pair<const CrewMember*, uint16_t> &entry : g_crew.ownIds) list.push_back(std::make_pair(entry.second, const_cast<CrewMember*>(entry.first)));
+            }
+            else if (ship)
+            {
+                for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+                {
+                    CrewMember *crew = LiveCrew(ship, entry.second);
+                    if (crew) list.push_back(std::make_pair(entry.first, crew));
+                }
+            }
+            std::sort(list.begin(), list.end(),
+                      [](const std::pair<uint16_t, CrewMember*> &a, const std::pair<uint16_t, CrewMember*> &b) { return a.first < b.first; });
+            std::ostringstream out;
+            for (const std::pair<uint16_t, CrewMember*> &entry : list)
+            {
+                const CrewMember *crew = entry.second;
+                if (rooms) out << entry.first << ':' << (crew->bDead ? -1 : crew->iRoomId) << ' ';
+                else out << entry.first << ':' << (crew->bDead ? 0L : std::lround(crew->health.first)) << (crew->bDead ? "x" : "") << ' ';
+            }
+            return out.str();
+        }
+
+        std::string Signature(ShipManager *ship)
+        {
+            return Describe(ship, false);
+        }
+
+        std::string RoomSignature(ShipManager *ship)
+        {
+            return Describe(ship, true);
+        }
+
+        std::string Status()
+        {
+            std::ostringstream out;
+            out << "crew: rosters " << g_crew.rostersApplied << ", puppets " << g_crew.puppets.size() << ", made "
+                << g_crew.created << ", put in place " << g_crew.placed;
+            return out.str();
+        }
+
+        bool IsPuppet(const CrewMember *crew)
+        {
+            return g_crew.active && crew && IsPuppetCrew(crew);
+        }
+
+        bool MayRepair(const ShipSystem *system)
+        {
+            return !(g_crew.active && system && system->_shipObj.iShipId == 1);
+        }
+    }
+}
