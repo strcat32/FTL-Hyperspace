@@ -34,7 +34,7 @@ namespace Duels
 
         // The verbs a line can start with, "DUEL" left out (DuelsDriver.cpp and DuelsShipControl.cpp).
         static const std::set<std::string> VERBS = {
-            "ai", "aimcheck", "arm", "augment", "autofire", "battery", "cloak", "hack", "mind", "teleport", "console", "crew", "debug", "describe", "door", "drone",
+            "ai", "aimcheck", "arm", "augment", "autofire", "battery", "cloak", "hack", "mind", "teleport", "console", "crew", "crewpower", "debug", "describe", "door", "drone",
             "droneparts", "dronepower", "export", "fire", "host", "import", "install", "ionize", "join", "keys", "leave", "lobby",
             "name", "nebula", "net", "netsim", "netstats", "nopause", "note", "pausetest", "power", "quit", "relay", "rooms", "say", "screenshot", "swap",
             "script", "spawn", "status", "stop", "supershield", "trace", "tracepower", "upgrade", "version", "view",

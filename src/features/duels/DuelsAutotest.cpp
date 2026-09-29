@@ -13,6 +13,7 @@
 // Scenario files are ordinary duel scripts plus optional directives:
 //   @timeout <seconds>     hard limit for the whole run (default 180)
 //   @nodebug               don't switch debug mode on (it is on for every other scenario: test commands need it)
+//   @ship <BLUEPRINT>      the ship to start with (a player ship, e.g. PLAYER_SHIP_FED), instead of the hangar's
 namespace Duels
 {
     enum class Phase
@@ -37,6 +38,7 @@ namespace Duels
         int dialogsClosed = 0;
         double timeoutS = 180.0;
         double startMs = 0.0;
+        std::string ship;        // @ship, empty for the hangar's own choice
         std::vector<Command> script;
     };
 
@@ -73,11 +75,12 @@ namespace Duels
         for (const std::string &directive : directives)
         {
             std::istringstream words(directive);
-            std::string key;
+            std::string key, name;
             double value;
             words >> key;
             if (key == "@timeout" && (words >> value)) g_auto.timeoutS = value;
             else if (key == "@nodebug") noDebug = true;
+            else if (key == "@ship" && (words >> name)) g_auto.ship = name;
             else Log("Autotest: unknown directive '%s'", directive.c_str());
         }
 
@@ -89,6 +92,19 @@ namespace Duels
     bool AutotestActive()
     {
         return g_auto.phase != Phase::Off;
+    }
+
+    // @ship: the hangar switches to that ship (FTL keeps them as ships[type * 3 + variant]).
+    static bool SelectShip(ShipBuilder &builder, const std::string &name)
+    {
+        const int count = (int)(sizeof(builder.ships) / sizeof(builder.ships[0]));
+        for (int i = 0; i < count; ++i)
+        {
+            if (!builder.ships[i] || builder.ships[i]->blueprintName != name) continue;
+            builder.SwitchShip(i / 3, i % 3);
+            return builder.currentShip && builder.currentShip->myBlueprint.blueprintName == name;
+        }
+        return false;
     }
 
     void AutotestOnFrame()
@@ -128,6 +144,11 @@ namespace Duels
         case Phase::OpenBuilder:
             if (g_auto.frames >= 20)
             {
+                if (!g_auto.ship.empty())
+                {
+                    bool selected = SelectShip(app->menu.shipBuilder, g_auto.ship);
+                    Log("Autotest: ship %s %s", g_auto.ship.c_str(), selected ? "selected" : "not found in the hangar");
+                }
                 app->menu.shipBuilder.Finish();
                 Log("Autotest: starting a new game");
                 Enter(Phase::WaitGame);

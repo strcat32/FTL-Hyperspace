@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 
+struct ArtillerySystem;
 struct BombProjectile;
 struct CloakingSystem;
 struct Collideable;
@@ -14,6 +15,7 @@ struct Projectile;
 struct ProjectileFactory;
 struct Ship;
 struct ShipManager;
+struct ShipSystem;
 struct SpaceDrone;
 
 // A duel between two players over the network (Step 2), under split authority: each game owns its own ship
@@ -59,8 +61,23 @@ namespace Duels
         // fractions add up).
         int SkillGains(const CrewMember *crew);
 
-        // ProjectileFactory::GetProjectile released a projectile of one of our weapons.
+        // ProjectileFactory::GetProjectile released a projectile of one of our weapons or artillery systems.
         void OnOwnProjectile(ProjectileFactory *weapon, Projectile *projectile);
+
+        // ShipManager::CheckCrystalAugment (Crystal Vengeance): the replica breaks off no shards of its own (its owner's
+        // game does, and sends them); each shard of ours at the replica goes to the opponent like a shot.
+        bool AllowShards(const ShipManager *ship);
+        void OnOwnShard(Projectile *projectile);
+
+        // ArtillerySystem::OnLoop: the replica's artillery never fires by itself (FTL would pick its own target); its
+        // shots come from its owner's game. OnReplicaArtilleryHeld counts the frames it was ready (status line).
+        bool ReplicaArtillery(const ArtillerySystem *artillery);
+        void OnReplicaArtilleryHeld();
+
+        // ShipSystem::SetBonusPower (Hyperspace calls it every frame with the bonus of the crew in the room, Zoltans):
+        // a replica system gets its owner's bonus instead of what its puppets give (they walk behind their owners, and
+        // a larger bonus takes reactor bars away).
+        bool ReplicaBonusPower(const ShipSystem *system, int &amount);
 
         // SpaceDrone::GetNextProjectile released a projectile of one of our drones: a combat drone's shot at the replica
         // goes like a weapon's; a defense drone's shot in our space is shown to the opponent (DuelsDrones.cpp).

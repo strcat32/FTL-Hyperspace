@@ -186,13 +186,46 @@ HOOK_METHOD_PRIORITY(CFPS, OnLoop, -1000, () -> void)
 // All outermost, so the game's and Hyperspace's own code runs inside, unchanged, whenever the duel isn't involved.
 // ---------------------------------------------------------------------------------------------
 
-// A projectile leaves one of our weapons: tell the opponent (exact target point, spawn time).
+// A projectile leaves one of our weapons (or artillery systems): tell the opponent (exact target point, spawn time).
 HOOK_METHOD_PRIORITY(ProjectileFactory, GetProjectile, -2000, () -> Projectile*)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ProjectileFactory::GetProjectile -> Begin (DuelsHooks.cpp)\n")
     Projectile *projectile = super();
     if (projectile && iShipId == 0) Duels::Match::OnOwnProjectile(this, projectile);
     return projectile;
+}
+
+// The replica's artillery charges but never fires by itself: FTL would pick a target of its own, and its shots come
+// from its owner's game. While its loop runs, its weapon is never ready (as Hyperspace holds a neutral ship's).
+static bool g_replicaArtilleryLoop = false;
+
+HOOK_METHOD_PRIORITY(ArtillerySystem, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ArtillerySystem::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    g_replicaArtilleryLoop = Duels::Match::ReplicaArtillery(this);
+    super();
+    g_replicaArtilleryLoop = false;
+}
+
+HOOK_METHOD_PRIORITY(ProjectileFactory, ReadyToFire, -2000, () -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ProjectileFactory::ReadyToFire -> Begin (DuelsHooks.cpp)\n")
+    bool ready = super();
+    if (!g_replicaArtilleryLoop || !ready) return ready;
+    Duels::Match::OnReplicaArtilleryHeld();
+    return false;
+}
+
+// Crystal Vengeance: the shards our ship breaks off when hit go to the opponent like shots; the replica breaks off
+// none of its own (its owner's game sends them).
+HOOK_METHOD_PRIORITY(ShipManager, CheckCrystalAugment, -2000, (Pointf pos) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::CheckCrystalAugment -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Match::AllowShards(this)) return;
+    size_t before = superBarrage.size();
+    super(pos);
+    if (iShipId != 0) return;
+    for (size_t i = before; i < superBarrage.size(); ++i) Duels::Match::OnOwnShard(superBarrage[i]);
 }
 
 // Timing of the opponent's shots on our screen: 0 updates = wait, more than 1 = catch up.
@@ -275,6 +308,31 @@ HOOK_METHOD_PRIORITY(ShipManager, OnLoop, -2000, () -> void)
     super();
     Duels::Bays::AfterLoop(this);
     Duels::Match::HoldReplicaSubsystems(this);
+}
+
+// Bonus power (Zoltan crew): a replica system has its owner's, not what its puppets in the room would give.
+HOOK_METHOD_PRIORITY(ShipSystem, SetBonusPower, -2000, (int amount, int permanentPower) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::SetBonusPower -> Begin (DuelsHooks.cpp)\n")
+    int owner = 0;
+    if (Duels::Match::ReplicaBonusPower(this, owner)) return super(owner, owner);
+    super(amount, permanentPower);
+}
+
+HOOK_METHOD_PRIORITY(WeaponSystem, SetBonusPower, -2000, (int amount, int permanentPower) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> WeaponSystem::SetBonusPower -> Begin (DuelsHooks.cpp)\n")
+    int owner = 0;
+    if (Duels::Match::ReplicaBonusPower(this, owner)) return super(owner, owner);
+    super(amount, permanentPower);
+}
+
+HOOK_METHOD_PRIORITY(DroneSystem, SetBonusPower, -2000, (int amount, int permanentPower) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> DroneSystem::SetBonusPower -> Begin (DuelsHooks.cpp)\n")
+    int owner = 0;
+    if (Duels::Match::ReplicaBonusPower(this, owner)) return super(owner, owner);
+    super(amount, permanentPower);
 }
 
 // The opponent's crew in our game are puppets: their health is their owner's (DuelsCrew.cpp), so nothing here

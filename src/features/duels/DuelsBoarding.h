@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+struct ActivatedPower;
 struct BoarderPodDrone;
 struct CompleteShip;
 struct CrewMember;
@@ -27,6 +28,7 @@ namespace Duels
         static const uint8_t MSG_RETURNED = 34;   // reliable, defender -> attacker: how they left (health, skills, or dead)
         static const uint8_t MSG_POD = 35;        // reliable, attacker -> defender: our boarding drone left (slot, robot id)
         static const uint8_t MSG_POD_RESULT = 36; // reliable, defender -> attacker: where its copy goes, lands, or shot down
+        static const uint8_t MSG_CREW_POWER = 37; // reliable, owner -> the other game: our crew member aboard your ship used a power
 
         void Reset();
         void OnFrame();
@@ -56,6 +58,16 @@ namespace Duels
         // orders them (and fight or sabotage where they are, as FTL's boarders do); puppets follow their owners. A
         // guest robot (a boarding drone's) takes no orders: the crew AI of the ship it is on moves it, as in FTL.
         bool RefusesAiOrder(const CrewMember *crew);
+
+        // Hyperspace's crew powers (ActivatedPower; in vanilla FTL only the crystal crew's lockdown): a crew member's
+        // owner decides when a power is used; the game whose ship it happens on applies it, and the state brings the
+        // effect back. Two calls from Hyperspace's CrewAbilities.cpp:
+        // ActivatedPower::OnUpdate: the opponent's crew in our game never use a power by themselves (puppets on their
+        // ship; guests aboard ours, which Hyperspace would let use one in a fight, as FTL's enemy crew do).
+        bool PowersHeld(const CrewMember *crew);
+        // ActivatedPower::PreparePower: when one of ours aboard the replica uses a power, the opponent's game uses it
+        // for its guest (MSG_CREW_POWER).
+        void OnPowerPrepared(ActivatedPower *power);
 
         // Test verb: teleport send <room> | teleport recall <room> (our teleporter, the opponent's room) | teleport
         // order <room> (our crew aboard go there).

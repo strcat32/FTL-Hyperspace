@@ -1,4 +1,5 @@
 #include "Global.h"
+#include "CrewMember_Extend.h"
 #include "Duels.h"
 #include "DuelsBoarding.h"
 #include "DuelsCrew.h"
@@ -35,6 +36,7 @@ namespace Duels
             std::vector<Returned> returns;   // reports waiting for the crew member to arrive home (the teleport takes a moment)
             std::map<const CrewMember*, uint16_t> returning;   // ours on their way home (only compared, never read)
             uint32_t sent = 0, received = 0, recalled = 0, recallsReceived = 0, returned = 0, teleportsRefused = 0;
+            uint32_t powersSent = 0, powersReceived = 0;
         };
 
         static BoardingState g_board;
@@ -551,6 +553,59 @@ namespace Duels
             Net::Send(MSG_RETURNED, w, true);
         }
 
+        // ---------------------------------------------------------------------------------------------------------
+        // Crew powers: the owner decides, the game whose ship it happens on applies it
+        // ---------------------------------------------------------------------------------------------------------
+
+        bool PowersHeld(const CrewMember *crew)
+        {
+            // Ours aboard the replica are puppets there too, but their powers are ours to use.
+            return InDuel() && crew && ((Crew::IsPuppet(crew) && Crew::AwayId(crew) < 0) || Crew::IsGuest(crew));
+        }
+
+        static int PowerIndex(const ActivatedPower *power)
+        {
+            const std::vector<ActivatedPower*> &powers = CM_EX(power->crew)->crewPowers;
+            for (size_t i = 0; i < powers.size(); ++i)
+            {
+                if (powers[i] == power) return (int)i;
+            }
+            return -1;
+        }
+
+        void OnPowerPrepared(ActivatedPower *power)
+        {
+            if (!InDuel() || !power || !power->crew) return;
+            // Ours aboard the replica (a puppet of the opponent's guest there, by our id).
+            int id = Crew::AwayId(power->crew);
+            int index = id >= 0 ? PowerIndex(power) : -1;
+            if (index < 0) return;
+            Writer w;
+            w.U16((uint16_t)id);
+            w.U8((uint8_t)index);
+            Net::Send(MSG_CREW_POWER, w, true);
+            ++g_board.powersSent;
+            Log("Boarding: our crew member %d used power %d aboard their ship", id, index);
+        }
+
+        static void OnCrewPower(Reader &r)
+        {
+            uint16_t id = r.U16();
+            int index = r.U8();
+            if (!r.Ok()) return;
+            CrewMember *guest = Crew::Guest(id);
+            const std::vector<ActivatedPower*> *powers = guest ? &CM_EX(guest)->crewPowers : nullptr;
+            if (!powers || index >= (int)powers->size())
+            {
+                Log("Boarding: their crew member %u used power %d, but no such guest (or power) is aboard", (unsigned)id, index);
+                return;
+            }
+            // Where the guest is now, in our game: FTL's own code applies it (a lockdown in that room, for example).
+            (*powers)[index]->PreparePower();
+            ++g_board.powersReceived;
+            Log("Boarding: their crew member %u used power %d aboard our ship (room %d)", (unsigned)id, index, guest->iRoomId);
+        }
+
         void OnMessage(uint8_t type, Reader &r)
         {
             if (type == MSG_BOARD) OnBoard(r);
@@ -558,6 +613,7 @@ namespace Duels
             else if (type == MSG_RETURNED) OnReturned(r);
             else if (type == MSG_POD) OnPod(r);
             else if (type == MSG_POD_RESULT) OnPodResult(r);
+            else if (type == MSG_CREW_POWER) OnCrewPower(r);
         }
 
         void OnFrame()
@@ -640,7 +696,8 @@ namespace Duels
             const PodState &p = g_pods;
             out << "boarding: sent " << b.sent << " received " << b.received << ", recalled " << b.recalled
                 << " (reports " << b.returned << "), taken back from us " << b.recallsReceived
-                << ", the replica's own teleports refused " << b.teleportsRefused
+                << ", the replica's own teleports refused " << b.teleportsRefused << ", crew powers sent " << b.powersSent
+                << " received " << b.powersReceived
                 << ", boarding drones: launched " << p.launched << " received " << p.launchesReceived << ", reported landed "
                 << p.landedReports << " shot down " << p.destroyedReports << ", waited " << p.held << " frames";
             return out.str();

@@ -1,4 +1,5 @@
 #include "Global.h"
+#include "CrewMember_Extend.h"
 #include "Duels.h"
 #include "DuelsBays.h"
 #include "DuelsBoarding.h"
@@ -10,6 +11,7 @@
 #include "DuelsWin32.h"
 #include "Projectile_Extend.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <map>
@@ -650,24 +652,84 @@ namespace Duels
         return ok;
     }
 
+    // crewpower <index> [power]: our crew member (as "crew" counts them) uses a Hyperspace crew power (the crystal
+    // crew's lockdown), as its button would, if it is ready.
+    static bool DoCrewPower(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = G_->GetShipManager(0);
+        int index, power = 0;
+        if (!ship || !ArgInt(cmd, 1, index) || (cmd.args.size() > 2 && !ArgInt(cmd, 2, power)))
+        {
+            message = "usage: crewpower <index> [power]";
+            return false;
+        }
+        std::vector<CrewMember*> crew = OwnCrew(ship);
+        if (index < 0 || index >= (int)crew.size())
+        {
+            message = "no living crew member " + std::to_string(index);
+            return false;
+        }
+        CrewMember *member = crew[index];
+        const std::vector<ActivatedPower*> &powers = CM_EX(member)->crewPowers;
+        if (power < 0 || power >= (int)powers.size())
+        {
+            message = member->species + " #" + std::to_string(index) + " has no power " + std::to_string(power);
+            return false;
+        }
+        PowerReadyState ready = powers[power]->PowerReady();
+        if (ready != POWER_READY)
+        {
+            message = member->species + " #" + std::to_string(index) + " power " + std::to_string(power) + " not ready (" +
+                      std::to_string((int)ready) + ")";
+            return false;
+        }
+        powers[power]->PreparePower();
+        message = member->species + " #" + std::to_string(index) + " used power " + std::to_string(power) + " in room " +
+                  std::to_string(member->iRoomId) + " of ship " + std::to_string(member->currentShipId);
+        return true;
+    }
+
     static bool DoDoor(const Command &cmd, std::string &message)
     {
         ShipManager *ship = ArgShip(cmd, 1, message);
         if (!ship) return false;
         int doorId;
         bool open;
-        if (!ArgInt(cmd, 2, doorId) || !ArgOnOff(cmd, 3, open))
+        bool all = ArgIs(cmd, 2, "all");
+        if ((!all && !ArgInt(cmd, 2, doorId)) || !ArgOnOff(cmd, 3, open))
         {
-            message = "usage: door <ship> <door id> open|close";
+            message = "usage: door <ship> <door id>|all open|close";
             return false;
         }
-        for (Door *door : ship->ship.vDoorList)
+        if (all)
         {
-            if (door->iDoorId != doorId) continue;
-            if (open) door->Open();
-            else door->Close();
-            message = "door " + std::to_string(doorId) + (door->bOpen ? " open" : " closed");
-            return door->bOpen == open;
+            // Every door, the airlocks too (a ship losing its air, for tests).
+            int count = 0;
+            for (const std::vector<Door*> *list : {&ship->ship.vDoorList, &ship->ship.vOuterAirlocks})
+            {
+                for (Door *door : *list)
+                {
+                    if (open) door->Open();
+                    else door->Close();
+                    ++count;
+                }
+            }
+            message = std::to_string(count) + (open ? " doors opened" : " doors closed") + " (" +
+                      std::to_string(ship->ship.vOuterAirlocks.size()) + " airlocks)";
+            return true;
+        }
+        // Inner doors, then the airlocks (FTL keeps those to space apart).
+        for (const std::vector<Door*> *list : {&ship->ship.vDoorList, &ship->ship.vOuterAirlocks})
+        {
+            for (Door *door : *list)
+            {
+                if (door->iDoorId != doorId) continue;
+                if (open) door->Open();
+                else door->Close();
+                message = (list == &ship->ship.vOuterAirlocks ? "airlock " : "door ") + std::to_string(doorId) +
+                          (door->bOpen ? " open" : " closed");
+                return door->bOpen == open;
+            }
         }
         message = "no door " + std::to_string(doorId);
         return false;
@@ -848,12 +910,21 @@ namespace Duels
                     (int)weapon->autoFiring);
             }
         }
+        for (size_t index = 0; index < ship->artillerySystems.size(); ++index)
+        {
+            ProjectileFactory *weapon = ship->artillerySystems[index] ? ship->artillerySystems[index]->projectileFactory : nullptr;
+            if (!weapon) continue;
+            Log("  artillery %u %-15s type %d %s charge %.2f/%.2f", (unsigned)index, weapon->name.c_str(),
+                weapon->blueprint ? weapon->blueprint->type : -1, weapon->powered ? "on " : "off", weapon->cooldown.first,
+                weapon->cooldown.second);
+        }
         std::vector<CrewMember*> crew = OwnCrew(ship);
         for (size_t index = 0; index < crew.size(); ++index)
         {
             CrewMember *member = crew[index];
-            Log("  crew %u %-8s on ship %d room %2d health %.0f/%.0f", (unsigned)index, member->species.c_str(),
-                member->currentShipId, member->iRoomId, member->health.first, member->health.second);
+            Log("  crew %u %-8s on ship %d room %2d health %.0f/%.0f%s", (unsigned)index, member->species.c_str(),
+                member->currentShipId, member->iRoomId, member->health.first, member->health.second,
+                member->fStunTime > 0.f ? (" stunned " + std::to_string((int)std::ceil(member->fStunTime)) + " s").c_str() : "");
         }
         for (Door *door : ship->ship.vDoorList)
         {
@@ -952,6 +1023,7 @@ namespace Duels
         if (verb == "fire") return DoFire(cmd, message);
         if (verb == "autofire") return DoAutofire(cmd, message);
         if (verb == "crew") return DoCrew(cmd, message);
+        if (verb == "crewpower") return DoCrewPower(cmd, message);
         if (verb == "door") return DoDoor(cmd, message);
         if (verb == "cloak") return DoCloak(cmd, message);
         if (verb == "spawn") return DoSpawn(cmd, message);

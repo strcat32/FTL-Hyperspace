@@ -1,5 +1,6 @@
 #include "CrewMember_Extend.h"
 #include "CrewBox_Extend.h"
+#include "features/duels/DuelsBoarding.h"
 #include "CustomCrew.h"
 #include "CustomEvents.h"
 #include "ShipUnlocks.h"
@@ -501,6 +502,9 @@ void ActivatedPower::PreparePower()
     lua_pop(context->GetLua(), 1);
     if (preempt) return;
 
+    // FTL: Duels: our crew member aboard the opponent's ship used it; the opponent's game uses it there too.
+    Duels::Boarding::OnPowerPrepared(this);
+
     PrepareAnimation();
     powerDone = false;
 
@@ -777,7 +781,9 @@ void ActivatedPower::OnUpdate()
         }
 
         // If power is enabled and crew is alive and functional then check if they should activate their power automatically.
-        if (this->enabled && !crew->IsDead() && crew->Functional() && crew->crewAnim->status != 3)
+        // FTL: Duels: not the opponent's crew in a duel (their owner decides).
+        if (this->enabled && !crew->IsDead() && crew->Functional() && crew->crewAnim->status != 3 &&
+            !Duels::Boarding::PowersHeld(crew))
         {
             if (this->activateWhenReady)
             {
