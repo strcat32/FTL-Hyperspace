@@ -4,6 +4,7 @@
 #include <string>
 
 struct BombProjectile;
+struct CloakingSystem;
 struct Collideable;
 struct CrewMember;
 struct CollisionResponse;
@@ -11,6 +12,7 @@ struct Damage;
 struct Pointf;
 struct Projectile;
 struct ProjectileFactory;
+struct Ship;
 struct ShipManager;
 struct SpaceDrone;
 
@@ -94,5 +96,14 @@ namespace Duels
         // power. This game's loop sets them from this game's environment, which isn't the owner's (a nebula here or
         // there switches the sensors off).
         void HoldReplicaSubsystems(ShipManager *ship);
+
+        // CloakingSystem::SetTurnedOn: the replica's cloak goes on and off only with its owner's (roadmap 2.4); its
+        // own timer, power or damage would end it a moment before the owner's does.
+        bool MaySwitchCloak(const CloakingSystem *cloak);
+
+        // Ship::DamageHull: how much of this damage the ship takes. The replica's hull reaches 0 only when its
+        // owner's state says so: our copy of a hit can come after the update that already counted it, and at 1 hull
+        // FTL would wreck the replica here while the owner's ship still flies.
+        int HullDamage(const Ship *ship, int amount);
     }
 }

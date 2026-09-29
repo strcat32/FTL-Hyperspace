@@ -12,6 +12,7 @@
 #include "DuelsShipControl.h"
 #include "DuelsView.h"
 
+#include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <cmath>
 
@@ -417,6 +418,64 @@ HOOK_METHOD_PRIORITY(WeaponSystem, PowerWeapon, -2000, (ProjectileFactory *weapo
     LOG_HOOK("HOOK_METHOD_PRIORITY -> WeaponSystem::PowerWeapon -> Begin (DuelsHooks.cpp)\n")
     if (!Duels::Bays::MayPower(G_->GetShipManager(_shipObj.iShipId), weapon)) return false;
     return super(weapon, userDriven, force);
+}
+
+// A weapon whose bay is out shows red: its box in the weapons bar, and its power as red bars on the weapons system.
+HOOK_METHOD_PRIORITY(WeaponBox, StatusColor, -2000, () -> GL_Color)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> WeaponBox::StatusColor -> Begin (DuelsHooks.cpp)\n")
+    GL_Color color = super();
+    if (pWeapon && Duels::Bays::BayOut(pWeapon)) return GL_Color(1.f, 50.f / 255.f, 50.f / 255.f, 1.f);
+    return color;
+}
+
+HOOK_METHOD_PRIORITY(DroneBox, StatusColor, -2000, () -> GL_Color)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> DroneBox::StatusColor -> Begin (DuelsHooks.cpp)\n")
+    GL_Color color = super();
+    if (pDrone && Duels::Bays::DroneBayOut(pDrone)) return GL_Color(1.f, 50.f / 255.f, 50.f / 255.f, 1.f);
+    return color;
+}
+
+HOOK_METHOD_PRIORITY(Ship, DamageHull, -2000, (int amount) -> int)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Ship::DamageHull -> Begin (DuelsHooks.cpp)\n")
+    return super(Duels::Match::HullDamage(this, amount));
+}
+
+HOOK_METHOD_PRIORITY(CloakingSystem, SetTurnedOn, -2000, (bool val) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CloakingSystem::SetTurnedOn -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Match::MaySwitchCloak(this)) return;
+    super(val);
+}
+
+HOOK_METHOD_PRIORITY(DroneSystem, PowerDrone1, -2000, (Drone *drone, bool userDriven, bool force) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> DroneSystem::PowerDrone1 -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Bays::MayPowerDrone(G_->GetShipManager(_shipObj.iShipId), drone)) return false;
+    return super(drone, userDriven, force);
+}
+
+HOOK_METHOD_PRIORITY(ShipSystem, RenderPowerBoxes, -2000, (int x, int y, int width, int height, int gap, int heightMod, bool flash) -> int)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::RenderPowerBoxes -> Begin (DuelsHooks.cpp)\n")
+    int out = Duels::Bays::PowerOut(this);
+    if (out <= 0) return super(x, y, width, height, gap, heightMod, flash);
+    // Drawn as damage for this call only: the weapons system's real health (and power) stays.
+    int health = healthState.first;
+    healthState.first = std::max(0, std::min(health, healthState.second - out));
+    int ret = super(x, y, width, height, gap, heightMod, flash);
+    healthState.first = health;
+    return ret;
+}
+
+// A bay without a weapon shows nothing in the subsystem panel.
+HOOK_METHOD_PRIORITY(SystemBox, OnRender, -2000, (bool ignoreStatus) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SystemBox::OnRender -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::HideBox(pSystem)) return;
+    super(ignoreStatus);
 }
 
 // The icon in W1 is bay 1's.

@@ -157,6 +157,7 @@ namespace Duels
             double lastFireMs[MAX_SLOTS];   // when a replica weapon last fired a received shot
 
             uint32_t shotsSent = 0, shotsReceived = 0, verdictsSent = 0, verdictsReceived = 0, holdTimeouts = 0;
+            uint32_t hullKept = 0;         // hits whose copy would have taken the replica's last hull point
             std::set<std::string> unsupportedLogged;
 
             CsvFile shotsCsv;
@@ -526,6 +527,59 @@ namespace Duels
             }
         }
 
+        // Cloaking (roadmap 2.4). FTL's cloak: on for 5 s per power bar, each shot fired while cloaked takes a fifth
+        // off (not with the Stealth Weapons augment), then locked for 4 lock periods; while it runs the ship has 60%
+        // more evasion and the enemy's weapons don't charge. Each game's own ship decides all of that; the replica's
+        // cloak only follows the owner's: the opponent's weapons stop charging while it is on (Hyperspace's
+        // ProjectileFactory::Update asks the target's IsCloaked), and it shows cloaked.
+        static bool g_cloakFromOwner = false;   // the state sync is switching the replica's cloak
+
+        bool MaySwitchCloak(const CloakingSystem *cloak)
+        {
+            if (g_cloakFromOwner || !g_match.replicaReady || !cloak) return true;
+            ShipManager *replica = G_->GetShipManager(1);
+            return !replica || replica->cloakSystem != cloak;
+        }
+
+        int HullDamage(const Ship *ship, int amount)
+        {
+            ShipManager *replica = g_match.replicaReady ? G_->GetShipManager(1) : nullptr;
+            if (!replica || ship != &replica->ship || amount <= 0) return amount;
+            int keep = std::max(0, ship->hullIntegrity.first - 1);
+            if (amount <= keep) return amount;
+            ++g_match.hullKept;
+            return keep;
+        }
+
+        static void SetReplicaCloak(CloakingSystem *cloak, bool on, float time, float goal)
+        {
+            if (cloak->bTurnedOn != on)
+            {
+                // FTL's own switch: its sound, and the locks it sets (the owner's replace them, ApplyLocks). It
+                // refuses a locked cloak: the owner's lock while it runs is already on the replica.
+                int lock = cloak->iLockCount;
+                cloak->iLockCount = 0;
+                g_cloakFromOwner = true;
+                cloak->SetTurnedOn(on);
+                g_cloakFromOwner = false;
+                if (cloak->iLockCount == 0) cloak->iLockCount = lock;
+                if (cloak->bTurnedOn != on)
+                {
+                    // Not working here (no power yet): switched without FTL's function.
+                    Log("Match: the replica's cloak did not switch %s by itself (power %d, health %d)", on ? "on" : "off",
+                        cloak->GetEffectivePower(), cloak->healthState.first);
+                    cloak->bTurnedOn = on;
+                }
+            }
+            if (on)
+            {
+                // Behind the owner's, like the lock timers.
+                cloak->timer.currGoal = goal;
+                cloak->timer.currTime = std::max(0.f, time - LOCK_TIMER_LAG_S);
+                cloak->timer.running = true;
+            }
+        }
+
         // A replica system that could not take its owner's power (logged once per new combination).
         static void LogPowerMiss(const ShipSystem *system, int wanted)
         {
@@ -588,6 +642,16 @@ namespace Duels
                 w.F32(battery->timer.currTime);
             }
 
+            // Cloaking: on, and how far its time has run (its length is the power; each shot fired shortens it).
+            CloakingSystem *cloak = ship->cloakSystem;
+            w.Bool(cloak != nullptr);
+            if (cloak)
+            {
+                w.Bool(cloak->bTurnedOn);
+                w.F32(cloak->timer.currTime);
+                w.F32(cloak->timer.currGoal);
+            }
+
             std::vector<ProjectileFactory*> weapons = ship->weaponSystem ? ship->GetWeaponList() : std::vector<ProjectileFactory*>();
             w.U8((uint8_t)weapons.size());
             for (ProjectileFactory *weapon : weapons)
@@ -643,6 +707,10 @@ namespace Duels
             bool hasBattery = r.Bool();
             bool batteryOn = hasBattery && r.Bool();
             float batteryTime = hasBattery ? r.F32() : 0.f;
+            bool hasCloak = r.Bool();
+            bool cloakOn = hasCloak && r.Bool();
+            float cloakTime = hasCloak ? r.F32() : 0.f;
+            float cloakGoal = hasCloak ? r.F32() : 0.f;
             struct WeaponState { bool powered; float charge; };
             std::vector<WeaponState> weapons(r.U8());
             for (WeaponState &weapon : weapons)
@@ -697,6 +765,9 @@ namespace Duels
                 if (PowerBars(system) != state.power) SetReplicaPower(replica, system, state.power);
                 if (PowerBars(system) != state.power) LogPowerMiss(system, state.power);
             }
+
+            // The cloak after the systems, so its power is there.
+            if (hasCloak && replica->cloakSystem) SetReplicaCloak(replica->cloakSystem, cloakOn, cloakTime, cloakGoal);
 
             if (hasShields && replica->shieldSystem)
             {
@@ -1599,6 +1670,7 @@ namespace Duels
             out << ',' << Drones::Signature(ship);
             out << ',' << Crew::Signature(ship) << ',' << Crew::RoomSignature(ship) << ',' << Rooms::Signature(ship)
                 << ',' << Crew::AnimationSignature(ship) << ',' << Bays::Signature(ship);
+            out << ',' << (!ship->cloakSystem ? "-" : ship->cloakSystem->bTurnedOn ? "on" : "off");
             return out.str();
         }
 
@@ -1615,7 +1687,7 @@ namespace Duels
                 std::string signature = Signature(ship);
                 if (signature == m.lastSignature[shipId]) continue;
                 m.lastSignature[shipId] = signature;
-                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms,crew_anim,bays");
+                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms,crew_anim,bays,cloak");
                 Row row;
                 row << now << Net::LocalToPeerTime(0.0) << (shipId == 0 ? "own" : "replica") << signature;
                 m.syncCsv.WriteRow(row.str());
@@ -1898,7 +1970,7 @@ namespace Duels
                 << (m.replicaReady ? " built" : "") << (m.peerReady ? ", ours built there" : "")
                 << ", states applied " << m.statesApplied << ", shots out " << m.shotsSent << " in " << m.shotsReceived
                 << ", verdicts sent " << m.verdictsSent << " received " << m.verdictsReceived << ", hold timeouts "
-                << m.holdTimeouts << ", " << Drones::Status() << ", " << Crew::Status() << ", " << Rooms::Status()
+                << m.holdTimeouts << ", replica's last hull point kept " << m.hullKept << ", " << Drones::Status() << ", " << Crew::Status() << ", " << Rooms::Status()
                 << ", " << Bays::Status() << ", " << CrewXpStatus() << " (skill gains " << g_xpGains << " counted "
                 << g_xpCounted << ")";
             return out.str();

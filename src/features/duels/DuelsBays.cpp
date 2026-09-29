@@ -18,7 +18,20 @@ namespace Duels
     namespace Bays
     {
         static const int TILE = 35;
-        static const char *const BAY_NAMES[MAX_BAYS] = {"weapon_bay_1", "weapon_bay_2", "weapon_bay_3", "weapon_bay_4"};
+
+        // Two kinds of bays: one per weapon slot and one per drone slot.
+        enum Kind
+        {
+            WEAPONS = 0,
+            DRONES = 1,
+            KINDS = 2
+        };
+        static const int SYSTEM_OF[KINDS] = {SYS_WEAPONS, SYS_DRONES};
+        static const char LETTER[KINDS] = {'W', 'D'};
+        static const char *const KIND_NAME[KINDS] = {"weapons", "drones"};
+        static const char *const BAY_NAMES[KINDS][MAX_BAYS] = {
+            {"weapon_bay_1", "weapon_bay_2", "weapon_bay_3", "weapon_bay_4"},
+            {"drone_bay_1", "drone_bay_2", "drone_bay_3", nullptr}};
 
         struct Tile
         {
@@ -40,21 +53,28 @@ namespace Duels
         // How one layout is cut. The layout's room ids stay; new rooms get the next free ids.
         struct Plan
         {
-            bool ok = false;
-            int weaponsRoom = -1;           // keeps its id: now the 1x1 room W1, with the gunner console
-            int consoleDirection = -1;      // FTL's direction (Globals::GetDirection), -1: FTL chooses
-            bool consoleSet = false;        // the console is W1's slot 0 (it was set in the blueprint or its picture)
-            std::vector<int> bayRooms;      // bay 1 (W1) .. bay n
-            std::vector<int> spareRooms;    // tiles no weapon slot needs: empty rooms
-            // Rooms cut smaller whose system keeps its picture where the whole room was: room -> how far (tiles) the
-            // room's top left corner moved.
-            std::map<int, Tile> moved;
+            // One system room cut into bays: the weapons room (W1 keeps its id and the gunner console) or the drone
+            // control room (D1 keeps its id).
+            struct Cut
+            {
+                bool ok = false;
+                int systemRoom = -1;
+                int consoleDirection = -1;      // FTL's direction (Globals::GetDirection), -1: FTL chooses
+                bool consoleSet = false;        // the console is bay 1's slot 0 (it was set in the blueprint or picture)
+                std::vector<int> bayRooms;      // bay 1 .. bay n
+                std::vector<int> spareRooms;    // tiles no slot needs: empty rooms
+            };
             // Each room that was cut, and the rooms it became: drawn as one room (no walls or doors between them).
             struct Group
             {
                 TileRect original;          // in the layout's tiles
                 std::vector<int> rooms;
             };
+            bool ok = false;
+            Cut cuts[KINDS];
+            // Rooms cut smaller whose system keeps its picture where the whole room was: room -> how far (tiles) the
+            // room's top left corner moved.
+            std::map<int, Tile> moved;
             std::vector<Group> groups;
             int xOffset = 0, yOffset = 0;   // the layout's X_OFFSET and Y_OFFSET (FTL's room rectangles include them)
             std::string text;               // the layout, cut
@@ -65,7 +85,7 @@ namespace Duels
         {
             std::map<std::string, Plan> plans;     // by layout name
             bool typesKnown = false;
-            int types[MAX_BAYS] = {-1, -1, -1, -1};
+            int types[KINDS][MAX_BAYS] = {{-1, -1, -1, -1}, {-1, -1, -1, -1}};
             std::map<std::string, std::pair<Tile, std::string>> glows;   // rooms.xml: picture -> console tile (px) and direction
             bool glowsLoaded = false;
             const std::string *building = nullptr;   // the layout of the ship whose systems are being added
@@ -75,9 +95,9 @@ namespace Duels
             // The doors inside a cut room: out of the ship's door list (not drawn, not clickable, not closed by the
             // doors system), open, and still in its room graph so crew walk through.
             std::map<const Ship*, std::vector<Door*>> hiddenDoors;
-            // The kind of weapon each bay's icons show, with the room icon they were made for (a new system gets new ones).
+            // The kind each bay's icons show, with the room icon they were made for (a new system gets new ones).
             std::map<const ShipSystem*, std::pair<const GL_Primitive*, std::string>> icons;
-            uint32_t layoutsCut = 0, blueprintsPatched = 0, weaponsRestored = 0, weaponsSwitchedOff = 0;
+            uint32_t layoutsCut = 0, blueprintsPatched = 0, switchedOff = 0, systemsRestored = 0;
             uint32_t doorsHidden = 0, wallsLeftOut = 0, iconsChanged = 0;
         };
 
@@ -87,29 +107,54 @@ namespace Duels
         // Bay systems
         // ---------------------------------------------------------------------------------------------------------
 
-        static int BayType(int number)
+        static int MaxBays(int kind)
+        {
+            int count = 0;
+            while (count < MAX_BAYS && BAY_NAMES[kind][count]) ++count;
+            return count;
+        }
+
+        static int BayType(int kind, int number)
         {
             if (!g_bays.typesKnown)
             {
                 g_bays.typesKnown = true;
-                for (int i = 0; i < MAX_BAYS; ++i)
+                for (int k = 0; k < KINDS; ++k)
                 {
-                    int type = ShipSystem::NameToSystemId(BAY_NAMES[i]);
-                    g_bays.types[i] = type >= SYS_CUSTOM_FIRST ? type : -1;
-                    if (g_bays.types[i] < 0) g_bays.typesKnown = false;   // data not loaded yet: ask again later
+                    for (int i = 0; i < MaxBays(k); ++i)
+                    {
+                        int type = ShipSystem::NameToSystemId(BAY_NAMES[k][i]);
+                        g_bays.types[k][i] = type >= SYS_CUSTOM_FIRST ? type : -1;
+                        if (g_bays.types[k][i] < 0) g_bays.typesKnown = false;   // data not loaded yet: ask again later
+                    }
                 }
             }
-            return number >= 1 && number <= MAX_BAYS ? g_bays.types[number - 1] : -1;
+            return number >= 1 && number <= MaxBays(kind) ? g_bays.types[kind][number - 1] : -1;
+        }
+
+        // The kind and number (1..) of a bay system; false if the system is no bay.
+        static bool BayOf(int systemType, int &kind, int &number)
+        {
+            if (systemType < SYS_CUSTOM_FIRST) return false;
+            for (int k = 0; k < KINDS; ++k)
+            {
+                for (int n = 1; n <= MaxBays(k); ++n)
+                {
+                    if (BayType(k, n) == systemType)
+                    {
+                        kind = k;
+                        number = n;
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         int BayNumber(int systemType)
         {
-            if (systemType < SYS_CUSTOM_FIRST) return 0;
-            for (int number = 1; number <= MAX_BAYS; ++number)
-            {
-                if (BayType(number) == systemType) return number;
-            }
-            return 0;
+            int kind, number;
+            return BayOf(systemType, kind, number) ? number : 0;
         }
 
         bool IsBay(const ShipSystem *system)
@@ -117,9 +162,9 @@ namespace Duels
             return system && BayNumber(system->iSystemType) > 0;
         }
 
-        static ShipSystem *Bay(ShipManager *ship, int number)
+        static ShipSystem *Bay(ShipManager *ship, int kind, int number)
         {
-            int type = BayType(number);
+            int type = BayType(kind, number);
             if (!ship || type < 0 || type >= (int)ship->systemKey.size() || ship->systemKey[type] < 0) return nullptr;
             return ship->GetSystem(type);
         }
@@ -129,11 +174,53 @@ namespace Duels
             return system ? G_->GetShipManager(system->_shipObj.iShipId) : nullptr;
         }
 
-        // A bay that switches its weapon off: damaged (a weapon needs all its bars), ioned or hacked.
+        // A bay that switches its weapon or drone off: damaged (it needs all its bars), ioned or hacked.
         static bool Disabled(const ShipSystem *bay)
         {
             return bay->healthState.first < bay->healthState.second || bay->iLockCount > 0 ||
                    (bay->bUnderAttack && bay->iHackEffect >= 2);
+        }
+
+        // The weapon or drone in a slot (index from 0), what it needs, whether it is on.
+        static ProjectileFactory *Weapon(ShipManager *ship, int index)
+        {
+            if (!ship || !ship->weaponSystem || index < 0) return nullptr;
+            const std::vector<ProjectileFactory*> &list = ship->weaponSystem->weapons;
+            return index < (int)list.size() ? list[index] : nullptr;
+        }
+
+        static Drone *DroneIn(ShipManager *ship, int index)
+        {
+            if (!ship || !ship->droneSystem || index < 0) return nullptr;
+            const std::vector<Drone*> &list = ship->droneSystem->drones;
+            return index < (int)list.size() ? list[index] : nullptr;
+        }
+
+        static bool HasItem(ShipManager *ship, int kind, int index)
+        {
+            return kind == WEAPONS ? Weapon(ship, index) != nullptr : DroneIn(ship, index) != nullptr;
+        }
+
+        static int ItemPower(ShipManager *ship, int kind, int index)
+        {
+            if (kind == WEAPONS)
+            {
+                ProjectileFactory *weapon = Weapon(ship, index);
+                return weapon ? std::max(1, weapon->requiredPower) : 1;
+            }
+            Drone *drone = DroneIn(ship, index);
+            return drone ? std::max(1, drone->powerRequired) : 1;
+        }
+
+        static bool ItemPowered(ShipManager *ship, int kind, int index)
+        {
+            if (kind == WEAPONS)
+            {
+                ProjectileFactory *weapon = Weapon(ship, index);
+                return weapon && weapon->powered;
+            }
+            Drone *drone = DroneIn(ship, index);
+            return drone && drone->powered;
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -225,14 +312,8 @@ namespace Duels
             return nullptr;
         }
 
-        static int SystemRoom(const ShipBlueprint *bp, int system)
-        {
-            auto found = bp->systemInfo.find(system);
-            return found != bp->systemInfo.end() && !found->second.location.empty() ? found->second.location[0] : -1;
-        }
-
         // Where a system's console is (tile in its room, row by row), from the blueprint's slot or else from its
-        // room picture's glow (the blueprint's picture, or FTL's default "room_<system>"); -1 when FTL chooses.
+        // room picture's glow (the blueprint's picture, or FTL's default "room_<system>"); -1 when there is none.
         static int ConsoleSlot(int type, const ShipBlueprint::SystemTemplate &system, const TileRect &room, int &direction)
         {
             direction = -1;
@@ -252,77 +333,81 @@ namespace Duels
             return row * room.w + column;
         }
 
-        static Plan MakePlan(const std::string &layout, const char *text)
+        // The layout while it is cut: its entries, the rooms as they are now, the new rooms, and where each tile of a
+        // cut room went.
+        struct Cutting
         {
-            Plan plan;
-            const ShipBlueprint *bp = PlayerBlueprint(layout);
-            if (!bp) return plan;
-            auto weapons = bp->systemInfo.find(SYS_WEAPONS);
-            if (weapons == bp->systemInfo.end() || weapons->second.location.empty()) return plan;
-            int slots = std::max(1, std::min(MAX_BAYS, bp->weaponSlots > 0 ? bp->weaponSlots : 4));
-            plan.weaponsRoom = weapons->second.location[0];
-
-            std::vector<Entry> entries = ParseLayout(text);
-            std::map<int, TileRect> rooms;
+            const ShipBlueprint *bp = nullptr;
+            std::vector<Entry> entries;
+            std::map<int, TileRect> rooms;       // as they are now (donors shrink)
+            std::map<int, TileRect> original;    // every cut room as it was
             int nextId = 0;
             size_t lastRoom = 0;
-            for (size_t i = 0; i < entries.size(); ++i)
-            {
-                const Entry &entry = entries[i];
-                if (entry.key != "ROOM" || entry.args.size() < 5) continue;
-                rooms[entry.args[0]] = TileRect{entry.args[1], entry.args[2], entry.args[3], entry.args[4]};
-                nextId = std::max(nextId, entry.args[0] + 1);
-                lastRoom = i;
-            }
-            auto weaponsRect = rooms.find(plan.weaponsRoom);
-            if (weaponsRect == rooms.end()) return plan;
-            const TileRect wr = weaponsRect->second;
+            std::vector<Entry> newRooms;
+            std::map<Tile, int> tileRoom;        // tiles of cut rooms -> the room each is in now
+            std::map<Tile, int> donated;         // tiles given by a neighbour -> that room
+        };
 
-            // The console's tile becomes W1; then the room's other tiles row by row.
+        // Cuts one system room into 1x1 rooms, one per slot (bay 1 keeps the room's id and its console tile), taking
+        // missing tiles from a neighbouring room one tile wide.
+        static bool CutRoom(Cutting &c, Plan &plan, int kind, int slots, std::ostringstream &summary)
+        {
+            auto system = c.bp->systemInfo.find(SYSTEM_OF[kind]);
+            if (system == c.bp->systemInfo.end() || system->second.location.empty()) return false;
+            Plan::Cut &cut = plan.cuts[kind];
+            cut.systemRoom = system->second.location[0];
+            auto rect = c.rooms.find(cut.systemRoom);
+            if (rect == c.rooms.end() || slots < 1) return false;
+            const TileRect sr = rect->second;
+            c.original[cut.systemRoom] = sr;
+
+            // The console's tile (weapons) becomes bay 1; then the room's other tiles row by row.
             int direction = -1;
-            int consoleSlot = ConsoleSlot(SYS_WEAPONS, weapons->second, wr, direction);
-            plan.consoleSet = consoleSlot >= 0;
-            plan.consoleDirection = direction;
+            int consoleSlot = ConsoleSlot(SYSTEM_OF[kind], system->second, sr, direction);
+            cut.consoleSet = consoleSlot >= 0;
+            cut.consoleDirection = direction;
             if (consoleSlot < 0) consoleSlot = 0;
-            Tile console{wr.x + consoleSlot % wr.w, wr.y + consoleSlot / wr.w};
-            std::vector<Tile> tiles{console};
-            for (int y = wr.y; y < wr.y + wr.h; ++y)
+            Tile first{sr.x + consoleSlot % sr.w, sr.y + consoleSlot / sr.w};
+            std::vector<Tile> tiles{first};
+            for (int y = sr.y; y < sr.y + sr.h; ++y)
             {
-                for (int x = wr.x; x < wr.x + wr.w; ++x)
+                for (int x = sr.x; x < sr.x + sr.w; ++x)
                 {
-                    if (!(Tile{x, y} == console)) tiles.push_back(Tile{x, y});
+                    if (!(Tile{x, y} == first)) tiles.push_back(Tile{x, y});
                 }
             }
 
-            // Too few tiles (Engi B: 2 tiles, 3 slots): a neighbouring room one tile wide gives the tile at its end
-            // next to the weapons room, unless its console is there.
-            std::map<Tile, int> donated;   // tile -> the room that gave it
+            // Too few tiles (Engi B's weapons: 2 tiles, 3 slots): a neighbouring room one tile wide gives the tile at
+            // its end next to the cut room, unless its console is there.
+            std::vector<Tile> gifts;
             for (size_t i = 0; (int)tiles.size() < slots && i < tiles.size(); ++i)
             {
                 static const int DX[4] = {1, -1, 0, 0}, DY[4] = {0, 0, 1, -1};
                 for (int d = 0; d < 4 && (int)tiles.size() < slots; ++d)
                 {
                     Tile t{tiles[i].x + DX[d], tiles[i].y + DY[d]};
-                    if (wr.Contains(t) || donated.count(t)) continue;
-                    for (std::pair<const int, TileRect> &room : rooms)
+                    if (sr.Contains(t) || c.donated.count(t) || c.tileRoom.count(t)) continue;
+                    for (std::pair<const int, TileRect> &room : c.rooms)
                     {
                         TileRect &r = room.second;
-                        if (room.first == plan.weaponsRoom || !r.Contains(t)) continue;
+                        if (room.first == cut.systemRoom || !r.Contains(t)) continue;
                         bool thin = (r.w == 1 && r.h >= 2) || (r.h == 1 && r.w >= 2);
                         bool atEnd = (r.w == 1 && (t.y == r.y || t.y == r.y + r.h - 1)) ||
                                      (r.h == 1 && (t.x == r.x || t.x == r.x + r.w - 1));
-                        if (!thin || !atEnd) break;
+                        if (!thin || !atEnd || c.original.count(room.first)) break;
                         bool console = false;
-                        for (const std::pair<const int, ShipBlueprint::SystemTemplate> &system : bp->systemInfo)
+                        for (const std::pair<const int, ShipBlueprint::SystemTemplate> &other : c.bp->systemInfo)
                         {
-                            if (system.second.location.empty() || system.second.location[0] != room.first) continue;
+                            if (other.second.location.empty() || other.second.location[0] != room.first) continue;
                             int ignored;
-                            int slot = ConsoleSlot(system.first, system.second, r, ignored);
+                            int slot = ConsoleSlot(other.first, other.second, r, ignored);
                             if (slot >= 0 && Tile{r.x + slot % r.w, r.y + slot / r.w} == t) console = true;
                         }
                         if (console) break;
-                        donated[t] = room.first;
+                        c.donated[t] = room.first;
+                        c.original[room.first] = r;
                         tiles.push_back(t);
+                        gifts.push_back(t);
                         Plan::Group group;
                         group.original = r;
                         group.rooms.push_back(room.first);
@@ -342,141 +427,167 @@ namespace Duels
             }
             if ((int)tiles.size() < slots)
             {
-                plan.summary = "too few tiles for the weapon slots";
-                return plan;
+                summary << KIND_NAME[kind] << " room " << cut.systemRoom << ": too few tiles for " << slots << " slots; ";
+                return false;
             }
 
-            // Rooms: W1 keeps the weapons room's id, the rest are new.
-            std::map<Tile, int> tileRoom;
-            tileRoom[console] = plan.weaponsRoom;
-            plan.bayRooms.push_back(plan.weaponsRoom);
-            plan.moved[plan.weaponsRoom] = Tile{console.x - wr.x, console.y - wr.y};
-            // Bays: the weapons room's tiles first, then donated ones; spare tiles last.
+            // Bay 1 keeps the room's id; the room's other tiles and donated ones become bays, spare tiles last.
+            c.tileRoom[first] = cut.systemRoom;
+            cut.bayRooms.push_back(cut.systemRoom);
+            plan.moved[cut.systemRoom] = Tile{first.x - sr.x, first.y - sr.y};
             std::vector<Tile> bayTiles, spareTiles;
             for (size_t i = 1; i < tiles.size(); ++i)
             {
-                bool own = wr.Contains(tiles[i]);
-                if ((int)(bayTiles.size() + 1) < slots && (own || donated.count(tiles[i]))) bayTiles.push_back(tiles[i]);
+                bool own = sr.Contains(tiles[i]);
+                bool gift = std::find(gifts.begin(), gifts.end(), tiles[i]) != gifts.end();
+                if ((int)(bayTiles.size() + 1) < slots && (own || gift)) bayTiles.push_back(tiles[i]);
                 else if (own) spareTiles.push_back(tiles[i]);
             }
-            std::vector<Entry> newRooms;
             for (const Tile &t : bayTiles)
             {
-                tileRoom[t] = nextId;
-                plan.bayRooms.push_back(nextId);
-                newRooms.push_back(Entry{"ROOM", {nextId, t.x, t.y, 1, 1}});
-                ++nextId;
+                c.tileRoom[t] = c.nextId;
+                cut.bayRooms.push_back(c.nextId);
+                c.newRooms.push_back(Entry{"ROOM", {c.nextId, t.x, t.y, 1, 1}});
+                ++c.nextId;
             }
             for (const Tile &t : spareTiles)
             {
-                tileRoom[t] = nextId;
-                plan.spareRooms.push_back(nextId);
-                newRooms.push_back(Entry{"ROOM", {nextId, t.x, t.y, 1, 1}});
-                ++nextId;
+                c.tileRoom[t] = c.nextId;
+                cut.spareRooms.push_back(c.nextId);
+                c.newRooms.push_back(Entry{"ROOM", {c.nextId, t.x, t.y, 1, 1}});
+                ++c.nextId;
+            }
+            Plan::Group group;
+            group.original = sr;
+            plan.groups.push_back(group);
+            cut.ok = true;
+
+            summary << KIND_NAME[kind] << " room " << cut.systemRoom << " (" << sr.w << "x" << sr.h << ", " << slots
+                    << " slots, bay 1 at " << first.x << "," << first.y << (cut.consoleSet ? "" : " by default") << "): bays";
+            for (int room : cut.bayRooms) summary << ' ' << room;
+            if (!cut.spareRooms.empty())
+            {
+                summary << ", spare";
+                for (int room : cut.spareRooms) summary << ' ' << room;
+            }
+            for (const Tile &t : gifts) summary << ", a tile from room " << c.donated[t];
+            summary << "; ";
+            return true;
+        }
+
+        static Plan MakePlan(const std::string &layout, const char *text)
+        {
+            Plan plan;
+            Cutting c;
+            c.bp = PlayerBlueprint(layout);
+            if (!c.bp) return plan;
+            c.entries = ParseLayout(text);
+            for (size_t i = 0; i < c.entries.size(); ++i)
+            {
+                const Entry &entry = c.entries[i];
+                if (entry.key == "X_OFFSET" && !entry.args.empty()) plan.xOffset = entry.args[0];
+                if (entry.key == "Y_OFFSET" && !entry.args.empty()) plan.yOffset = entry.args[0];
+                if (entry.key != "ROOM" || entry.args.size() < 5) continue;
+                c.rooms[entry.args[0]] = TileRect{entry.args[1], entry.args[2], entry.args[3], entry.args[4]};
+                c.nextId = std::max(c.nextId, entry.args[0] + 1);
+                c.lastRoom = i;
             }
 
-            // The rooms' own entries: W1 is the console's tile; donors lose their tile.
-            for (Entry &entry : entries)
+            std::ostringstream summary;
+            int weaponSlots = std::max(1, std::min(MaxBays(WEAPONS), c.bp->weaponSlots > 0 ? c.bp->weaponSlots : 4));
+            int droneSlots = std::max(1, std::min(MaxBays(DRONES), c.bp->droneSlots > 0 ? c.bp->droneSlots : 2));
+            CutRoom(c, plan, WEAPONS, weaponSlots, summary);
+            CutRoom(c, plan, DRONES, droneSlots, summary);
+            if (!plan.cuts[WEAPONS].ok && !plan.cuts[DRONES].ok)
             {
-                if (entry.key != "ROOM" || entry.args.size() < 5) continue;
-                if (entry.args[0] == plan.weaponsRoom) entry.args = {plan.weaponsRoom, console.x, console.y, 1, 1};
-                else if (plan.moved.count(entry.args[0]))
+                plan.summary = summary.str();
+                return plan;
+            }
+
+            // The rooms' own entries: bay 1 is one tile of the cut room; donors lose their tile.
+            for (Entry &entry : c.entries)
+            {
+                if (entry.key != "ROOM" || entry.args.size() < 5 || !c.original.count(entry.args[0])) continue;
+                int room = entry.args[0];
+                const TileRect &r = c.rooms[room];
+                bool cutRoom = false;
+                for (int kind = 0; kind < KINDS; ++kind) cutRoom = cutRoom || (plan.cuts[kind].ok && plan.cuts[kind].systemRoom == room);
+                if (cutRoom)
                 {
-                    const TileRect &r = rooms[entry.args[0]];
-                    entry.args = {entry.args[0], r.x, r.y, r.w, r.h};
+                    const Tile &moved = plan.moved[room];
+                    const TileRect &o = c.original[room];
+                    entry.args = {room, o.x + moved.x, o.y + moved.y, 1, 1};
                 }
+                else entry.args = {room, r.x, r.y, r.w, r.h};
             }
 
             // Doors of the cut rooms open into the room that now has their tile.
-            auto sideTile = [&](int x, int y, bool vertical, int room, Tile &out) {
-                Tile sides[2] = {vertical ? Tile{x - 1, y} : Tile{x, y - 1}, Tile{x, y}};
-                for (const Tile &side : sides)
-                {
-                    auto found = tileRoom.find(side);
-                    bool inRoom = room == plan.weaponsRoom ? wr.Contains(side) : (found != tileRoom.end() && donated.count(side) && donated[side] == room);
-                    if (inRoom && found != tileRoom.end())
-                    {
-                        out = side;
-                        return true;
-                    }
-                }
-                return false;
-            };
             int doorsMoved = 0;
-            for (Entry &entry : entries)
+            for (Entry &entry : c.entries)
             {
                 if (entry.key != "DOOR" || entry.args.size() < 5) continue;
                 for (int side = 2; side <= 3; ++side)
                 {
                     int room = entry.args[side];
-                    if (room != plan.weaponsRoom && !plan.moved.count(room)) continue;
-                    Tile t;
-                    if (!sideTile(entry.args[0], entry.args[1], entry.args[4] != 0, room, t)) continue;
-                    if (tileRoom[t] != room)
+                    auto original = c.original.find(room);
+                    if (original == c.original.end()) continue;
+                    int x = entry.args[0], y = entry.args[1];
+                    Tile sides[2] = {entry.args[4] != 0 ? Tile{x - 1, y} : Tile{x, y - 1}, Tile{x, y}};
+                    for (const Tile &t : sides)
                     {
-                        entry.args[side] = tileRoom[t];
-                        ++doorsMoved;
+                        if (!original->second.Contains(t)) continue;
+                        auto now = c.tileRoom.find(t);
+                        if (now != c.tileRoom.end() && now->second != room)
+                        {
+                            entry.args[side] = now->second;
+                            ++doorsMoved;
+                        }
+                        break;
                     }
                 }
             }
 
-            // The weapons room is a group too (first); each group's rooms.
-            Plan::Group weaponsGroup;
-            weaponsGroup.original = wr;
-            plan.groups.insert(plan.groups.begin(), weaponsGroup);
-            auto roomOfTile = [&](const Plan::Group &group, const Tile &t) -> int {
-                auto found = tileRoom.find(t);
-                if (found != tileRoom.end() && (group.original.Contains(t))) return found->second;
-                return group.rooms.empty() ? -1 : group.rooms[0];   // a donor's remaining tiles
-            };
             // Doors inside each cut room, between neighbouring tiles that are now in different rooms: crew walk there
             // as before (the doors are hidden and stay open, OnGraphBuilt).
             std::vector<Entry> newDoors;
             for (Plan::Group &group : plan.groups)
             {
                 const TileRect &g = group.original;
+                int base = -1;
+                for (const std::pair<const int, TileRect> &original : c.original)
+                {
+                    if (original.second.x == g.x && original.second.y == g.y && original.second.w == g.w &&
+                        original.second.h == g.h) base = original.first;
+                }
+                auto roomOfTile = [&](const Tile &t) -> int {
+                    auto found = c.tileRoom.find(t);
+                    return found != c.tileRoom.end() ? found->second : base;   // a donor's remaining tiles
+                };
                 for (int y = g.y; y < g.y + g.h; ++y)
                 {
                     for (int x = g.x; x < g.x + g.w; ++x)
                     {
-                        Tile t{x, y};
-                        int room = roomOfTile(group, t);
+                        int room = roomOfTile(Tile{x, y});
                         if (std::find(group.rooms.begin(), group.rooms.end(), room) == group.rooms.end()) group.rooms.push_back(room);
                         if (x + 1 < g.x + g.w)
                         {
-                            int right = roomOfTile(group, Tile{x + 1, y});
+                            int right = roomOfTile(Tile{x + 1, y});
                             if (right != room) newDoors.push_back(Entry{"DOOR", {x + 1, y, room, right, 1}});
                         }
                         if (y + 1 < g.y + g.h)
                         {
-                            int down = roomOfTile(group, Tile{x, y + 1});
+                            int down = roomOfTile(Tile{x, y + 1});
                             if (down != room) newDoors.push_back(Entry{"DOOR", {x, y + 1, room, down, 0}});
                         }
                     }
                 }
             }
-            for (const Entry &entry : entries)
-            {
-                if (entry.key == "X_OFFSET" && !entry.args.empty()) plan.xOffset = entry.args[0];
-                if (entry.key == "Y_OFFSET" && !entry.args.empty()) plan.yOffset = entry.args[0];
-            }
 
-            entries.insert(entries.begin() + lastRoom + 1, newRooms.begin(), newRooms.end());
-            entries.insert(entries.end(), newDoors.begin(), newDoors.end());
-            plan.text = WriteLayout(entries);
+            c.entries.insert(c.entries.begin() + c.lastRoom + 1, c.newRooms.begin(), c.newRooms.end());
+            c.entries.insert(c.entries.end(), newDoors.begin(), newDoors.end());
+            plan.text = WriteLayout(c.entries);
             plan.ok = true;
-
-            std::ostringstream summary;
-            summary << "weapons room " << plan.weaponsRoom << " (" << wr.w << "x" << wr.h << ", " << slots << " slots, console at "
-                    << console.x << "," << console.y << (plan.consoleSet ? "" : " by default") << ") cut: bays";
-            for (int room : plan.bayRooms) summary << ' ' << room;
-            if (!plan.spareRooms.empty())
-            {
-                summary << ", spare";
-                for (int room : plan.spareRooms) summary << ' ' << room;
-            }
-            for (const std::pair<const Tile, int> &gift : donated) summary << ", tile from room " << gift.second;
-            summary << "; " << doorsMoved << " doors moved, " << newDoors.size() << " new";
+            summary << doorsMoved << " doors moved, " << newDoors.size() << " new";
             plan.summary = summary.str();
             return plan;
         }
@@ -530,36 +641,42 @@ namespace Duels
 
         static void Patch(ShipBlueprint *bp, const Plan &plan)
         {
-            if (BayType(1) < 0 || bp->systemInfo.count(BayType(1))) return;
-            auto weapons = bp->systemInfo.find(SYS_WEAPONS);
-            if (weapons == bp->systemInfo.end() || weapons->second.location.empty() ||
-                weapons->second.location[0] != plan.weaponsRoom) return;
-            // The gunner console: W1's only tile, facing the way it did.
-            if (plan.consoleSet)
+            bool patched = false;
+            for (int kind = 0; kind < KINDS; ++kind)
             {
-                weapons->second.slot = 0;
-                weapons->second.direction = plan.consoleDirection;
+                const Plan::Cut &cut = plan.cuts[kind];
+                if (!cut.ok || BayType(kind, 1) < 0 || bp->systemInfo.count(BayType(kind, 1))) continue;
+                auto system = bp->systemInfo.find(SYSTEM_OF[kind]);
+                if (system == bp->systemInfo.end() || system->second.location.empty() ||
+                    system->second.location[0] != cut.systemRoom) continue;
+                // The gunner console: bay 1's only tile, facing the way it did.
+                if (cut.consoleSet)
+                {
+                    system->second.slot = 0;
+                    system->second.direction = cut.consoleDirection;
+                }
+                for (size_t i = 0; i < cut.bayRooms.size() && (int)i < MaxBays(kind); ++i)
+                {
+                    int type = BayType(kind, (int)i + 1);
+                    ShipBlueprint::SystemTemplate bay = ShipBlueprint::SystemTemplate();
+                    bay.systemId = type;
+                    bay.powerLevel = 1;
+                    bay.location = std::vector<int>{cut.bayRooms[i]};
+                    bay.bp = 0;
+                    bay.maxPower = MAX_BAYS;
+                    bay.slot = -1;
+                    bay.direction = -1;
+                    bp->systemInfo[type] = bay;
+                    if (std::find(bp->systems.begin(), bp->systems.end(), type) == bp->systems.end()) bp->systems.push_back(type);
+                }
+                patched = true;
             }
-            for (size_t i = 0; i < plan.bayRooms.size() && (int)i < MAX_BAYS; ++i)
-            {
-                int type = BayType((int)i + 1);
-                ShipBlueprint::SystemTemplate bay = ShipBlueprint::SystemTemplate();
-                bay.systemId = type;
-                bay.powerLevel = 1;
-                bay.location = std::vector<int>{plan.bayRooms[i]};
-                bay.bp = 0;
-                bay.maxPower = MAX_BAYS;
-                bay.slot = -1;
-                bay.direction = -1;
-                bp->systemInfo[type] = bay;
-                if (std::find(bp->systems.begin(), bp->systems.end(), type) == bp->systems.end()) bp->systems.push_back(type);
-            }
-            ++g_bays.blueprintsPatched;
+            if (patched) ++g_bays.blueprintsPatched;
         }
 
         void PrepareBlueprint(ShipBlueprint *bp)
         {
-            if (!bp || bp->blueprintName.compare(0, 12, "PLAYER_SHIP_") != 0 || BayType(1) < 0) return;
+            if (!bp || bp->blueprintName.compare(0, 12, "PLAYER_SHIP_") != 0 || BayType(WEAPONS, 1) < 0) return;
             const Plan *plan = GetPlan(bp->layoutFile, nullptr);
             if (!plan)
             {
@@ -578,7 +695,7 @@ namespace Duels
         // In play
         // ---------------------------------------------------------------------------------------------------------
 
-        // A bay's bars are its weapon's power (an empty slot's bay has one). Damage stays damage.
+        // A bay's bars are its weapon's or drone's power (an empty slot's bay has one). Damage stays damage.
         static void SetLevel(ShipSystem *bay, int level)
         {
             if (bay->healthState.second == level && bay->powerState.second == level) return;
@@ -608,8 +725,37 @@ namespace Duels
             return d.iDamage <= 0 && d.iIonDamage > 0 ? "ion" : "laser";
         }
 
-        // A bay's icons for a kind of weapon, made the way FTL makes a system's: the room icon and its outline at the
-        // room's centre, the discs (5 states, own and enemy look, and the colour blind slots) at the origin.
+        // The kind of drone a drone bay shows: what the drone does.
+        static const char *DroneKind(const Drone *drone)
+        {
+            const DroneBlueprint *bp = drone ? drone->blueprint : nullptr;
+            if (!bp) return "empty";
+            const std::string &type = bp->typeName, &weapon = bp->weaponBlueprint;
+            if (type == "COMBAT")
+            {
+                if (weapon.find("FIRE") != std::string::npos) return "drone_fire";
+                if (weapon.find("BEAM") != std::string::npos) return "drone_beam";
+                if (weapon.find("ION") != std::string::npos) return "drone_ion";
+                if (weapon.find("MISSILE") != std::string::npos) return "drone_missile";
+                return "drone_laser";
+            }
+            if (type == "DEFENSE") return bp->name.find("ANTI_DRONE") != std::string::npos ? "drone_antidrone" : "drone_defense";
+            if (type == "SHIELD") return "drone_shield";
+            if (type == "SHIP_REPAIR") return "drone_hull";
+            if (type == "REPAIR") return "drone_repair";
+            if (type == "BATTLE") return "drone_battle";
+            if (type == "BOARDER") return "drone_boarder";
+            return "drone_laser";
+        }
+
+        static std::string ItemKind(ShipManager *ship, int kind, int index)
+        {
+            return kind == WEAPONS ? WeaponKind(Weapon(ship, index)) : DroneKind(DroneIn(ship, index));
+        }
+
+        // A bay's icons for a kind of weapon or drone, made the way FTL makes a system's: the room icon and its
+        // outline at the room's centre, the discs (5 states, own and enemy look, and the colour blind slots) at the
+        // origin.
         static void SetIcons(ShipSystem *bay, const std::string &kind)
         {
             ResourceControl *resources = G_->GetResources();
@@ -643,7 +789,7 @@ namespace Duels
             ++g_bays.iconsChanged;
         }
 
-        // Our own ship, or the AI's outside a duel: the replica's weapons follow their owner's.
+        // Our own ship, or the AI's outside a duel: the replica's weapons and drones follow their owner's.
         static bool Owned(ShipManager *ship)
         {
             return ship->iShipId == 0 || !GetState().aiOff[1];
@@ -651,31 +797,37 @@ namespace Duels
 
         void AfterLoop(ShipManager *ship)
         {
-            if (!ship || !ship->weaponSystem || !Bay(ship, 1)) return;
-            WeaponSystem *weapons = ship->weaponSystem;
+            if (!ship) return;
             bool owned = Owned(ship);
-            for (int number = 1; number <= MAX_BAYS; ++number)
+            for (int kind = 0; kind < KINDS; ++kind)
             {
-                ShipSystem *bay = Bay(ship, number);
-                if (!bay) continue;
-                ProjectileFactory *weapon = number - 1 < (int)weapons->weapons.size() ? weapons->weapons[number - 1] : nullptr;
-                SetLevel(bay, weapon ? std::max(1, weapon->requiredPower) : 1);
-                std::string kind = WeaponKind(weapon);
-                auto shown = g_bays.icons.find(bay);
-                if (shown == g_bays.icons.end() || shown->second.first != bay->iconPrimitive || shown->second.second != kind)
+                if (!Bay(ship, kind, 1)) continue;
+                for (int number = 1; number <= MaxBays(kind); ++number)
                 {
-                    SetIcons(bay, kind);
+                    ShipSystem *bay = Bay(ship, kind, number);
+                    if (!bay) continue;
+                    int index = number - 1;
+                    SetLevel(bay, ItemPower(ship, kind, index));
+                    std::string icon = ItemKind(ship, kind, index);
+                    auto shown = g_bays.icons.find(bay);
+                    if (shown == g_bays.icons.end() || shown->second.first != bay->iconPrimitive || shown->second.second != icon)
+                    {
+                        SetIcons(bay, icon);
+                    }
+                    if (owned && ItemPowered(ship, kind, index) && Disabled(bay))
+                    {
+                        if (kind == WEAPONS) ship->weaponSystem->DePowerWeapon(Weapon(ship, index), false);
+                        else ship->DePowerDrone(DroneIn(ship, index), false);
+                        ++g_bays.switchedOff;
+                    }
                 }
-                if (owned && weapon && weapon->powered && Disabled(bay))
+                // The weapons system and drone control themselves are never damaged (their bays are).
+                ShipSystem *system = ship->GetSystem(SYSTEM_OF[kind]);
+                if (system && ship->HasSystem(SYSTEM_OF[kind]) && system->healthState.first < system->healthState.second)
                 {
-                    weapons->DePowerWeapon(weapon, false);
-                    ++g_bays.weaponsSwitchedOff;
+                    system->healthState.first = system->healthState.second;
+                    ++g_bays.systemsRestored;
                 }
-            }
-            if (weapons->healthState.first < weapons->healthState.second)
-            {
-                weapons->healthState.first = weapons->healthState.second;
-                ++g_bays.weaponsRestored;
             }
             // The doors inside cut rooms stay open (nothing should close them, but a lockdown would).
             auto hidden = g_bays.hiddenDoors.find(&ship->ship);
@@ -782,9 +934,14 @@ namespace Duels
 
         ShipSystem *InRoom(ShipManager *ship, int roomId, ShipSystem *found)
         {
-            if (!found || found->iSystemType != SYS_WEAPONS) return found;
-            ShipSystem *bay = Bay(ship, 1);
-            return bay && bay->roomId == roomId ? bay : found;
+            if (!found) return found;
+            for (int kind = 0; kind < KINDS; ++kind)
+            {
+                if (found->iSystemType != SYSTEM_OF[kind]) continue;
+                ShipSystem *bay = Bay(ship, kind, 1);
+                return bay && bay->roomId == roomId ? bay : found;
+            }
+            return found;
         }
 
         bool KeepConsole(CrewMember *crew, ShipSystem *system)
@@ -796,22 +953,84 @@ namespace Duels
 
         bool Untouchable(ShipSystem *system)
         {
-            return system && system->iSystemType == SYS_WEAPONS && Bay(ShipOf(system), 1);
+            if (!system) return false;
+            for (int kind = 0; kind < KINDS; ++kind)
+            {
+                if (system->iSystemType == SYSTEM_OF[kind]) return Bay(ShipOf(system), kind, 1) != nullptr;
+            }
+            return false;
+        }
+
+        // The bay of a weapon or drone of a ship (nullptr if it has none).
+        static ShipSystem *BayOfWeapon(ShipManager *ship, const ProjectileFactory *weapon)
+        {
+            if (!ship || !ship->weaponSystem || !weapon) return nullptr;
+            const std::vector<ProjectileFactory*> &list = ship->weaponSystem->weapons;
+            auto found = std::find(list.begin(), list.end(), weapon);
+            return found == list.end() ? nullptr : Bay(ship, WEAPONS, (int)(found - list.begin()) + 1);
+        }
+
+        static ShipSystem *BayOfDrone(ShipManager *ship, const Drone *drone)
+        {
+            if (!ship || !ship->droneSystem || !drone) return nullptr;
+            const std::vector<Drone*> &list = ship->droneSystem->drones;
+            auto found = std::find(list.begin(), list.end(), drone);
+            return found == list.end() ? nullptr : Bay(ship, DRONES, (int)(found - list.begin()) + 1);
         }
 
         bool MayPower(ShipManager *ship, ProjectileFactory *weapon)
         {
-            if (!ship || !weapon || !ship->weaponSystem || !Owned(ship)) return true;
-            const std::vector<ProjectileFactory*> &list = ship->weaponSystem->weapons;
-            auto found = std::find(list.begin(), list.end(), weapon);
-            if (found == list.end()) return true;
-            ShipSystem *bay = Bay(ship, (int)(found - list.begin()) + 1);
+            if (!ship || !Owned(ship)) return true;
+            ShipSystem *bay = BayOfWeapon(ship, weapon);
+            return !bay || !Disabled(bay);
+        }
+
+        bool MayPowerDrone(ShipManager *ship, Drone *drone)
+        {
+            if (!ship || !Owned(ship)) return true;
+            ShipSystem *bay = BayOfDrone(ship, drone);
             return !bay || !Disabled(bay);
         }
 
         bool HideRoomIcon(ShipSystem *system)
         {
             return Untouchable(system);
+        }
+
+        bool BayOut(const ProjectileFactory *weapon)
+        {
+            ShipSystem *bay = weapon ? BayOfWeapon(G_->GetShipManager(weapon->iShipId), weapon) : nullptr;
+            return bay && Disabled(bay);
+        }
+
+        bool DroneBayOut(const Drone *drone)
+        {
+            ShipSystem *bay = drone ? BayOfDrone(G_->GetShipManager(drone->iShipId), drone) : nullptr;
+            return bay && Disabled(bay);
+        }
+
+        int PowerOut(const ShipSystem *system)
+        {
+            if (!system) return 0;
+            for (int kind = 0; kind < KINDS; ++kind)
+            {
+                if (system->iSystemType != SYSTEM_OF[kind]) continue;
+                ShipManager *ship = ShipOf(system);
+                int out = 0;
+                for (int number = 1; number <= MaxBays(kind); ++number)
+                {
+                    ShipSystem *bay = Bay(ship, kind, number);
+                    if (bay && HasItem(ship, kind, number - 1) && Disabled(bay)) out += ItemPower(ship, kind, number - 1);
+                }
+                return out;
+            }
+            return 0;
+        }
+
+        bool HideBox(const ShipSystem *system)
+        {
+            int kind, number;
+            return system && BayOf(system->iSystemType, kind, number) && !HasItem(ShipOf(system), kind, number - 1);
         }
 
         bool OriginalRoomCorner(ShipSystem *system, int &x, int &y)
@@ -855,17 +1074,19 @@ namespace Duels
         std::string Signature(ShipManager *ship)
         {
             std::ostringstream out;
-            if (!ship || !ship->weaponSystem) return out.str();
-            const std::vector<ProjectileFactory*> &weapons = ship->weaponSystem->weapons;
-            for (int number = 1; number <= MAX_BAYS; ++number)
+            if (!ship) return out.str();
+            for (int kind = 0; kind < KINDS; ++kind)
             {
-                ShipSystem *bay = Bay(ship, number);
-                if (!bay) continue;
-                out << number << ':' << bay->healthState.first << '/' << bay->healthState.second;
-                if (bay->iLockCount > 0) out << 'i';
-                if (bay->bUnderAttack && bay->iHackEffect >= 2) out << 'h';
-                if (number - 1 < (int)weapons.size()) out << (weapons[number - 1]->powered ? '+' : '-');
-                out << ' ';
+                for (int number = 1; number <= MaxBays(kind); ++number)
+                {
+                    ShipSystem *bay = Bay(ship, kind, number);
+                    if (!bay) continue;
+                    out << LETTER[kind] << number << ':' << bay->healthState.first << '/' << bay->healthState.second;
+                    if (bay->iLockCount > 0) out << 'i';
+                    if (bay->bUnderAttack && bay->iHackEffect >= 2) out << 'h';
+                    if (HasItem(ship, kind, number - 1)) out << (ItemPowered(ship, kind, number - 1) ? '+' : '-');
+                    out << ' ';
+                }
             }
             return out.str();
         }
@@ -874,8 +1095,8 @@ namespace Duels
         {
             std::ostringstream out;
             out << "bays: layouts cut " << g_bays.layoutsCut << ", blueprints " << g_bays.blueprintsPatched
-                << ", weapons switched off " << g_bays.weaponsSwitchedOff << ", weapons system restored "
-                << g_bays.weaponsRestored << ", icons " << g_bays.iconsChanged << ", doors hidden " << g_bays.doorsHidden
+                << ", weapons and drones switched off " << g_bays.switchedOff << ", systems restored "
+                << g_bays.systemsRestored << ", icons " << g_bays.iconsChanged << ", doors hidden " << g_bays.doorsHidden
                 << ", walls left out " << g_bays.wallsLeftOut;
             return out.str();
         }

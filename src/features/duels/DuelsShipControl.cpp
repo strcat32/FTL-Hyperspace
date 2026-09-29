@@ -250,6 +250,36 @@ namespace Duels
         return true;
     }
 
+    // augment <ship> <AUGMENT> [off]: gives the ship an augment (or takes it away), e.g. CLOAK_FIRE (Stealth Weapons).
+    static bool DoAugment(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        if (cmd.raw.size() < 3)
+        {
+            message = "usage: augment <ship> <AUGMENT> [off]";
+            return false;
+        }
+        const std::string &name = cmd.raw[2];   // original spelling: blueprint names are case-sensitive
+        AugmentBlueprint *blueprint = G_->GetBlueprints()->GetAugmentBlueprint(name);
+        if (!blueprint || blueprint->name != name)
+        {
+            message = "no augment blueprint " + name;
+            return false;
+        }
+        if (ArgIs(cmd, 3, "off"))
+        {
+            ship->RemoveAugmentation(name);
+        }
+        else if (!ship->HasAugmentation(name) && !ship->AddAugmentation(name))
+        {
+            message = "cannot add " + name + " (no free augment slot, or no such augment)";
+            return false;
+        }
+        message = name + (ship->HasAugmentation(name) ? " on board" : " not on board");
+        return true;
+    }
+
     // battery <ship> on|off: the backup battery's button.
     static bool DoBattery(const Command &cmd, std::string &message)
     {
@@ -870,6 +900,7 @@ namespace Duels
         if (verb == "upgrade") return DoUpgrade(cmd, message);
         if (verb == "install") return DoInstall(cmd, message);
         if (verb == "battery") return DoBattery(cmd, message);
+        if (verb == "augment") return DoAugment(cmd, message);
         if (verb == "ionize") return DoIonize(cmd, message);
         if (verb == "drone") return DoDrone(cmd, message);
         if (verb == "droneparts") return DoDroneParts(cmd, message);
