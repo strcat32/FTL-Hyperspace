@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <cmath>
+#include <set>
 
 // ---------------------------------------------------------------------------------------------
 // Frame tick and loop counters
@@ -441,6 +442,20 @@ HOOK_METHOD_PRIORITY(DroneBox, StatusColor, -2000, () -> GL_Color)
     return color;
 }
 
+// Diagnostics: FTL draws an image it can't find as its "nullResource" warning sign. Each missing name goes to the log
+// once, so a sign on screen can be traced to the file it stands for.
+HOOK_METHOD_PRIORITY(ResourceControl, GetImageId, -2000, (const std::string &name) -> GL_Texture*)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ResourceControl::GetImageId -> Begin (DuelsHooks.cpp)\n")
+    static std::set<std::string> missing;
+    if (!name.empty() && !missing.count(name) && !ImageExists(name))
+    {
+        missing.insert(name);
+        Duels::Log("Resources: image %s is missing (FTL shows its warning sign instead)", name.c_str());
+    }
+    return super(name);
+}
+
 HOOK_METHOD_PRIORITY(Ship, DamageHull, -2000, (int amount) -> int)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> Ship::DamageHull -> Begin (DuelsHooks.cpp)\n")
@@ -457,6 +472,7 @@ HOOK_METHOD_PRIORITY(ShipManager, AddCrewMember, -2000, (CrewMember *crew, int r
 HOOK_METHOD_PRIORITY(CompleteShip, InitiateTeleport, -2000, (int targetRoom, int command) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CompleteShip::InitiateTeleport -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Boarding::RefusesTeleport(this)) return;
     super(targetRoom, command);
     Duels::Boarding::AfterTeleport(this, command);
 }
@@ -475,6 +491,22 @@ HOOK_METHOD_PRIORITY(ShipManager, CommandCrewMoveRoom, -2000, (CrewMember *crew,
     if (Duels::Boarding::RefusesAiOrder(crew)) return false;
     if (Duels::Mind::OrderToOwner(this, crew, roomId)) return true;
     return super(crew, roomId);
+}
+
+HOOK_METHOD_PRIORITY(BoarderPodDrone, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> BoarderPodDrone::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Boarding::MayPodLoop(this)) return;
+    super();
+}
+
+// A frozen crew member (a drone switched off) walks to the nearest free slot first; a puppet stands where its owner
+// does instead (DuelsCrew.cpp).
+HOOK_METHOD_PRIORITY(CrewMember, NeedFrozenLocation, -2000, () -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::NeedFrozenLocation -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Crew::IsPuppet(this)) return false;
+    return super();
 }
 
 HOOK_METHOD_PRIORITY(CrewAI, OnLoop, -2000, () -> void)

@@ -3,9 +3,11 @@
 #include "DuelsCrew.h"
 #include "DuelsTrace.h"
 #include "DuelsWire.h"
+#include "Drones.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <map>
 #include <sstream>
 #include <vector>
@@ -36,6 +38,7 @@ namespace Duels
             uint16_t id = 0;
             std::string species, name;
             bool male = true;
+            int droneSlot = -1;           // a crew drone (anti-personnel, system repair): its slot in the drone system
             int skills[SKILLS][2] = {};   // FTL's skill progress and level
         };
 
@@ -44,6 +47,7 @@ namespace Duels
             double t = 0.0;
             float x = 0.f, y = 0.f;
             int room = -1, goalRoom = -1, goalSlot = -1;
+            bool still = false;   // at the same place as in the owner's state before
             int health = 0;
             uint8_t flags = 0;
         };
@@ -95,7 +99,33 @@ namespace Duels
         // Our side
         // ---------------------------------------------------------------------------------------------------------
 
-        // Our crew members on our ship (boarding comes later), with their ids.
+        int WireHealth(const CrewMember *crew)
+        {
+            if (!crew || crew->bDead || crew->health.first <= 0.f) return 0;
+            return (int)std::max(1L, std::lround(crew->health.first));
+        }
+
+        // FTL's crew drones (anti-personnel, system repair) are crew members and drones at once; a drone system's list
+        // holds their drone part.
+        static CrewMember *CrewOfDrone(Drone *drone)
+        {
+            if (!drone || (drone->type != DRONE_REPAIR && drone->type != DRONE_BATTLE)) return nullptr;
+            return reinterpret_cast<CrewDrone*>(reinterpret_cast<char*>(drone) - offsetof(CrewDrone, _drone));
+        }
+
+        // A crew drone's slot in that ship's drone system (-1: not one of its crew drones).
+        static int DroneSlotOf(ShipManager *ship, const CrewMember *crew)
+        {
+            if (!ship || !ship->droneSystem || !crew) return -1;
+            std::vector<Drone*> &drones = ship->droneSystem->drones;
+            for (size_t slot = 0; slot < drones.size(); ++slot)
+            {
+                if (CrewOfDrone(drones[slot]) == crew) return (int)slot;
+            }
+            return -1;
+        }
+
+        // Our crew members on our ship, with their ids: the crew drones that are out count too.
         static std::vector<std::pair<uint16_t, CrewMember*>> OwnCrew()
         {
             std::vector<std::pair<uint16_t, CrewMember*>> list;
@@ -104,7 +134,12 @@ namespace Duels
             std::map<const CrewMember*, uint16_t> ids;
             for (CrewMember *crew : own->vCrewList)
             {
-                if (!crew || crew->iShipId != 0 || crew->IsDrone()) continue;
+                if (!crew || crew->iShipId != 0) continue;
+                if (crew->IsDrone())
+                {
+                    int slot = DroneSlotOf(own, crew);
+                    if (slot < 0 || crew->bDead || !own->droneSystem->drones[slot]->deployed) continue;
+                }
                 auto found = g_crew.ownIds.find(crew);
                 auto held = g_crew.heldIds.find(crew);
                 uint16_t id = found != g_crew.ownIds.end() ? found->second
@@ -132,6 +167,7 @@ namespace Duels
                 w.Str(member->species);
                 w.Str(member->GetName());
                 w.Bool(member->blueprint.male);
+                w.I8((int8_t)DroneSlotOf(G_->GetShipManager(0), member));
                 for (int skill = 0; skill < SKILLS; ++skill)
                 {
                     bool known = skill < (int)member->blueprint.skillLevel.size();
@@ -173,7 +209,7 @@ namespace Duels
                 w.I16((int16_t)std::lround(member->y));
                 w.I8((int8_t)goalRoom);
                 w.I8((int8_t)goalSlot);
-                w.U16((uint16_t)std::max(0L, std::lround(member->health.first)));
+                w.U16((uint16_t)WireHealth(member));
             }
         }
 
@@ -268,6 +304,27 @@ namespace Duels
             ++g_crew.created;
         }
 
+        // A crew drone's puppet is the replica's own drone in that slot while it is out (DuelsDrones.cpp launches it as
+        // the owner's is launched); never a crew member made here.
+        static void BindDrone(ShipManager *replica, Puppet &puppet)
+        {
+            int slot = puppet.roster.droneSlot;
+            Drone *drone = replica && replica->droneSystem && slot >= 0 && slot < (int)replica->droneSystem->drones.size()
+                           ? replica->droneSystem->drones[slot] : nullptr;
+            CrewMember *crew = CrewOfDrone(drone);
+            if (!crew || !drone->deployed || drone->bDead)
+            {
+                puppet.crew = nullptr;
+                return;
+            }
+            if (puppet.crew != crew)
+            {
+                puppet.crew = crew;
+                puppet.placeNow = true;
+                puppet.movingToRoom = puppet.movingToSlot = -1;
+            }
+        }
+
         static bool IsPuppetCrew(const CrewMember *crew)
         {
             for (const std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
@@ -286,6 +343,7 @@ namespace Duels
                 entry.species = r.Str();
                 entry.name = r.Str();
                 entry.male = r.Bool();
+                entry.droneSlot = r.I8();
                 for (int skill = 0; skill < SKILLS; ++skill)
                 {
                     entry.skills[skill][0] = r.U8();
@@ -306,7 +364,8 @@ namespace Duels
                     continue;
                 }
                 CrewMember *crew = LiveCrew(replica, it->second);
-                if (crew && !crew->bDead) replica->RemoveCrewmember(crew);
+                // A crew drone's puppet stays with the replica's drone system (DuelsDrones.cpp takes it back).
+                if (crew && !crew->bDead && it->second.roster.droneSlot < 0) replica->RemoveCrewmember(crew);
                 it = g_crew.puppets.erase(it);
             }
             // The replica's own crew (its blueprint's, or anyone else not from the roster) leaves too.
@@ -321,8 +380,13 @@ namespace Duels
             {
                 Puppet &puppet = g_crew.puppets[entry.id];
                 bool fresh = puppet.roster.id == 0;
-                bool sameMember = !fresh && puppet.roster.species == entry.species;
+                bool sameMember = !fresh && puppet.roster.species == entry.species && puppet.roster.droneSlot == entry.droneSlot;
                 puppet.roster = entry;
+                if (entry.droneSlot >= 0)
+                {
+                    BindDrone(replica, puppet);
+                    continue;
+                }
                 CrewMember *crew = LiveCrew(replica, puppet);
                 if (crew && !sameMember)
                 {
@@ -368,10 +432,39 @@ namespace Duels
 
         // A puppet takes its owner's sample: their crew (made again when they come back to life), or ours away
         // (never made here: they are our crew members).
+        // The slot at a point of a room (FTL numbers a room's tiles row by row), or -1.
+        static int SlotAt(ShipManager *ship, int roomId, float x, float y)
+        {
+            ShipGraph *graph = ship ? ShipGraph::GetShipInfo(ship->iShipId) : nullptr;
+            if (!graph || roomId < 0 || roomId >= (int)graph->rooms.size() || !graph->rooms[roomId]) return -1;
+            const Globals::Rect &rect = graph->rooms[roomId]->rect;
+            int columns = rect.w / 35, rows = rect.h / 35;
+            int column = (int)std::floor((x - rect.x) / 35.f), row = (int)std::floor((y - rect.y) / 35.f);
+            if (column < 0 || row < 0 || column >= columns || row >= rows) return -1;
+            return row * columns + column;
+        }
+
+        // Where a puppet walks: to its owner's goal while the owner walks there, but to where the owner stands while
+        // it stands still with its goal elsewhere (an intruder breaking a door on its way, crew held up by one, a
+        // drone switched off on its way).
+        static void Target(ShipManager *replica, const Sample &s, int &room, int &slot)
+        {
+            room = s.goalRoom;
+            slot = s.goalSlot;
+            if (s.still && s.room >= 0 && s.goalRoom != s.room)
+            {
+                room = s.room;
+                slot = SlotAt(replica, s.room, s.x, s.y);
+            }
+        }
+
         static void ApplySample(ShipManager *replica, Puppet &puppet, const Sample &sample, bool mayCreate)
         {
             {
+                bool still = puppet.haveSample && std::fabs(puppet.sample.x - sample.x) < 0.5f &&
+                             std::fabs(puppet.sample.y - sample.y) < 0.5f;
                 puppet.sample = sample;
+                puppet.sample.still = still;
                 puppet.haveSample = true;
                 const Sample &s = puppet.sample;
                 CrewMember *crew = LiveCrew(replica, puppet);
@@ -390,6 +483,12 @@ namespace Duels
                     return;
                 }
                 if (crew->bDead) return;
+                // A drone switched off stands where its owner's does: FTL would walk it to the nearest free slot on its
+                // own (not for puppets, DuelsHooks.cpp), and the two drones stand a few pixels apart when it happens.
+                if (puppet.roster.droneSlot >= 0 && crew->bFrozen && s.room >= 0 && crew->iRoomId != s.room)
+                {
+                    crew->SetRoom(s.room);
+                }
 
                 crew->health.first = std::min((float)s.health, crew->health.second);
                 // The owner's mind control, when it changes there: our own mind control takes and releases puppets here
@@ -406,11 +505,13 @@ namespace Duels
                     puppet.placeNow = false;
                     puppet.movingToRoom = puppet.movingToSlot = -1;
                 }
-                if (s.goalRoom >= 0 && (s.goalRoom != puppet.movingToRoom || s.goalSlot != puppet.movingToSlot))
+                int room, slot;
+                Target(replica, s, room, slot);
+                if (room >= 0 && (room != puppet.movingToRoom || slot != puppet.movingToSlot))
                 {
-                    crew->MoveToRoom(s.goalRoom, s.goalSlot, true);
-                    puppet.movingToRoom = s.goalRoom;
-                    puppet.movingToSlot = s.goalSlot;
+                    crew->MoveToRoom(room, slot, true);
+                    puppet.movingToRoom = room;
+                    puppet.movingToSlot = slot;
                 }
             }
         }
@@ -426,7 +527,9 @@ namespace Duels
                 auto found = g_crew.puppets.find(entry.first);
                 if (found == g_crew.puppets.end()) continue;   // not in a roster yet
                 entry.second.t = localTime;
-                ApplySample(replica, found->second, entry.second, true);
+                bool drone = found->second.roster.droneSlot >= 0;
+                if (drone) BindDrone(replica, found->second);
+                ApplySample(replica, found->second, entry.second, !drone);
             }
             for (std::pair<uint16_t, Sample> &entry : g_crew.pendingAway)
             {
@@ -481,11 +584,13 @@ namespace Duels
                 crew->SetPosition(Point((int)s.x, (int)s.y));
                 puppet.farSinceMs = -1.0;
                 puppet.movingToRoom = puppet.movingToSlot = -1;
-                if (s.goalRoom >= 0)
+                int room, slot;
+                Target(replica, s, room, slot);
+                if (room >= 0)
                 {
-                    crew->MoveToRoom(s.goalRoom, s.goalSlot, true);
-                    puppet.movingToRoom = s.goalRoom;
-                    puppet.movingToSlot = s.goalSlot;
+                    crew->MoveToRoom(room, slot, true);
+                    puppet.movingToRoom = room;
+                    puppet.movingToSlot = slot;
                 }
                 ++g_crew.placed;
             }
@@ -534,7 +639,7 @@ namespace Duels
                 switch (what)
                 {
                     case Describing::HEALTH:
-                        out << entry.first << ':' << (crew->bDead ? 0L : std::lround(crew->health.first)) << (crew->bDead ? "x" : "") << ' ';
+                        out << entry.first << ':' << WireHealth(crew) << (crew->bDead ? "x" : "") << ' ';
                         break;
                     case Describing::ROOMS:
                         out << entry.first << ':' << (crew->bDead ? -1 : crew->iRoomId) << ' ';
@@ -614,6 +719,24 @@ namespace Duels
         void CameHome(uint16_t id)
         {
             g_crew.away.erase(id);
+        }
+
+        uint16_t NewRobotId()
+        {
+            return g_crew.nextId++;
+        }
+
+        void RobotAway(CrewMember *robot, uint16_t id)
+        {
+            Puppet &puppet = g_crew.away[id];
+            puppet = Puppet();
+            puppet.crew = robot;
+            puppet.roster.id = id;
+            puppet.roster.species = robot->species;
+            puppet.roster.name = robot->GetName();
+            puppet.roster.male = robot->blueprint.male;
+            puppet.placeNow = false;   // its pod put it there
+            ++g_crew.boarded;
         }
 
         void AddGuest(uint16_t id, CrewMember *crew)

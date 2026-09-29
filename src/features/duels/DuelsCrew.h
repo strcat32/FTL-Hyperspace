@@ -51,6 +51,10 @@ namespace Duels
 
         // A crew member of the replica (a puppet): its health follows its owner, nothing else changes it.
         bool IsPuppet(const CrewMember *crew);
+        // A crew member's health as the messages carry it: whole points, and at least 1 while alive (FTL's crew live
+        // on at 0.4; a copy given 0 would die).
+        int WireHealth(const CrewMember *crew);
+
         // Crew by the ids the rosters give them (the owner's ids, for ours and the puppets alike): a puppet's id, or
         // -1; our crew member with an id, or null.
         int PuppetId(const CrewMember *crew);
@@ -64,6 +68,10 @@ namespace Duels
         int BoardAway(CrewMember *crew);
         void CameHome(uint16_t id);
         int AwayId(const CrewMember *crew);
+        // Boarding drones: an id for a robot of ours (from our crew ids, so the two never meet); our robot on the
+        // replica is the puppet of the defender's guest entry for it.
+        uint16_t NewRobotId();
+        void RobotAway(CrewMember *robot, uint16_t id);
         // Theirs aboard our ship (by their owner's ids): ours to simulate, in our crew state as guests.
         void AddGuest(uint16_t id, CrewMember *crew);
         CrewMember *Guest(uint16_t id);

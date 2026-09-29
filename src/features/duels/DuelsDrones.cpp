@@ -6,6 +6,7 @@
 #include "DuelsNet.h"
 #include "DuelsTrace.h"
 #include "DuelsWire.h"
+#include "Drones.h"
 
 #include <algorithm>
 #include <climits>
@@ -167,9 +168,10 @@ namespace Duels
             for (Drone *drone : drones)
             {
                 SpaceDrone *space = AsSpaceDrone(drone);
-                // Boarding drones and the drones that work inside ships (anti-personnel, system repair) come with
-                // crew, in step 3.
-                if (!space && drone->deployed && drone->blueprint &&
+                // Boarding drones go their own way (DuelsBoarding.cpp), crew drones (anti-personnel, system repair)
+                // with the crew (DuelsCrew.cpp) and below; anything else is not networked.
+                if (!space && drone->type != DRONE_BOARDER && drone->type != DRONE_REPAIR && drone->type != DRONE_BATTLE &&
+                    drone->deployed && drone->blueprint &&
                     g_drones.notNetworked.insert(drone->blueprint->name).second)
                 {
                     Log("Drones: %s is not networked yet", drone->blueprint->name.c_str());
@@ -178,10 +180,10 @@ namespace Duels
                 uint8_t flags = 0;
                 if (drone->powered) flags |= FLAG_POWERED;
                 if (drone->deployed) flags |= FLAG_DEPLOYED;
+                if (drone->bDead) flags |= FLAG_DEAD;
                 if (space)
                 {
                     if (space->explosion.tracker.running) flags |= FLAG_EXPLODING;
-                    if (drone->bDead) flags |= FLAG_DEAD;
                     if (space->currentSpace != drone->iShipId) flags |= FLAG_TARGET_SPACE;
                     if (drone->deployed && !drone->bDead && space->currentLocation.x > -1.0e30f) flags |= FLAG_POSITION;
                     if (CombatLike(drone)) flags |= FLAG_COMBAT;
@@ -205,6 +207,15 @@ namespace Duels
                     }
                 }
             }
+        }
+
+        bool OwnerDrone(int slot, bool &deployed, bool &powered)
+        {
+            if (slot < 0 || slot >= (int)g_drones.pending.size()) return false;
+            const Entry &entry = g_drones.pending[slot];
+            deployed = (entry.flags & FLAG_DEPLOYED) != 0;
+            powered = (entry.flags & FLAG_POWERED) != 0;
+            return true;
         }
 
         bool ReadState(Reader &r)
@@ -240,19 +251,48 @@ namespace Duels
         }
 
         // Launches or powers a puppet the way the drone button does. The owner already paid the drone part.
-        static void PowerPuppet(ShipManager *replica, Drone *drone, Puppet &puppet)
+        static void PowerPuppet(ShipManager *replica, Drone *drone, Puppet &puppet, int room = 1)
         {
             DroneSystem *system = replica->droneSystem;
             bool launching = !drone->deployed;
             if (launching && system->drone_count <= 0) system->drone_count = 1;
             drone->destroyedTimer = 0.f;
-            if (!replica->PowerDrone(drone, 1, false, false) && !puppet.launchFailedLogged)
+            if (!replica->PowerDrone(drone, room, false, false) && !puppet.launchFailedLogged)
             {
                 puppet.launchFailedLogged = true;
                 Log("Drones: the replica's %s could not be %s (drone system power %d/%d, reactor %d/%d)",
                     drone->blueprint ? drone->blueprint->name.c_str() : "drone", launching ? "launched" : "powered",
                     system->powerState.first, system->powerState.second,
                     PowerManager::GetPowerManager(1)->currentPower.first, PowerManager::GetPowerManager(1)->currentPower.second);
+            }
+        }
+
+        // Crew drones (anti-personnel, system repair) are launched, powered and taken back as their owner's are;
+        // where they go, how they fare and their death come with the crew (DuelsCrew.cpp).
+        static void FollowCrewDrone(ShipManager *replica, Drone *drone, const Entry &entry, Puppet &puppet)
+        {
+            bool ownerDead = (entry.flags & FLAG_DEAD) != 0;
+            bool ownerDeployed = (entry.flags & FLAG_DEPLOYED) != 0 && !ownerDead;
+            bool ownerPowered = (entry.flags & FLAG_POWERED) != 0;
+            if (!drone->deployed) drone->destroyedTimer = entry.destroyedTimer;   // the rebuild bar
+            if (drone->bDead) return;
+            if (ownerDeployed && !drone->deployed)
+            {
+                PowerPuppet(replica, drone, puppet, -1);
+                if (!ownerPowered && drone->powered) replica->DePowerDrone(drone, false);
+            }
+            else if (ownerDeployed && ownerPowered && !drone->powered)
+            {
+                PowerPuppet(replica, drone, puppet, -1);
+            }
+            else if (ownerDeployed && !ownerPowered && drone->powered)
+            {
+                replica->DePowerDrone(drone, false);
+            }
+            else if (!ownerDeployed && !ownerDead && drone->deployed)
+            {
+                if (drone->powered) replica->DePowerDrone(drone, false);
+                drone->SetDeployed(false);
             }
         }
 
@@ -273,7 +313,14 @@ namespace Duels
             {
                 Drone *drone = drones[slot];
                 SpaceDrone *space = AsSpaceDrone(drone);
-                if (!space) continue;
+                if (!space)
+                {
+                    if (drone && (drone->type == DRONE_REPAIR || drone->type == DRONE_BATTLE))
+                    {
+                        FollowCrewDrone(replica, drone, g_drones.pending[slot], g_drones.puppets[slot]);
+                    }
+                    continue;
+                }
                 const Entry &entry = g_drones.pending[slot];
                 Puppet &puppet = g_drones.puppets[slot];
                 bool ownerDead = (entry.flags & FLAG_DEAD) != 0;

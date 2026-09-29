@@ -1909,6 +1909,8 @@ namespace Duels
                 case Boarding::MSG_BOARD:
                 case Boarding::MSG_RECALL:
                 case Boarding::MSG_RETURNED:
+                case Boarding::MSG_POD:
+                case Boarding::MSG_POD_RESULT:
                     Boarding::OnMessage(type, reader);
                     break;
                 case MSG_DEFEAT:

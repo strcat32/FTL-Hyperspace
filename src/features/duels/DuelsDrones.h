@@ -35,6 +35,8 @@ namespace Duels
         bool ReadState(Reader &r);
         void ApplyState(double localTime);
         std::string Signature(ShipManager *ship);   // duels_sync.csv: drone parts, and each slot's power, launch, wreck
+        // The owner's last state for one of the replica's drone slots (false if there is none yet).
+        bool OwnerDrone(int slot, bool &deployed, bool &powered);
         std::string Status();                       // for "net"
 
         void OnMessage(uint8_t type, Reader &r);
