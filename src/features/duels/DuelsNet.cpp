@@ -71,6 +71,17 @@ namespace Duels
 
         static Session g_session;
 
+        // A look at the relay's list of open rooms, with a socket of its own.
+        struct Browser
+        {
+            UdpSocket socket;
+            NetAddress relay;
+            Relay::Client client;
+            bool active = false;
+        };
+
+        static Browser g_browser;
+
         static uint32_t NewSessionId()
         {
             // std::random_device is deterministic on some MinGW versions; mix in the clock instead.
@@ -394,20 +405,22 @@ namespace Duels
             return true;
         }
 
-        bool HostRelay(const std::string &server, uint16_t port, std::string &message)
+        bool HostRelay(const std::string &server, uint16_t port, const std::string &roomName, const std::string &password,
+                       bool listed, std::string &message)
         {
             Session &s = g_session;
             if (!OpenRelay(server, port, message)) return false;
             s.host = true;
             s.link.Reset(0, s.now);
-            s.relayClient.Create(s.name, s.version, s.now);
+            s.relayClient.Create(s.name, s.version, roomName, password, listed, s.now);
             SetPhase(Phase::Hosting);
             message = "asking the relay " + s.peer.ToString() + " for a room";
             Log("Net: %s", message.c_str());
             return true;
         }
 
-        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message)
+        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, const std::string &password,
+                       std::string &message)
         {
             Session &s = g_session;
             if (!Relay::Client::IsRoomCode(code))
@@ -418,11 +431,86 @@ namespace Duels
             if (!OpenRelay(server, port, message)) return false;
             s.host = false;
             s.link.Reset(NewSessionId(), s.now);
-            s.relayClient.Join(code, s.name, s.version, s.now);
+            s.relayClient.Join(code, password, s.name, s.version, s.now);
             SetPhase(Phase::Joining);
             message = "joining room " + code + " at the relay " + s.peer.ToString();
             Log("Net: %s", message.c_str());
             return true;
+        }
+
+        bool ListRelayRooms(const std::string &server, uint16_t port, int page, std::string &message)
+        {
+            Browser &b = g_browser;
+            b.socket.Close();
+            b.active = false;
+            NetAddress address;
+            std::string error;
+            if (!ResolveAddress(server, port, address, error))
+            {
+                message = error;
+                return false;
+            }
+            if (!b.socket.Open(0, IsLoopback(address), error))
+            {
+                message = "cannot open a UDP socket: " + error;
+                return false;
+            }
+            b.relay = address;
+            b.client.List(page, g_session.version, g_session.now);
+            b.active = true;
+            message = "asking the relay " + address.ToString() + " for its open rooms";
+            Log("Net: %s", message.c_str());
+            return true;
+        }
+
+        // The room list's answer: one notice per room.
+        static void UpdateBrowser(double now)
+        {
+            Browser &b = g_browser;
+            if (!b.active) return;
+            std::vector<Relay::Event> events;
+            uint8_t buffer[2048];
+            for (int guard = 0; guard < 16; ++guard)
+            {
+                NetAddress from;
+                int size = b.socket.ReceiveFrom(from, buffer, sizeof(buffer));
+                if (size <= 0) break;
+                if (from != b.relay) continue;
+                Link::Bytes payload;
+                b.client.Receive(buffer, (size_t)size, now, payload, events);
+            }
+            std::vector<std::vector<uint8_t>> packets;
+            b.client.Update(now, packets, events);
+            for (const std::vector<uint8_t> &packet : packets) b.socket.SendTo(b.relay, packet.data(), packet.size());
+            for (const Relay::Event &event : events)
+            {
+                if (event.kind == Relay::Event::Error)
+                {
+                    Notice("relay: " + event.text);
+                    continue;
+                }
+                if (event.kind != Relay::Event::RoomList) continue;
+                if (event.rooms.empty())
+                {
+                    Notice(event.page > 0 ? "no more open rooms at the relay" : "no open rooms at the relay");
+                    continue;
+                }
+                Notice("open rooms at the relay (page " + std::to_string(event.page + 1) + " of " + std::to_string(event.pages) +
+                       "); join <code> [password]:");
+                for (const Relay::Listing &room : event.rooms)
+                {
+                    std::string line = "  " + room.code + "  " + (room.roomName.empty() ? "(no name)" : "\"" + room.roomName + "\"") +
+                                       ", " + room.hostName;
+                    if (room.version != g_session.version) line += ", version " + room.version;
+                    if (room.password) line += ", password";
+                    Notice(line);
+                }
+            }
+            if (b.client.GetState() != Relay::State::Handshake)
+            {
+                b.active = false;
+                b.socket.Close();
+            }
         }
 
         bool UsesRelay() { return g_session.relay; }
@@ -479,6 +567,8 @@ namespace Duels
                 case Relay::Event::RoomClosing:
                     Disconnect("the relay closed the room", false);
                     return false;
+                case Relay::Event::RoomList:
+                    break;   // only the room list's own client asks for it
                 case Relay::Event::Error:
                     Notice("relay: " + event.text);
                     Close();
@@ -498,6 +588,7 @@ namespace Duels
         {
             Session &s = g_session;
             s.now = now;
+            UpdateBrowser(now);
             if (s.phase == Phase::Idle) return;
 
             uint8_t buffer[2048];

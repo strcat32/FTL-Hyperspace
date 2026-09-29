@@ -27,7 +27,7 @@ The same commands are used by scenario scripts, the in-game console (F1, then `<
 
 | Group | Verbs |
 |---|---|
-| Network duel | `debug [on]`, `netstats on\|off`, `host [port] [local]`, `join <address> [port]`, `relay [server[:port]]`, `host relay [server[:port]]`, `join relay <code\|@file> [server[:port]]`, `leave`, `net` (status), `name <player>`, `say <text>`, `xp [factor]` (crew experience, the host's counts), `netsim <delay ms> [jitter ms] [loss %]` |
+| Network duel | `debug [on]`, `netstats on\|off`, `host [port] [local]`, `join <address> [port]`, `relay [server[:port]]`, `host relay [server[:port]] [name <room name>] [password <password>] [unlisted]`, `join relay <code\|@file> [server[:port]] [password <password>]`, `join <code> [password]` (with a relay set), `lobby [page]` (the relay's open rooms), `leave`, `net` (status), `name <player>`, `say <text>`, `xp [factor]` (crew experience, the host's counts), `netsim <delay ms> [jitter ms] [loss %]` |
 | Session | `version`, `status`, `nopause on\|off`, `trace on\|off`, `tracepower on\|off`, `ai <ship> on\|off`, `script <file>`, `stop`, `note <text>`, `quit` |
 | Power and weapons | `power <ship> <system> <level>`, `weapon <ship> <slot> on\|off`, `fire <ship> <slot> room <room>`, `autofire <ship> <slot> on\|off` |
 | Crew and systems | `crew <ship> <index> room <room>`, `door <ship> <id> open\|close`, `cloak <ship>`, `augment <ship> <AUGMENT> [off]` |
@@ -36,7 +36,8 @@ The same commands are used by scenario scripts, the in-game console (F1, then `<
 
 - The default port is 47620 (UDP). `host local` accepts only a second game on the same computer and triggers no firewall prompt.
 - `join` takes an IPv4 or IPv6 address or a host name.
-- `relay` sets the relay server for `host relay` and `join relay` (UDP port 47700 by default); both also take it directly. `host relay` announces the room code, which the other player passes to `join relay` (or `@file`: the code is read from that file, for tests).
+- `relay` sets the relay server for `host relay` and `join relay` (UDP port 47700 by default); both also take it directly. `host relay` announces the room code, which the other player passes to `join relay` (or `@file`: the code is read from that file, for tests). Without a relay set, the first `relay` line of `duels.cfg` (in the game folder) is used; `duels.cfg` also keeps the player's name (`name` saves it; a new player starts as "Captain_" and a crew name).
+- A relay room has a name, and a password or none; it shows in the relay's room list (`lobby`) unless it is `unlisted`. `join <code> [password]` joins a room at the relay without its address.
 - With `trace on`, a duel writes `duels_shots.csv` (every shot, both directions) and `duels_sync.csv` (every change of our ship and of the replica).
 - `screenshot` saves the next frame from FTL's own frame buffer, so it works with the window covered or the computer locked.
 - `keys` types into the game through its own input handlers: characters as they are, and `{f1}`, `{tab}`, `{console}` and `{chat}` (the hotkeys as set in the options), `{enter}`, `{esc}`, `{up}`, `{down}`, `{back}` for keys (console tests).
@@ -60,6 +61,7 @@ The same commands are used by scenario scripts, the in-game console (F1, then `<
 | `DuelsDrones.*` | Drones: their state in the sync, the replica's drones as puppets, drone hits, copies of the opponent's defense drone shots |
 | `DuelsNet.*` | Session: host/join (directly or through the relay), handshake, timeouts, test conditions |
 | `DuelsRelay.*`, `DuelsCrypto.*` | The relay client (cookie handshake, room codes, signed packets; no game headers, unit-tested outside the game) and SHA-256/HMAC for it |
+| `DuelsConfig.*` | `duels.cfg`: the player's name and the relay servers |
 | `DuelsConsole.*` | The console: input line, recent messages, command history, the console and chat keys |
 | `DuelsHud.*` | What FTL: Duels draws over the interface: the network numbers |
 | `DuelsLink.*`, `DuelsWire.h` | Reliable-UDP link and message encoding (no game headers; unit-tested outside the game) |

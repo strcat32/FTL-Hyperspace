@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "Duels.h"
+#include "DuelsConfig.h"
 #include "DuelsConsole.h"
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
@@ -126,6 +127,41 @@ namespace Duels
     static std::string g_relayServer;
     static int g_relayPort = Relay::DEFAULT_PORT;
 
+    // The options of a relay room after "host relay [server]": name <room name...>, password <password>, unlisted.
+    static bool IsRoomOption(const std::string &word)
+    {
+        return word == "name" || word == "password" || word == "unlisted";
+    }
+
+    static bool RoomOptions(const Command &cmd, size_t from, std::string &roomName, std::string &password, bool &listed,
+                            std::string &message)
+    {
+        listed = true;
+        for (size_t i = from; i < cmd.raw.size(); ++i)
+        {
+            const std::string &word = cmd.args[i];
+            if (word == "unlisted")
+            {
+                listed = false;
+            }
+            else if (word == "password" && i + 1 < cmd.raw.size())
+            {
+                password = cmd.raw[++i];
+            }
+            else if (word == "name" && i + 1 < cmd.raw.size())
+            {
+                roomName.clear();
+                while (i + 1 < cmd.raw.size() && !IsRoomOption(cmd.args[i + 1])) roomName += (roomName.empty() ? "" : " ") + cmd.raw[++i];
+            }
+            else
+            {
+                message = "usage: host relay [server[:port]] [name <room name>] [password <password>] [unlisted]";
+                return false;
+            }
+        }
+        return true;
+    }
+
     // "name", "name:port", "1.2.3.4:port" or "[ipv6]:port".
     static bool ParseServer(const std::string &text, std::string &server, int &port)
     {
@@ -166,7 +202,7 @@ namespace Duels
     static bool IsPlayerVerb(const std::string &verb)
     {
         static const std::set<std::string> verbs = {
-            "console", "debug", "host", "join", "leave", "name", "net", "netstats", "note", "quit", "relay", "say",
+            "console", "debug", "host", "join", "leave", "lobby", "name", "net", "netstats", "note", "quit", "relay", "say",
             "screenshot", "status", "stop", "trace", "tracepower", "version", "window", "xp"};
         return verbs.count(verb) != 0;
     }
@@ -178,6 +214,19 @@ namespace Duels
         state.debug = true;
         Match::SetDebug(true);
         Log("Debug mode on (%s): test commands work, and the duels of this game are debug duels", why);
+    }
+
+    // The first relay in duels.cfg, until "relay" picks another.
+    static void UseConfiguredRelay()
+    {
+        if (!g_relayServer.empty() || Config::Relays().empty()) return;
+        std::string server;
+        int port;
+        if (ParseServer(Config::Relays()[0], server, port))
+        {
+            g_relayServer = server;
+            g_relayPort = port;
+        }
     }
 
     bool Execute(const Command &cmd, std::string &message)
@@ -335,11 +384,14 @@ namespace Duels
         }
         if (verb == "name")
         {
+            // name <player name>: saved in duels.cfg.
             if (cmd.raw.size() < 2) { message = "usage: name <player name>"; return false; }
             Match::SetPlayerName(cmd.raw[1]);
+            Config::SavePlayerName(cmd.raw[1]);
             message = "player name " + cmd.raw[1];
             return true;
         }
+        if (verb == "relay" || verb == "host" || verb == "join" || verb == "lobby") UseConfiguredRelay();
         if (verb == "relay")
         {
             // relay [server[:port]]: the relay server for "host relay" and "join relay".
@@ -361,29 +413,66 @@ namespace Duels
         }
         if (verb == "host" && ArgIs(cmd, 1, "relay"))
         {
-            // host relay [server[:port]]: a room at the relay; its code goes to the other player.
+            // host relay [server[:port]] [name <room name>] [password <password>] [unlisted]: a room at the relay; its
+            // code goes to the other player, or they find it in the relay's room list (lobby) unless it is unlisted.
             std::string server = g_relayServer;
             int port = g_relayPort;
-            if (cmd.raw.size() > 2 && !ParseServer(cmd.raw[2], server, port))
+            size_t next = 2;
+            if (cmd.raw.size() > next && !IsRoomOption(cmd.args[next]))
             {
-                message = "usage: host relay [server[:port]]";
-                return false;
+                if (!ParseServer(cmd.raw[next], server, port))
+                {
+                    message = "usage: host relay [server[:port]] [name <room name>] [password <password>] [unlisted]";
+                    return false;
+                }
+                ++next;
             }
+            std::string roomName, password;
+            bool listed = true;
+            if (!RoomOptions(cmd, next, roomName, password, listed, message)) return false;
             if (server.empty())
             {
                 message = "no relay server: host relay <server>[:port], or relay <server> first";
                 return false;
             }
-            return Match::HostRelay(server, (uint16_t)port, message);
+            return Match::HostRelay(server, (uint16_t)port, roomName, password, listed, message);
+        }
+        if (verb == "lobby")
+        {
+            // lobby [page]: the rooms at the relay waiting for a guest.
+            int page = 1;
+            if (cmd.args.size() > 1 && (!ArgInt(cmd, 1, page) || page < 1))
+            {
+                message = "usage: lobby [page]";
+                return false;
+            }
+            if (g_relayServer.empty())
+            {
+                message = "no relay server: relay <server>[:port] first";
+                return false;
+            }
+            return Net::ListRelayRooms(g_relayServer, (uint16_t)g_relayPort, page - 1, message);
         }
         if (verb == "join" && ArgIs(cmd, 1, "relay"))
         {
-            // join relay <code> [server[:port]]
+            // join relay <code> [server[:port]] [password <password>]
             std::string server = g_relayServer;
             int port = g_relayPort;
-            if (cmd.raw.size() < 3 || (cmd.raw.size() > 3 && !ParseServer(cmd.raw[3], server, port)))
+            std::string password;
+            size_t next = 3;
+            if (cmd.raw.size() > next && cmd.args[next] != "password")
             {
-                message = "usage: join relay <code> [server[:port]]";
+                if (!ParseServer(cmd.raw[next], server, port))
+                {
+                    message = "usage: join relay <code> [server[:port]] [password <password>]";
+                    return false;
+                }
+                ++next;
+            }
+            if (cmd.raw.size() > next + 1 && cmd.args[next] == "password") password = cmd.raw[next + 1];
+            if (cmd.raw.size() < 3)
+            {
+                message = "usage: join relay <code> [server[:port]] [password <password>]";
                 return false;
             }
             if (server.empty())
@@ -402,7 +491,7 @@ namespace Duels
                     return false;
                 }
             }
-            return Match::JoinRelay(server, (uint16_t)port, code, message);
+            return Match::JoinRelay(server, (uint16_t)port, code, password, message);
         }
         if (verb == "host")
         {
@@ -413,6 +502,12 @@ namespace Duels
             bool local = ArgIs(cmd, next, "local");
             if (port <= 0 || port > 65535) { message = "usage: host [port] [local]"; return false; }
             return Match::Host((uint16_t)port, local, message);
+        }
+        if (verb == "join" && cmd.raw.size() >= 2 && !g_relayServer.empty() && Relay::Client::IsRoomCode(cmd.raw[1]))
+        {
+            // join <code> [password]: a room at the relay (a room code, not an address).
+            std::string password = cmd.raw.size() > 2 ? cmd.raw[2] : "";
+            return Match::JoinRelay(g_relayServer, (uint16_t)g_relayPort, cmd.raw[1], password, message);
         }
         if (verb == "join")
         {

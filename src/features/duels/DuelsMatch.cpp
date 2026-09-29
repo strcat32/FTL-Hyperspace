@@ -6,6 +6,7 @@
 #include "Duels.h"
 #include "DuelsConsole.h"
 #include "DuelsBays.h"
+#include "DuelsConfig.h"
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
 #include "DuelsMatch.h"
@@ -1872,6 +1873,21 @@ namespace Duels
             if (g_match.initialised) return;
             g_match.initialised = true;
             ResetMatch();
+            // The player's name: the saved one, or a captain named like a crew member (saved for the next time; the
+            // "name" command changes it; later the Steam name).
+            std::string name = Config::PlayerName();
+            if (name.empty() && G_->GetBlueprints())
+            {
+                bool male = true;
+                std::string crew = G_->GetBlueprints()->GetCrewName(&male);
+                std::replace(crew.begin(), crew.end(), ' ', '_');
+                if (!crew.empty())
+                {
+                    name = "Captain_" + crew;
+                    Config::SavePlayerName(name);
+                }
+            }
+            if (!name.empty()) g_match.playerName = name;
             Net::SetListener(&g_listener);
             Net::SetIdentity(g_match.playerName, VERSION, BUILD_IDENTIFIER_HASH);
         }
@@ -1929,18 +1945,20 @@ namespace Duels
             return Net::Join(host, port, message);
         }
 
-        bool HostRelay(const std::string &server, uint16_t port, std::string &message)
+        bool HostRelay(const std::string &server, uint16_t port, const std::string &roomName, const std::string &password,
+                       bool listed, std::string &message)
         {
             Init();
             ResetMatch();
-            return Net::HostRelay(server, port, message);
+            return Net::HostRelay(server, port, roomName, password, listed, message);
         }
 
-        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message)
+        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, const std::string &password,
+                       std::string &message)
         {
             Init();
             ResetMatch();
-            return Net::JoinRelay(server, port, code, message);
+            return Net::JoinRelay(server, port, code, password, message);
         }
 
         void Leave()

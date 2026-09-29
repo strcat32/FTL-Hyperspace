@@ -17,9 +17,16 @@ namespace Duels
         enum class State
         {
             Idle,
-            Handshake,   // getting a cookie, then the room
+            Handshake,   // getting a cookie, then the room (or the room list)
             InRoom,
             Failed
+        };
+
+        // A room waiting for a guest, as the relay's list shows it.
+        struct Listing
+        {
+            std::string code, roomName, hostName, version;
+            bool password;
         };
 
         struct Event
@@ -31,20 +38,35 @@ namespace Duels
                 PeerJoined,    // text: the guest's name
                 PeerLeft,
                 RoomClosing,
+                RoomList,      // rooms: this page of the open rooms; page, pages
                 Error          // text: what went wrong
             };
+            Event(Kind eventKind, const std::string &eventText = std::string(), uint64_t seed = 0)
+                : kind(eventKind), text(eventText), matchSeed(seed), page(0), pages(0) {}
+
             Kind kind;
             std::string text;
             uint64_t matchSeed;
+            std::vector<Listing> rooms;
+            int page, pages;
         };
 
         class Client
         {
         public:
-            // Starts a handshake: a new room (the host) or the room with that code (the guest).
-            void Create(const std::string &name, const std::string &version, double now);
-            void Join(const std::string &code, const std::string &name, const std::string &version, double now);
+            // Starts a handshake: a new room (the host: its name, a password or "", shown in room lists or not), the
+            // room with that code (the guest, with the room's password if it has one), or a page of the list of open
+            // rooms (the client is idle again after it, with a RoomList event).
+            void Create(const std::string &name, const std::string &version, const std::string &roomName,
+                        const std::string &password, bool listed, double now);
+            void Join(const std::string &code, const std::string &password, const std::string &name,
+                      const std::string &version, double now);
+            void List(int page, const std::string &version, double now);
             void Reset();
+
+            // What a room password travels as: the first 16 bytes of SHA-256("FTL:Duels room password" and the
+            // password); all zeros for none.
+            static void PasswordToken(const std::string &password, uint8_t token[16]);
 
             // A datagram from the relay. A link packet relayed from the other player lands in `payload` (returns
             // true); anything else may add events.
@@ -77,9 +99,14 @@ namespace Duels
             bool Verify(const uint8_t *data, size_t size) const;
             bool AcceptSeq(uint32_t seq);
 
+            enum class Mode { Create, Join, List };
+
             State state = State::Idle;
-            bool creating = true;
-            std::string name, version, code;
+            Mode mode = Mode::Create;
+            std::string name, version, code, roomName;
+            uint8_t passwordToken[16] = {0};
+            bool listed = false;
+            int listPage = 0;
             uint64_t nonce = 0;
             uint8_t cookie[16] = {0};
             bool haveCookie = false;

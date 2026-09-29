@@ -26,13 +26,19 @@ namespace Duels
             PONG = 0x0A,
             LEAVE = 0x0B,
             EVENT = 0x0C,
-            ERROR_ = 0x0E
+            ERROR_ = 0x0E,
+            LIST = 0x10,
+            ROOMS = 0x11
         };
+
+        static const uint8_t PROTOCOL_VERSION = 2;
+        enum : uint8_t { FLAG_LISTED = 1, FLAG_PASSWORD = 2 };   // CREATE; a listing's flag 1: password
 
         static const size_t HEADER_SIZE = 4;
         static const size_t TAG_SIZE = 16;
         static const size_t HELLO_SIZE = 128;
         static const size_t REQUEST_MIN_SIZE = 96;
+        static const size_t LIST_SIZE = 1200;
         static const double RETRY_MS = 500.0;
         static const double HANDSHAKE_TIMEOUT_MS = 10000.0;
         static const double QUIET_MS = 3000.0;   // no packet from the relay for this long: a heartbeat PING
@@ -42,7 +48,7 @@ namespace Duels
         {
             w.U8(0x46);
             w.U8(0x44);
-            w.U8(0x01);
+            w.U8(PROTOCOL_VERSION);
             w.U8(type);
         }
 
@@ -111,22 +117,50 @@ namespace Duels
             lastSendMs = -1.0e9;
         }
 
-        void Client::Create(const std::string &playerName, const std::string &gameVersion, double now)
+        void Client::PasswordToken(const std::string &password, uint8_t token[16])
+        {
+            std::memset(token, 0, 16);
+            if (password.empty()) return;
+            static const char *const PREFIX = "FTL:Duels room password";
+            Crypto::Sha256 hash;
+            hash.Update((const uint8_t*)PREFIX, std::strlen(PREFIX));
+            hash.Update((const uint8_t*)password.data(), password.size());
+            uint8_t digest[Crypto::SHA256_SIZE];
+            hash.Final(digest);
+            std::memcpy(token, digest, 16);
+        }
+
+        void Client::Create(const std::string &playerName, const std::string &gameVersion, const std::string &newRoomName,
+                            const std::string &password, bool showInList, double now)
         {
             Reset();
-            creating = true;
+            mode = Mode::Create;
             name = CutUtf8(playerName, 32);
             version = CutUtf8(gameVersion, 32);
+            roomName = CutUtf8(newRoomName, 32);
+            PasswordToken(password, passwordToken);
+            listed = showInList;
             StartHandshake(now);
         }
 
-        void Client::Join(const std::string &roomCode, const std::string &playerName, const std::string &gameVersion, double now)
+        void Client::Join(const std::string &roomCode, const std::string &password, const std::string &playerName,
+                          const std::string &gameVersion, double now)
         {
             Reset();
-            creating = false;
+            mode = Mode::Join;
             code = Upper(roomCode);
             name = CutUtf8(playerName, 32);
             version = CutUtf8(gameVersion, 32);
+            PasswordToken(password, passwordToken);
+            StartHandshake(now);
+        }
+
+        void Client::List(int page, const std::string &gameVersion, double now)
+        {
+            Reset();
+            mode = Mode::List;
+            version = CutUtf8(gameVersion, 32);
+            listPage = std::max(0, std::min(page, 65535));
             StartHandshake(now);
         }
 
@@ -139,14 +173,30 @@ namespace Duels
                 U64(w, nonce);
                 PadTo(w, HELLO_SIZE);
             }
+            else if (mode == Mode::List)
+            {
+                Header(w, LIST);
+                U64(w, nonce);
+                w.Bytes(cookie, sizeof(cookie));
+                w.U16((uint16_t)listPage);
+                PadTo(w, LIST_SIZE);
+            }
             else
             {
+                bool creating = mode == Mode::Create;
                 Header(w, creating ? CREATE : JOIN);
                 U64(w, nonce);
                 w.Bytes(cookie, sizeof(cookie));
                 if (!creating) w.Str(code);
                 w.Str(name);
                 w.Str(version);
+                if (creating)
+                {
+                    w.Str(roomName);
+                    bool password = std::any_of(passwordToken, passwordToken + 16, [](uint8_t b) { return b != 0; });
+                    w.U8((uint8_t)((listed ? FLAG_LISTED : 0) | (password ? FLAG_PASSWORD : 0)));
+                }
+                w.Bytes(passwordToken, sizeof(passwordToken));
                 PadTo(w, REQUEST_MIN_SIZE);
             }
             packets.push_back(w.data);
@@ -187,13 +237,13 @@ namespace Duels
 
         bool Client::Receive(const uint8_t *data, size_t size, double now, std::vector<uint8_t> &payload, std::vector<Event> &events)
         {
-            if (size < HEADER_SIZE || data[0] != 0x46 || data[1] != 0x44 || data[2] != 0x01) return false;
+            if (size < HEADER_SIZE || data[0] != 0x46 || data[1] != 0x44 || data[2] != PROTOCOL_VERSION) return false;
             uint8_t type = data[3];
             Reader r(data + HEADER_SIZE, size - HEADER_SIZE);
 
             if (state == State::Handshake)
             {
-                if (type != COOKIE && type != CREATED && type != JOINED && type != ERROR_) return false;
+                if (type != COOKIE && type != CREATED && type != JOINED && type != ROOMS && type != ERROR_) return false;
                 if (U64(r) != nonce || !r.Ok()) return false;
                 if (type == COOKIE && !haveCookie)
                 {
@@ -203,7 +253,27 @@ namespace Duels
                     haveCookie = true;
                     lastSendMs = -1.0e9;   // ask for the room at once
                 }
-                else if (type == CREATED && creating && haveCookie)
+                else if (type == ROOMS && mode == Mode::List && haveCookie)
+                {
+                    Event list{Event::RoomList, "", 0};
+                    list.page = r.U16();
+                    list.pages = r.U16();
+                    int count = r.U8();
+                    for (int i = 0; i < count && r.Ok(); ++i)
+                    {
+                        Listing room;
+                        room.code = r.Str();
+                        room.roomName = r.Str();
+                        room.hostName = r.Str();
+                        room.version = r.Str();
+                        room.password = (r.U8() & 1) != 0;
+                        list.rooms.push_back(room);
+                    }
+                    if (!r.Ok()) return false;
+                    state = State::Idle;
+                    events.push_back(list);
+                }
+                else if (type == CREATED && mode == Mode::Create && haveCookie)
                 {
                     std::string roomCode = r.Str();
                     uint32_t id = r.U32();
@@ -216,7 +286,7 @@ namespace Duels
                     lastReceivedMs = now;
                     events.push_back(Event{Event::RoomCreated, code, 0});
                 }
-                else if (type == JOINED && !creating && haveCookie)
+                else if (type == JOINED && mode == Mode::Join && haveCookie)
                 {
                     uint32_t id = r.U32();
                     const uint8_t *bytes = r.Position();

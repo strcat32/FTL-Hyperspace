@@ -37,9 +37,12 @@ namespace Duels
         void SetPlayerName(const std::string &name);
         bool Host(uint16_t port, bool loopbackOnly, std::string &message);
         bool Join(const std::string &host, uint16_t port, std::string &message);
-        // Through a relay server: the host gets a room code to give the other player, who joins with it.
-        bool HostRelay(const std::string &server, uint16_t port, std::string &message);
-        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message);
+        // Through a relay server: the host gets a room code to give the other player, who joins with it. The room
+        // has a name and a password (or ""), and shows in the relay's room list or not.
+        bool HostRelay(const std::string &server, uint16_t port, const std::string &roomName, const std::string &password,
+                       bool listed, std::string &message);
+        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, const std::string &password,
+                       std::string &message);
         void Leave();
         bool Say(const std::string &text);
         // Debug mode on (Duels::EnableDebug): the handshake tells the other player.

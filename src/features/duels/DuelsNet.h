@@ -53,8 +53,14 @@ namespace Duels
 
         // Through a relay server (docs/design/relay-protocol.md), for players who can't reach each other directly:
         // the host gets a room code from the relay (announced through Listener::OnNotice), the guest joins with it.
-        bool HostRelay(const std::string &server, uint16_t port, std::string &message);
-        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, std::string &message);
+        // The host's room has a name, a password or none (""), and shows in the relay's room list or not.
+        bool HostRelay(const std::string &server, uint16_t port, const std::string &roomName, const std::string &password,
+                       bool listed, std::string &message);
+        bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, const std::string &password,
+                       std::string &message);
+        // The relay's list of rooms waiting for a guest, a page at a time; it comes as notices (Listener::OnNotice).
+        // Has a socket of its own: a session isn't touched.
+        bool ListRelayRooms(const std::string &server, uint16_t port, int page, std::string &message);
         bool UsesRelay();
         std::string RelayCode();
         uint64_t MatchSeed();   // from the relay, 0 without one
