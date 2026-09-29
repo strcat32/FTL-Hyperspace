@@ -8,6 +8,7 @@ struct CombatControl;
 struct GL_Color;
 struct Point;
 struct ShipManager;
+struct SystemBox;
 
 // How a duel looks: the two ships facing each other on one centre line, in FTL's own 1280 x 720 screen.
 //
@@ -85,6 +86,14 @@ namespace Duels
         bool DrawHostileBox(CombatControl *combat, GL_Color color, int stencilBit);
         void BeginSysBoxes(CombatControl *combat);
         void EndSysBoxes(CombatControl *combat);
+        // The opponent's system icons (CombatControl::sysBoxes): FTL puts them in one row from its window's left
+        // side, and with the bays there can be too many for the window. Before the target is drawn they are placed
+        // inside the window, in more rows when one isn't enough; SystemBox::OnRender draws a box shifted there and
+        // moves its hit box (the mouse) the same way.
+        void PlaceSysBoxes(CombatControl *combat);
+        bool SysBoxShift(const SystemBox *box, int &dx, int &dy);
+        void BeforeSysBoxRender(SystemBox *box);
+        void AfterSysBoxRender(SystemBox *box, int dx, int dy);
         // Right-aligned text in the enemy window's header (ship class, relationship): at the grown window's right
         // edge, and below the hull and shield rows where a player ship's hull bar (30 points) would run under it.
         bool AdjustHeaderText(int fontSize, float &x, float &y, const std::string &text);

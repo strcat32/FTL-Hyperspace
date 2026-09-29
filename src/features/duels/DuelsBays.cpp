@@ -97,7 +97,7 @@ namespace Duels
             std::map<const Ship*, std::vector<Door*>> hiddenDoors;
             // The kind each bay's icons show, with the room icon they were made for (a new system gets new ones).
             std::map<const ShipSystem*, std::pair<const GL_Primitive*, std::string>> icons;
-            uint32_t layoutsCut = 0, blueprintsPatched = 0, switchedOff = 0, systemsRestored = 0;
+            uint32_t layoutsCut = 0, blueprintsPatched = 0, switchedOff = 0;
             uint32_t doorsHidden = 0, wallsLeftOut = 0, iconsChanged = 0;
         };
 
@@ -821,13 +821,6 @@ namespace Duels
                         ++g_bays.switchedOff;
                     }
                 }
-                // The weapons system and drone control themselves are never damaged (their bays are).
-                ShipSystem *system = ship->GetSystem(SYSTEM_OF[kind]);
-                if (system && ship->HasSystem(SYSTEM_OF[kind]) && system->healthState.first < system->healthState.second)
-                {
-                    system->healthState.first = system->healthState.second;
-                    ++g_bays.systemsRestored;
-                }
             }
             // The doors inside cut rooms stay open (nothing should close them, but a lockdown would).
             auto hidden = g_bays.hiddenDoors.find(&ship->ship);
@@ -932,6 +925,13 @@ namespace Duels
             return changed;
         }
 
+        static bool g_selectingRepair = false;
+
+        void SetSelectingRepair(bool on)
+        {
+            g_selectingRepair = on;
+        }
+
         ShipSystem *InRoom(ShipManager *ship, int roomId, ShipSystem *found)
         {
             if (!found) return found;
@@ -939,7 +939,10 @@ namespace Duels
             {
                 if (found->iSystemType != SYSTEM_OF[kind]) continue;
                 ShipSystem *bay = Bay(ship, kind, 1);
-                return bay && bay->roomId == roomId ? bay : found;
+                if (!bay || bay->roomId != roomId) return found;
+                // Crew repair bay 1 first, then the spare bars (buffer points) of the system beside it.
+                if (g_selectingRepair && !bay->NeedsRepairing() && found->NeedsRepairing()) return found;
+                return bay;
             }
             return found;
         }
@@ -1009,22 +1012,131 @@ namespace Duels
             return bay && Disabled(bay);
         }
 
-        int PowerOut(const ShipSystem *system)
+        // Powered bars go to the segments from the bottom in the order FTL stacks them in one bar: the reactor's, then
+        // the battery's, then Zoltan bonus power on top.
+        static void TakePower(int powered, int &bonus, int &reactor, int &battery, Segment &segment)
         {
-            if (!system) return 0;
-            for (int kind = 0; kind < KINDS; ++kind)
+            segment.reactor = std::min(powered, reactor);
+            reactor -= segment.reactor;
+            powered -= segment.reactor;
+            segment.battery = std::min(powered, battery);
+            battery -= segment.battery;
+            powered -= segment.battery;
+            segment.bonus = std::min(powered, bonus);
+            bonus -= segment.bonus;
+        }
+
+        static bool g_bufferHit = false;
+        static uint32_t g_bufferPoints = 0;
+
+        bool BufferHit()
+        {
+            return g_bufferHit;
+        }
+
+        // The system a bay belongs to, and its whole spare bars (not damaged, not ioned); nullptr if none of its
+        // damage is ours to decide.
+        static ShipSystem *BufferOf(ShipSystem *bay, int &spare, int &kind, int &number)
+        {
+            spare = 0;
+            if (!bay || !BayOf(bay->iSystemType, kind, number)) return nullptr;
+            ShipManager *ship = ShipOf(bay);
+            if (!ship || !Owned(ship)) return nullptr;
+            ShipSystem *system = kind == WEAPONS ? (ShipSystem*)ship->weaponSystem : (ShipSystem*)ship->droneSystem;
+            if (!system) return nullptr;
+            int capacity = system->powerState.second, used = 0;
+            for (int n = 1; n <= MaxBays(kind); ++n)
             {
-                if (system->iSystemType != SYSTEM_OF[kind]) continue;
-                ShipManager *ship = ShipOf(system);
-                int out = 0;
-                for (int number = 1; number <= MaxBays(kind); ++number)
-                {
-                    ShipSystem *bay = Bay(ship, kind, number);
-                    if (bay && HasItem(ship, kind, number - 1) && Disabled(bay)) out += ItemPower(ship, kind, number - 1);
-                }
-                return out;
+                if (HasItem(ship, kind, n - 1)) used += ItemPower(ship, kind, n - 1);
             }
-            return 0;
+            int damaged = std::max(0, system->healthState.second - system->healthState.first);
+            spare = std::max(0, capacity - used - damaged - std::max(0, system->iLockCount));
+            return system;
+        }
+
+        int TakeBuffer(ShipSystem *bay, int amount)
+        {
+            int spare = 0, kind = 0, number = 0;
+            ShipSystem *system = amount > 0 ? BufferOf(bay, spare, kind, number) : nullptr;
+            int taken = system ? std::min(amount, spare) : 0;
+            if (taken <= 0) return 0;
+            g_bufferHit = true;
+            system->AddDamage(taken);
+            g_bufferHit = false;
+            g_bufferPoints += (uint32_t)taken;
+            Log("Bays: damage on %s bay %d: %d spare bar%s of %s took it (%d left)", kind == WEAPONS ? "weapon" : "drone",
+                number, taken, taken == 1 ? "" : "s", kind == WEAPONS ? "the weapons system" : "drone control",
+                spare - taken);
+            return taken;
+        }
+
+        bool BufferPartial(ShipSystem *bay, float amount, bool overTime, bool &result)
+        {
+            int spare = 0, kind = 0, number = 0;
+            ShipSystem *system = amount > 0.f ? BufferOf(bay, spare, kind, number) : nullptr;
+            if (!system || spare <= 0) return false;
+            // Fire, a beam or sabotage wears on the spare bars first (a whole bar at a time, as FTL counts it).
+            g_bufferHit = true;
+            result = overTime ? system->DamageOverTime(amount) : system->PartialDamage(amount);
+            g_bufferHit = false;
+            return true;
+        }
+
+        bool PowerSegments(ShipSystem *system, std::vector<Segment> &segments)
+        {
+            segments.clear();
+            int kind = -1;
+            for (int k = 0; k < KINDS; ++k)
+            {
+                if (system && system->iSystemType == SYSTEM_OF[k]) kind = k;
+            }
+            ShipManager *ship = ShipOf(system);
+            if (kind < 0 || !ship || !Bay(ship, kind, 1)) return false;
+            int capacity = system->powerState.second;
+            int bonus = system->iBonusPower, reactor = system->powerState.first, battery = system->iBatteryPower;
+            int used = 0;
+            for (int number = 1; number <= MaxBays(kind) && used < capacity; ++number)
+            {
+                if (!HasItem(ship, kind, number - 1)) continue;
+                Segment segment;
+                segment.bars = std::min(ItemPower(ship, kind, number - 1), capacity - used);
+                TakePower(ItemPowered(ship, kind, number - 1) ? segment.bars : 0, bonus, reactor, battery, segment);
+                ShipSystem *bay = Bay(ship, kind, number);
+                if (bay)
+                {
+                    segment.damage = std::min(segment.bars, std::max(0, bay->healthState.second - bay->healthState.first));
+                    segment.repair = bay->fRepairOverTime;
+                    segment.partial = bay->fDamageOverTime;
+                    segment.ioned = bay->iLockCount > 0;
+                    segment.hacked = bay->bUnderAttack && bay->iHackEffect >= 2;
+                }
+                segments.push_back(segment);
+                used += segment.bars;
+            }
+            if (used < capacity)
+            {
+                // The spare bars: what the system has beyond its weapons' (drones') needs, and its own damage there.
+                Segment spare;
+                spare.bars = capacity - used;
+                spare.damage = std::min(spare.bars, std::max(0, system->healthState.second - system->healthState.first));
+                TakePower(std::max(0, std::min(spare.bars, bonus + reactor + battery)), bonus, reactor, battery, spare);
+                spare.repair = system->fRepairOverTime;
+                spare.partial = system->fDamageOverTime;
+                segments.push_back(spare);
+            }
+            return !segments.empty();
+        }
+
+        static bool g_panelLayout = false;
+
+        void SetPanelLayout(bool on)
+        {
+            g_panelLayout = on;
+        }
+
+        bool HiddenFromPanel(const ShipManager *ship, const ShipSystem *system)
+        {
+            return g_panelLayout && ship && ship->iShipId == 0 && system && IsBay(system);
         }
 
         bool HideBox(const ShipSystem *system)
@@ -1095,9 +1207,9 @@ namespace Duels
         {
             std::ostringstream out;
             out << "bays: layouts cut " << g_bays.layoutsCut << ", blueprints " << g_bays.blueprintsPatched
-                << ", weapons and drones switched off " << g_bays.switchedOff << ", systems restored "
-                << g_bays.systemsRestored << ", icons " << g_bays.iconsChanged << ", doors hidden " << g_bays.doorsHidden
-                << ", walls left out " << g_bays.wallsLeftOut;
+                << ", weapons and drones switched off " << g_bays.switchedOff << ", icons " << g_bays.iconsChanged
+                << ", doors hidden " << g_bays.doorsHidden << ", walls left out " << g_bays.wallsLeftOut
+                << ", hits taken by spare bars " << g_bufferPoints;
             return out.str();
         }
     }

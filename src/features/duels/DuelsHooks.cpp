@@ -374,6 +374,15 @@ HOOK_METHOD_PRIORITY(ShipManager, GetSystemInRoom, -2000, (int roomId) -> ShipSy
     return Duels::Bays::InRoom(this, roomId, super(roomId));
 }
 
+// Repairs in W1 (D1): bay 1 first, then the weapons system's (drone control's) spare bars (DuelsBays.cpp, InRoom).
+HOOK_METHOD_PRIORITY(CrewAI, SelectRepair, -2000, (CrewMember *crewmember) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewAI::SelectRepair -> Begin (DuelsHooks.cpp)\n")
+    Duels::Bays::SetSelectingRepair(true);
+    super(crewmember);
+    Duels::Bays::SetSelectingRepair(false);
+}
+
 HOOK_METHOD_PRIORITY(CrewMember, SetCurrentSystem, -2000, (ShipSystem *sys) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::SetCurrentSystem -> Begin (DuelsHooks.cpp)\n")
@@ -382,32 +391,37 @@ HOOK_METHOD_PRIORITY(CrewMember, SetCurrentSystem, -2000, (ShipSystem *sys) -> v
 }
 
 // ShipManager::DamageSystem damages every system in the hit room (its first argument is a room): in W1 that is bay 1
-// only, the weapons system beside it takes no damage.
+// only, the weapons system beside it takes damage only on its spare bars, when a bay hands it on (buffer points).
 HOOK_METHOD_PRIORITY(ShipSystem, AddDamage, -2000, (int amount) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::AddDamage -> Begin (DuelsHooks.cpp)\n")
-    if (Duels::Bays::Untouchable(this)) return;
-    super(amount);
+    if (Duels::Bays::Untouchable(this) && !Duels::Bays::BufferHit()) return;
+    amount -= Duels::Bays::TakeBuffer(this, amount);
+    if (amount > 0) super(amount);
 }
 
 HOOK_METHOD_PRIORITY(WeaponSystem, AddDamage, -2000, (int amount) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> WeaponSystem::AddDamage -> Begin (DuelsHooks.cpp)\n")
-    if (Duels::Bays::Untouchable(this)) return;
+    if (Duels::Bays::Untouchable(this) && !Duels::Bays::BufferHit()) return;
     super(amount);
 }
 
 HOOK_METHOD_PRIORITY(ShipSystem, DamageOverTime, -2000, (float unk) -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::DamageOverTime -> Begin (DuelsHooks.cpp)\n")
-    if (Duels::Bays::Untouchable(this)) return false;
+    if (Duels::Bays::Untouchable(this) && !Duels::Bays::BufferHit()) return false;
+    bool result = false;
+    if (Duels::Bays::BufferPartial(this, unk, true, result)) return result;
     return super(unk);
 }
 
 HOOK_METHOD_PRIORITY(ShipSystem, PartialDamage, -2000, (float amount) -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::PartialDamage -> Begin (DuelsHooks.cpp)\n")
-    if (Duels::Bays::Untouchable(this) || !Duels::Boarding::MayDamage(this)) return false;
+    if ((Duels::Bays::Untouchable(this) && !Duels::Bays::BufferHit()) || !Duels::Boarding::MayDamage(this)) return false;
+    bool result = false;
+    if (Duels::Bays::BufferPartial(this, amount, false, result)) return result;
     return super(amount);
 }
 
@@ -538,25 +552,98 @@ HOOK_METHOD_PRIORITY(DroneSystem, PowerDrone1, -2000, (Drone *drone, bool userDr
     return super(drone, userDriven, force);
 }
 
+// The weapons system's (drone control's) bars per weapon (drone), in slot order: FTL draws each part as a system of
+// its own with that bay's damage and repair, its bars blue while the bay is ioned (FTL's look for bars above what a
+// system may power) and purple while it is hacked; the system's spare bars go on top (DuelsBays.cpp). What FTL draws
+// above a system's bars (manning, ion lock, hacking, erosion, sabotage and fire icons) comes once, above the whole
+// bar, from a last call for the system itself without bars; it gives the top for the system box. The system's real
+// state comes back after the draw.
 HOOK_METHOD_PRIORITY(ShipSystem, RenderPowerBoxes, -2000, (int x, int y, int width, int height, int gap, int heightMod, bool flash) -> int)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::RenderPowerBoxes -> Begin (DuelsHooks.cpp)\n")
-    int out = Duels::Bays::PowerOut(this);
-    if (out <= 0) return super(x, y, width, height, gap, heightMod, flash);
-    // Drawn as damage for this call only: the weapons system's real health (and power) stays.
-    int health = healthState.first;
-    healthState.first = std::max(0, std::min(health, healthState.second - out));
-    int ret = super(x, y, width, height, gap, heightMod, flash);
-    healthState.first = health;
+    std::vector<Duels::Bays::Segment> segments;
+    if (!Duels::Bays::PowerSegments(this, segments)) return super(x, y, width, height, gap, heightMod, flash);
+    const std::pair<int, int> power = powerState, health = healthState;
+    const float damageOverTime = fDamageOverTime, repairOverTime = fRepairOverTime;
+    const int lockCount = iLockCount, bonus = iBonusPower, battery = iBatteryPower, hack = iHackEffect;
+    const int room = roomId, powerCap = iTempPowerCap, powerLoss = iTempPowerLoss;
+    const bool boostable = bBoostable, onFire = bOnFire, occupied = bOccupied, attacked = bUnderAttack;
+    static const GL_Color HACKED(207.f / 255.f, 70.f / 255.f, 253.f / 255.f, 1.f);
+
+    bBoostable = bOnFire = bOccupied = bUnderAttack = false;
+    iLockCount = iHackEffect = 0;
+    roomId = -1;
+    int below = 0;
+    for (const Duels::Bays::Segment &segment : segments)
+    {
+        powerState = std::make_pair(segment.reactor, segment.bars);
+        healthState = std::make_pair(segment.bars - segment.damage, segment.bars);
+        iBonusPower = segment.bonus;
+        iBatteryPower = segment.battery;
+        fRepairOverTime = segment.repair;
+        fDamageOverTime = segment.partial;
+        iTempPowerCap = segment.ioned ? 0 : powerCap;
+        if (segment.hacked)
+        {
+            GL_Color tint = CSurface::GetColorTint();
+            CSurface::GL_SetColorTint(GL_Color(tint.r * HACKED.r, tint.g * HACKED.g, tint.b * HACKED.b, tint.a));
+        }
+        super(x, y - below * (height + gap), width, height, gap, 0, flash);
+        if (segment.hacked) CSurface::GL_RemoveColorTint();
+        below += segment.bars;
+    }
+
+    powerState = std::make_pair(power.first, 0);
+    healthState = health;
+    fDamageOverTime = damageOverTime;
+    fRepairOverTime = repairOverTime;
+    iLockCount = lockCount;
+    iBonusPower = bonus;
+    iBatteryPower = battery;
+    iHackEffect = hack;
+    roomId = room;
+    iTempPowerCap = powerCap;
+    bBoostable = boostable;
+    bOnFire = onFire;
+    bOccupied = occupied;
+    bUnderAttack = attacked;
+    // FTL starts its bars at y and puts what comes above them one bar's space above the last: with no bars of its
+    // own, the call starts where the whole bar would have had one more.
+    int ret = super(x, y - below * (height + gap), width, height, gap, heightMod, flash);
+    powerState = power;
+    iTempPowerLoss = powerLoss;
     return ret;
 }
 
-// A bay without a weapon shows nothing in the subsystem panel.
+// A bay without a weapon shows nothing; the opponent's icons are drawn where the duel view placed them.
 HOOK_METHOD_PRIORITY(SystemBox, OnRender, -2000, (bool ignoreStatus) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> SystemBox::OnRender -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Bays::HideBox(pSystem)) return;
+    int dx = 0, dy = 0;
+    if (!Duels::View::SysBoxShift(this, dx, dy)) return super(ignoreStatus);
+    Duels::View::BeforeSysBoxRender(this);
+    CSurface::GL_PushMatrix();
+    CSurface::GL_Translate((float)dx, (float)dy, 0.f);
     super(ignoreStatus);
+    CSurface::GL_PopMatrix();
+    Duels::View::AfterSysBoxRender(this, dx, dy);
+}
+
+// Our own bays get no box in the subsystem panel (while it is laid out, our ship has none).
+HOOK_METHOD_PRIORITY(SystemControl, CreateSystemBoxes, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SystemControl::CreateSystemBoxes -> Begin (DuelsHooks.cpp)\n")
+    Duels::Bays::SetPanelLayout(true);
+    super();
+    Duels::Bays::SetPanelLayout(false);
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, GetSystem, -2000, (int systemId) -> ShipSystem*)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::GetSystem -> Begin (DuelsHooks.cpp)\n")
+    ShipSystem *system = super(systemId);
+    return Duels::Bays::HiddenFromPanel(this, system) ? nullptr : system;
 }
 
 // The icon in W1 is bay 1's.
@@ -668,6 +755,7 @@ HOOK_METHOD_PRIORITY(CombatControl, RenderTarget, -2000, () -> void)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CombatControl::RenderTarget -> Begin (DuelsHooks.cpp)\n")
     Duels::View::BeginTarget();
     Duels::View::BeginDecorations();
+    Duels::View::PlaceSysBoxes(this);
     super();
     Duels::View::EndDecorations();
     Duels::View::EndTarget();

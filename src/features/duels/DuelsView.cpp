@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CustomEvents.h"
 #include "Duels.h"
+#include "DuelsBays.h"
 #include "DuelsView.h"
 #include "EnemyShipIcons.h"
 #include "HullNumbers.h"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <vector>
 
 namespace Duels
@@ -426,9 +428,88 @@ namespace Duels
             if (g_window.moved && combat == g_window.combat) combat->boxPosition.y = g_window.ftlBoxY;
         }
 
+        struct BoxShift
+        {
+            int dx = 0, dy = 0;
+        };
+        struct BoxHit
+        {
+            Globals::Rect base, shifted;
+        };
+        static std::map<const SystemBox*, BoxShift> g_boxShifts;
+        static std::map<const SystemBox*, BoxHit> g_boxHits;
+        static const int BOX_SPACING = 30;   // FTL's, between two icons of a row
+        static const int BOX_ROW_GAP = 34;   // between two rows
+        static const int ROW_MARGIN = 14;    // from the window's sides
+
         void EndSysBoxes(CombatControl *combat)
         {
             if (g_window.moved && combat == g_window.combat) combat->boxPosition.y = g_window.ourBoxY;
+            // FTL made new boxes: the old ones' places and hit boxes are gone with them.
+            g_boxShifts.clear();
+            g_boxHits.clear();
+        }
+
+        void PlaceSysBoxes(CombatControl *combat)
+        {
+            g_boxShifts.clear();
+            const Layout &l = g_layout;
+            if (!l.active || !combat || combat != l.combat) return;
+            std::vector<SystemBox*> shown;
+            for (SystemBox *box : combat->sysBoxes)
+            {
+                if (box && box->pSystem && !Bays::HideBox(box->pSystem)) shown.push_back(box);
+            }
+            if (shown.empty()) return;
+            // The window's inside, in the boxes' coordinates (FTL draws them from CombatControl::position).
+            int left = (int)std::lround(l.boxX) - combat->position.x + ROW_MARGIN;
+            int right = (int)std::lround(l.boxX + l.boxW) - combat->position.x - ROW_MARGIN;
+            int perRow = std::max(1, (right - left) / BOX_SPACING);
+            int count = (int)shown.size();
+            int rows = (count + perRow - 1) / perRow;
+            int inRow = (count + rows - 1) / rows;   // rows as even as they come
+            int start = std::max(left, shown[0]->location.x);
+            if (start + (inRow - 1) * BOX_SPACING + BOX_SPACING > right) start = left;
+            int baseY = shown[0]->location.y;
+            for (int i = 0; i < count; ++i)
+            {
+                int row = i / inRow, column = i % inRow;
+                BoxShift shift;
+                shift.dx = start + column * BOX_SPACING - shown[i]->location.x;
+                shift.dy = baseY - row * BOX_ROW_GAP - shown[i]->location.y;
+                if (shift.dx || shift.dy) g_boxShifts[shown[i]] = shift;
+            }
+        }
+
+        bool SysBoxShift(const SystemBox *box, int &dx, int &dy)
+        {
+            auto found = g_boxShifts.find(box);
+            if (found == g_boxShifts.end()) return false;
+            dx = found->second.dx;
+            dy = found->second.dy;
+            return true;
+        }
+
+        static bool SameRect(const Globals::Rect &a, const Globals::Rect &b)
+        {
+            return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+        }
+
+        void BeforeSysBoxRender(SystemBox *box)
+        {
+            // FTL's own hit box back for the draw, if FTL didn't set a new one since ours.
+            auto hit = g_boxHits.find(box);
+            if (hit != g_boxHits.end() && SameRect(box->hitBox, hit->second.shifted)) box->hitBox = hit->second.base;
+        }
+
+        void AfterSysBoxRender(SystemBox *box, int dx, int dy)
+        {
+            BoxHit &hit = g_boxHits[box];
+            hit.base = box->hitBox;
+            hit.shifted = hit.base;
+            hit.shifted.x += dx;
+            hit.shifted.y += dy;
+            box->hitBox = hit.shifted;
         }
 
         // Where a decoration placed at a fixed point of FTL's window goes in the grown one: those in its left half

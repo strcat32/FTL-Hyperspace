@@ -42,17 +42,19 @@ namespace Duels
         bool OnLines(std::vector<GL_Line> &lines, float thickness);
 
         // After ShipManager::OnLoop: each bay's bars follow its weapon; on our own ship, a weapon whose bay is
-        // damaged, ioned or hacked goes off; the weapons system stays undamaged.
+        // damaged, ioned or hacked goes off.
         void AfterLoop(ShipManager *ship);
 
         // --- hook entry points ---
 
-        // ShipManager::GetSystemInRoom: bay 1, not the weapons system beside it (hits, repairs, hacking, targeting).
+        // ShipManager::GetSystemInRoom: bay 1, not the weapons system beside it (hits, repairs, hacking, targeting),
+        // except for repairs of its spare bars (SetSelectingRepair).
         ShipSystem *InRoom(ShipManager *ship, int roomId, ShipSystem *found);
         // CrewMember::SetCurrentSystem: a crew member of the ship at the gunner console keeps manning the weapons
         // system (FTL gives a crew member every system in their room in turn; bay 1 would come last).
         bool KeepConsole(CrewMember *crew, ShipSystem *system);
-        // The weapons system of a ship with bays takes no damage, ion or sabotage (its bays do).
+        // The weapons system of a ship with bays takes no damage, ion or sabotage (its bays do), except on its spare
+        // bars when a bay hands damage on (TakeBuffer).
         bool Untouchable(ShipSystem *system);
         // WeaponSystem::PowerWeapon, DroneSystem::PowerDrone: not while the bay is damaged, ioned or hacked (our
         // ship only).
@@ -63,12 +65,39 @@ namespace Duels
         // WeaponBox::StatusColor, DroneBox::StatusColor: a weapon or drone whose bay is out gets a red box.
         bool BayOut(const ProjectileFactory *weapon);
         bool DroneBayOut(const Drone *drone);
-        // ShipSystem::RenderPowerBoxes: the weapons system (drone control) shows the power of the weapons (drones)
-        // whose bays are out as red (damaged) bars; 0 for every other system.
-        int PowerOut(const ShipSystem *system);
+        // ShipSystem::RenderPowerBoxes of the weapons system (drone control): its bars drawn per weapon (drone), in
+        // slot order from the bottom, each part as FTL draws a system of its own: the weapon's power, its bay's damage
+        // (red where that weapon's bars are) and repair, blue while the bay is ioned, purple while it is hacked. The
+        // system's spare bars go on top, with its own damage (buffer points). False for every other system: FTL
+        // draws it.
+        struct Segment
+        {
+            int bars = 0, reactor = 0, battery = 0, bonus = 0, damage = 0;
+            float repair = 0.f, partial = 0.f;
+            bool ioned = false, hacked = false;
+        };
+        bool PowerSegments(ShipSystem *system, std::vector<Segment> &segments);
+
+        // Buffer points (rules section 9): the weapons system's (drone control's) bars beyond what its weapons (drones)
+        // need protect them. Damage on a bay goes to those spare bars first, as long as some are whole; what they can't
+        // take goes to the bay. The spare bars stay damaged until the crew repairs them. TakeBuffer applies it to the
+        // system and returns how much it took (0 for anything but a bay of a ship whose game decides its damage);
+        // while it does, the system may be damaged (BufferHit). Ion is not buffered: FTL's ion takes power from the
+        // whole system, which would switch weapons off and lock all of them.
+        int TakeBuffer(ShipSystem *bay, int amount);
+        bool BufferPartial(ShipSystem *bay, float amount, bool overTime, bool &result);
+        bool BufferHit();
+        // CrewAI::SelectRepair runs: crew pick what to repair in their room (a fire, else "the system in this room",
+        // bay 1 in W1 and D1). Meanwhile W1 (D1) gives the weapons system (drone control) instead once bay 1 needs no
+        // repair, so its spare bars are repaired there after bay 1 (InRoom).
+        void SetSelectingRepair(bool on);
         // SystemBox::OnRender: a bay without a weapon or drone has no box (empty slots are always the last ones, so
         // nothing moves).
         bool HideBox(const ShipSystem *system);
+        // SystemControl::CreateSystemBoxes: our own bays get no box in the subsystem panel (the weapons and drones bars
+        // show them, and the panel needs the space); while it lays the panel out, our ship has no bays.
+        void SetPanelLayout(bool on);
+        bool HiddenFromPanel(const ShipManager *ship, const ShipSystem *system);
         // ShipSystem::SetFloorImage1: a system whose room was cut keeps its picture where the whole room was. Gives
         // the top left corner to draw it at (FTL takes the position from the system's room shape).
         bool OriginalRoomCorner(ShipSystem *system, int &x, int &y);

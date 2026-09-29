@@ -513,27 +513,33 @@ namespace Duels
         return true;
     }
 
-    // ionize <ship> <system> <amount>: ion damage to a system, as an ion shot does (tests of the ion lock).
+    // ionize <ship> <system> <amount>: ion damage to a system, as an ion shot does (tests of the ion lock). The system
+    // may also be a custom one by its name (weapon_bay_2).
     static bool DoIonize(const Command &cmd, std::string &message)
     {
         ShipManager *ship = ArgShip(cmd, 1, message);
         if (!ship) return false;
         int system = cmd.args.size() > 2 ? ParseSystem(cmd.args[2]) : -1;
+        if (system < 0 && cmd.args.size() > 2 && ShipSystem::NameToSystemId(cmd.args[2]) >= SYS_CUSTOM_FIRST)
+        {
+            system = ShipSystem::NameToSystemId(cmd.args[2]);
+        }
         int amount;
         if (system < 0 || !ArgInt(cmd, 3, amount) || amount < 1)
         {
             message = "usage: ionize <ship> <system> <amount>";
             return false;
         }
-        ShipSystem *target = ship->GetSystem(system);
+        const std::string name = ShipSystem::SystemIdToName(system);
+        bool has = system < (int)ship->systemKey.size() && ship->systemKey[system] >= 0;
+        ShipSystem *target = has ? ship->GetSystem(system) : nullptr;
         if (!target)
         {
-            message = std::string("ship has no ") + SYSTEM_NAMES[system];
+            message = "ship has no " + name;
             return false;
         }
         target->IonDamage(amount);
-        message = std::string(SYSTEM_NAMES[system]) + " lock " + std::to_string(target->iLockCount) + ", power " +
-                  std::to_string(target->powerState.first);
+        message = name + " lock " + std::to_string(target->iLockCount) + ", power " + std::to_string(target->powerState.first);
         return true;
     }
 
