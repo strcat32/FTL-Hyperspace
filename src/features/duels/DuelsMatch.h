@@ -100,6 +100,11 @@ namespace Duels
         // there switches the sensors off).
         void HoldReplicaSubsystems(ShipManager *ship);
 
+        // Before and after ShipManager::OnLoop: the replica's systems show their owner's hacking (the state). Our own
+        // hacking system would hack them here at its own moment, and FTL's hacked effects on them (shields draining,
+        // drones losing power) would run ahead of the owner's.
+        void HoldReplicaHacking(ShipManager *ship);
+
         // CloakingSystem::SetTurnedOn: the replica's cloak goes on and off only with its owner's (roadmap 2.4); its
         // own timer, power or damage would end it a moment before the owner's does.
         bool MaySwitchCloak(const CloakingSystem *cloak);

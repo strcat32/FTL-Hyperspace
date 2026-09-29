@@ -51,6 +51,27 @@ namespace Duels
 
         // A crew member of the replica (a puppet): its health follows its owner, nothing else changes it.
         bool IsPuppet(const CrewMember *crew);
+        // Crew by the ids the rosters give them (the owner's ids, for ours and the puppets alike): a puppet's id, or
+        // -1; our crew member with an id, or null.
+        int PuppetId(const CrewMember *crew);
+        int OwnId(const CrewMember *crew);
+        CrewMember *OwnById(uint16_t id);
+
+        // Boarding (DuelsBoarding.cpp, docs/design/boarding.md): crew aboard the other ship are decided by the game
+        // whose ship it is.
+        // Ours arriving on the replica: they become puppets of the owner's guest state there (by our id, returned;
+        // -1 if the crew member has none); back home, ours again with the same id.
+        int BoardAway(CrewMember *crew);
+        void CameHome(uint16_t id);
+        int AwayId(const CrewMember *crew);
+        // Theirs aboard our ship (by their owner's ids): ours to simulate, in our crew state as guests.
+        void AddGuest(uint16_t id, CrewMember *crew);
+        CrewMember *Guest(uint16_t id);
+        bool IsGuest(const CrewMember *crew);
+        void RemoveGuest(uint16_t id);
+        // A guest taken back by their teleporter, now on the replica: the puppet for their id (the next roster has
+        // them again).
+        void AdoptPuppet(uint16_t id, CrewMember *crew);
         // ShipSystem::PartialRepair: the replica's systems are repaired by their owner (the state brings the health).
         bool MayRepair(const ShipSystem *system);
         // CrewAnimation::OnUpdate: whether a crew member is shown fighting, repairing (a system, a breach or a fire),

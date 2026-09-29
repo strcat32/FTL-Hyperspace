@@ -1,6 +1,9 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsBays.h"
+#include "DuelsBoarding.h"
+#include "DuelsHacking.h"
+#include "DuelsMind.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
@@ -278,6 +281,35 @@ namespace Duels
         }
         message = name + (ship->HasAugmentation(name) ? " on board" : " not on board");
         return true;
+    }
+
+    // hack <system>|room <room>|pulse|stop: our hacking drone goes for the enemy's system (in that room); the pulse.
+    static bool DoHack(const Command &cmd, std::string &message)
+    {
+        std::string what;
+        for (size_t i = 1; i < cmd.args.size(); ++i) what += (i > 1 ? " " : "") + cmd.args[i];
+        if (what.empty())
+        {
+            message = "usage: hack <system>|room <room>|pulse|stop";
+            return false;
+        }
+        return Hacking::RunVerb(what, message);
+    }
+
+    // mind room <room>: our mind control on the enemy's crew in that room.
+    static bool DoMind(const Command &cmd, std::string &message)
+    {
+        std::string what;
+        for (size_t i = 1; i < cmd.args.size(); ++i) what += (i > 1 ? " " : "") + cmd.args[i];
+        return Mind::RunVerb(what, message);
+    }
+
+    // teleport send <room> | teleport recall <room>: our teleporter, the enemy's room.
+    static bool DoTeleport(const Command &cmd, std::string &message)
+    {
+        std::string what;
+        for (size_t i = 1; i < cmd.args.size(); ++i) what += (i > 1 ? " " : "") + cmd.args[i];
+        return Boarding::RunVerb(what, message);
     }
 
     // battery <ship> on|off: the backup battery's button.
@@ -901,6 +933,9 @@ namespace Duels
         if (verb == "install") return DoInstall(cmd, message);
         if (verb == "battery") return DoBattery(cmd, message);
         if (verb == "augment") return DoAugment(cmd, message);
+        if (verb == "hack") return DoHack(cmd, message);
+        if (verb == "mind") return DoMind(cmd, message);
+        if (verb == "teleport") return DoTeleport(cmd, message);
         if (verb == "ionize") return DoIonize(cmd, message);
         if (verb == "drone") return DoDrone(cmd, message);
         if (verb == "droneparts") return DoDroneParts(cmd, message);

@@ -6,10 +6,13 @@
 #include "Duels.h"
 #include "DuelsConsole.h"
 #include "DuelsBays.h"
+#include "DuelsBoarding.h"
 #include "DuelsConfig.h"
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
+#include "DuelsHacking.h"
 #include "DuelsMatch.h"
+#include "DuelsMind.h"
 #include "DuelsRooms.h"
 #include "DuelsNet.h"
 #include "DuelsShipControl.h"
@@ -150,6 +153,7 @@ namespace Duels
             bool stateDirty = false;
             uint32_t statesApplied = 0;
             std::map<int, int> subsystemPower;   // the owner's, by system id (piloting, sensors, doors, battery)
+            std::map<int, int> hackFlags;        // the owner's hacking of each system (HACK_* bits), by system id
 
             uint32_t nextNetId = 1;
             std::vector<OutShot> out;
@@ -181,6 +185,7 @@ namespace Duels
             m.stateDirty = false;
             m.statesApplied = 0;
             m.subsystemPower.clear();
+            m.hackFlags.clear();
             m.out.clear();
             m.in.clear();
             for (int i = 0; i < MAX_SLOTS; ++i)
@@ -194,6 +199,9 @@ namespace Duels
             Drones::Reset();
             Crew::Reset();
             Rooms::Reset();
+            Hacking::Reset();
+            Mind::Reset();
+            Boarding::Reset();
         }
 
         static void Announce(const std::string &text)
@@ -494,6 +502,7 @@ namespace Duels
         void HoldReplicaSubsystems(ShipManager *ship)
         {
             if (!ship || ship->iShipId != 1 || !g_match.replicaReady || ship != G_->GetShipManager(1)) return;
+            HoldReplicaHacking(ship);
             Crew::AfterReplicaLoop(ship);
             Rooms::AfterReplicaLoop(ship);
             for (const std::pair<const int, int> &entry : g_match.subsystemPower)
@@ -510,7 +519,28 @@ namespace Duels
         // not by the replica's own count (that would repower the system on its own).
         static const float LOCK_TIMER_LAG_S = 0.25f;
 
-        struct SystemState { int id; int power; int health; int lock; float lockTime; float lockGoal; };
+        struct SystemState { int id; int power; int health; int lock; float lockTime; float lockGoal; int hack; };
+
+        // A system's hacking in the state: FTL's hack level (1 = a drone attached, 2 = pulsing) and whether it is
+        // hacked at all.
+        enum { HACK_LEVEL = 3, HACK_UNDER_ATTACK = 0x80 };
+
+        static int HackFlags(const ShipSystem *system)
+        {
+            return (std::max(0, std::min(system->iHackEffect, 2)) & HACK_LEVEL) | (system->bUnderAttack ? HACK_UNDER_ATTACK : 0);
+        }
+
+        void HoldReplicaHacking(ShipManager *ship)
+        {
+            if (!ship || ship->iShipId != 1 || !g_match.replicaReady || ship != G_->GetShipManager(1)) return;
+            for (ShipSystem *system : ship->vSystemList)
+            {
+                auto found = g_match.hackFlags.find(system->iSystemType);
+                int flags = found != g_match.hackFlags.end() ? found->second : 0;
+                system->bUnderAttack = (flags & HACK_UNDER_ATTACK) != 0;
+                system->iHackEffect = flags & HACK_LEVEL;
+            }
+        }
 
         static void ApplyLocks(ShipManager *replica, const std::vector<SystemState> &systems)
         {
@@ -632,6 +662,7 @@ namespace Duels
                     w.F32(system->lockTimer.currTime);
                     w.F32(system->lockTimer.currGoal);
                 }
+                w.U8((uint8_t)HackFlags(system));
             }
 
             // The backup battery: on, and how far its 30 seconds have run.
@@ -673,6 +704,9 @@ namespace Duels
             Crew::WriteState(w);
             // Rooms: oxygen, fires, breaches, doors, lockdowns (DuelsRooms.cpp).
             Rooms::WriteState(w);
+            // Hacking: how far our pulse has run (DuelsHacking.cpp); mind control: our control's timer (DuelsMind.cpp).
+            Hacking::WriteState(w);
+            Mind::WriteState(w);
 
             Net::Send(MSG_STATE, w, false);
             g_match.lastStateSent = now;
@@ -704,6 +738,7 @@ namespace Duels
                 system.lock = r.I8();
                 system.lockTime = system.lock > 0 ? r.F32() : 0.f;
                 system.lockGoal = system.lock > 0 ? r.F32() : 0.f;
+                system.hack = r.U8();
             }
             bool hasBattery = r.Bool();
             bool batteryOn = hasBattery && r.Bool();
@@ -719,7 +754,8 @@ namespace Duels
                 weapon.powered = r.Bool();
                 weapon.charge = r.F32();
             }
-            if (!Drones::ReadState(r) || !Crew::ReadState(r) || !Rooms::ReadState(r) || !r.Ok()) return;
+            if (!Drones::ReadState(r) || !Crew::ReadState(r) || !Rooms::ReadState(r) || !Hacking::ReadState(r) || !Mind::ReadState(r) ||
+                !r.Ok()) return;
 
             // Snapshots may arrive out of order; only newer ones count.
             if (g_match.havePeerState && (uint16_t)(seq - g_match.peerStateSeq) >= 32768) return;
@@ -733,6 +769,8 @@ namespace Duels
 
             // The owner's locks first (ion, and the battery's): power is then set the way the owner's was changed.
             ApplyLocks(replica, systems);
+            for (const SystemState &state : systems) g_match.hackFlags[state.id] = state.hack;
+            HoldReplicaHacking(replica);
 
             // The battery before the systems: the extra power it gives must be there for them to draw on. Its timer
             // runs behind the owner's like the lock timers, so it goes off when the owner's does.
@@ -794,6 +832,8 @@ namespace Duels
             Drones::ApplyState(Net::HasClock() ? Net::PeerToLocalTime(sentAt) : WallMs());
             Crew::ApplyState(Net::HasClock() ? Net::PeerToLocalTime(sentAt) : WallMs());
             Rooms::ApplyState();
+            Hacking::ApplyState();
+            Mind::ApplyState();
 
             // Again, as switching the battery sets its own lock. Between updates the replica counts its lock timers on
             // (ShipSystem::OnLoop), so the lock display runs smoothly.
@@ -1661,6 +1701,7 @@ namespace Duels
             {
                 out << system->iSystemType << ':' << PowerBars(system) << '/' << system->healthState.first;
                 if (system->iLockCount != 0) out << 'L' << system->iLockCount;   // ion lock; -1 = battery running
+                if (system->bUnderAttack) out << 'H' << system->iHackEffect;       // hacked: 1 drone attached, 2 pulse
                 out << ' ';
             }
             out << ',';
@@ -1672,6 +1713,7 @@ namespace Duels
             out << ',' << Crew::Signature(ship) << ',' << Crew::RoomSignature(ship) << ',' << Rooms::Signature(ship)
                 << ',' << Crew::AnimationSignature(ship) << ',' << Bays::Signature(ship);
             out << ',' << (!ship->cloakSystem ? "-" : ship->cloakSystem->bTurnedOn ? "on" : "off");
+            out << ',' << Hacking::Signature(ship) << ',' << Mind::Signature(ship);
             return out.str();
         }
 
@@ -1688,7 +1730,7 @@ namespace Duels
                 std::string signature = Signature(ship);
                 if (signature == m.lastSignature[shipId]) continue;
                 m.lastSignature[shipId] = signature;
-                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms,crew_anim,bays,cloak");
+                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms,crew_anim,bays,cloak,hack,mind");
                 Row row;
                 row << now << Net::LocalToPeerTime(0.0) << (shipId == 0 ? "own" : "replica") << signature;
                 m.syncCsv.WriteRow(row.str());
@@ -1856,6 +1898,19 @@ namespace Duels
                 case Crew::MSG_CREW_ROSTER:
                     Crew::ApplyRoster(reader);
                     break;
+                case Hacking::MSG_HACK:
+                case Hacking::MSG_HACK_RESULT:
+                    Hacking::OnMessage(type, reader);
+                    break;
+                case Mind::MSG_MIND:
+                case Mind::MSG_CREW_ORDER:
+                    Mind::OnMessage(type, reader);
+                    break;
+                case Boarding::MSG_BOARD:
+                case Boarding::MSG_RECALL:
+                case Boarding::MSG_RETURNED:
+                    Boarding::OnMessage(type, reader);
+                    break;
                 case MSG_DEFEAT:
                     Announce("the opponent's ship is destroyed - you win this round");
                     break;
@@ -1910,6 +1965,11 @@ namespace Duels
                     SendLoadout();
                 }
                 if (m.stateDirty || now - m.lastStateSent >= STATE_INTERVAL_MS) SendState(now);
+                if (m.replicaReady)
+                {
+                    Hacking::OnFrame();
+                    Boarding::OnFrame();
+                }
                 ShipManager *ship = G_->GetShipManager(0);
                 // No escaping a duel: the FTL drive never finishes charging while the opponent is here.
                 if (ship && m.replicaReady) ship->jump_timer.first = 0.f;
@@ -1989,7 +2049,7 @@ namespace Duels
                 << ", states applied " << m.statesApplied << ", shots out " << m.shotsSent << " in " << m.shotsReceived
                 << ", verdicts sent " << m.verdictsSent << " received " << m.verdictsReceived << ", hold timeouts "
                 << m.holdTimeouts << ", replica's last hull point kept " << m.hullKept << ", " << Drones::Status() << ", " << Crew::Status() << ", " << Rooms::Status()
-                << ", " << Bays::Status() << ", " << CrewXpStatus() << " (skill gains " << g_xpGains << " counted "
+                << ", " << Bays::Status() << ", " << Hacking::Status() << ", " << Mind::Status() << ", " << Boarding::Status() << ", " << CrewXpStatus() << " (skill gains " << g_xpGains << " counted "
                 << g_xpCounted << ")";
             return out.str();
         }

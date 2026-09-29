@@ -2,6 +2,9 @@
 #include "CommandConsole.h"
 #include "Duels.h"
 #include "DuelsBays.h"
+#include "DuelsBoarding.h"
+#include "DuelsHacking.h"
+#include "DuelsMind.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
@@ -267,6 +270,7 @@ HOOK_METHOD_PRIORITY(ShipManager, UpdateEnvironment, -2000, () -> void)
 HOOK_METHOD_PRIORITY(ShipManager, OnLoop, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    Duels::Match::HoldReplicaHacking(this);
     super();
     Duels::Bays::AfterLoop(this);
     Duels::Match::HoldReplicaSubsystems(this);
@@ -402,7 +406,7 @@ HOOK_METHOD_PRIORITY(ShipSystem, DamageOverTime, -2000, (float unk) -> bool)
 HOOK_METHOD_PRIORITY(ShipSystem, PartialDamage, -2000, (float amount) -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::PartialDamage -> Begin (DuelsHooks.cpp)\n")
-    if (Duels::Bays::Untouchable(this)) return false;
+    if (Duels::Bays::Untouchable(this) || !Duels::Boarding::MayDamage(this)) return false;
     return super(amount);
 }
 
@@ -441,6 +445,51 @@ HOOK_METHOD_PRIORITY(Ship, DamageHull, -2000, (int amount) -> int)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> Ship::DamageHull -> Begin (DuelsHooks.cpp)\n")
     return super(Duels::Match::HullDamage(this, amount));
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, AddCrewMember, -2000, (CrewMember *crew, int roomId) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::AddCrewMember -> Begin (DuelsHooks.cpp)\n")
+    super(crew, roomId);
+    Duels::Boarding::OnCrewArrived(this, crew, roomId);
+}
+
+HOOK_METHOD_PRIORITY(CompleteShip, InitiateTeleport, -2000, (int targetRoom, int command) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CompleteShip::InitiateTeleport -> Begin (DuelsHooks.cpp)\n")
+    super(targetRoom, command);
+    Duels::Boarding::AfterTeleport(this, command);
+}
+
+HOOK_METHOD_PRIORITY(MindSystem, InitiateMindControl, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> MindSystem::InitiateMindControl -> Begin (DuelsHooks.cpp)\n")
+    size_t before = controlledCrew.size();
+    super();
+    Duels::Mind::AfterInitiate(this, before);
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, CommandCrewMoveRoom, -2000, (CrewMember *crew, int roomId) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::CommandCrewMoveRoom -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Boarding::RefusesAiOrder(crew)) return false;
+    if (Duels::Mind::OrderToOwner(this, crew, roomId)) return true;
+    return super(crew, roomId);
+}
+
+HOOK_METHOD_PRIORITY(CrewAI, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewAI::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    Duels::Boarding::SetAiRunning(true);
+    super();
+    Duels::Boarding::SetAiRunning(false);
+}
+
+HOOK_METHOD_PRIORITY(HackingSystem, InitiatePulse, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> HackingSystem::InitiatePulse -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Hacking::MayPulse(this)) return;
+    super();
 }
 
 HOOK_METHOD_PRIORITY(CloakingSystem, SetTurnedOn, -2000, (bool val) -> void)

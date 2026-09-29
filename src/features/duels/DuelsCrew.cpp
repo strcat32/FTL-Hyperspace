@@ -57,6 +57,7 @@ namespace Duels
             int movingToRoom = -1, movingToSlot = -1;
             double farSinceMs = -1.0;
             bool placeNow = true;          // a new puppet goes straight to its owner's position
+            bool ownerControlled = false;  // under mind control, as the owner last said
         };
 
         struct CrewState
@@ -73,6 +74,14 @@ namespace Duels
             bool havePending = false;
             std::map<const CrewAnimation*, uint8_t> puppetAnimations;   // rebuilt after every replica loop
             uint32_t rostersApplied = 0, placed = 0, created = 0;
+            // Boarding. Theirs aboard our ship, ours to decide, by their owner's ids.
+            std::map<uint16_t, CrewMember*> guests;
+            // Ours aboard their ship: puppets of the owner's guest state there, by our ids (kept for their return).
+            std::map<uint16_t, Puppet> away;
+            std::map<const CrewMember*, uint16_t> heldIds;
+            std::map<const CrewMember*, uint16_t> prevIds;   // our crew's ids one state earlier (for crew just gone aboard)
+            std::vector<std::pair<uint16_t, Sample>> pendingAway;
+            uint32_t boarded = 0, guestsMade = 0;
         };
 
         static CrewState g_crew;
@@ -97,11 +106,15 @@ namespace Duels
             {
                 if (!crew || crew->iShipId != 0 || crew->IsDrone()) continue;
                 auto found = g_crew.ownIds.find(crew);
-                uint16_t id = found != g_crew.ownIds.end() ? found->second : g_crew.nextId++;
+                auto held = g_crew.heldIds.find(crew);
+                uint16_t id = found != g_crew.ownIds.end() ? found->second
+                              : held != g_crew.heldIds.end() ? held->second : g_crew.nextId++;
+                if (held != g_crew.heldIds.end()) g_crew.heldIds.erase(held);
                 ids[crew] = id;
                 list.push_back(std::make_pair(id, crew));
             }
             g_crew.ownIds.swap(ids);
+            g_crew.prevIds.swap(ids);
             std::sort(list.begin(), list.end(),
                       [](const std::pair<uint16_t, CrewMember*> &a, const std::pair<uint16_t, CrewMember*> &b) { return a.first < b.first; });
             return list;
@@ -141,13 +154,9 @@ namespace Duels
             Log("Crew: roster sent (%u crew)", (unsigned)(g_crew.sentRoster.empty() ? 0 : (uint8_t)g_crew.sentRoster[0]));
         }
 
-        void WriteState(Writer &w)
+        static void WriteEntry(Writer &w, uint16_t id, CrewMember *member)
         {
-            std::vector<std::pair<uint16_t, CrewMember*>> crew = OwnCrew();
-            w.U8((uint8_t)crew.size());
-            for (const std::pair<uint16_t, CrewMember*> &entry : crew)
             {
-                CrewMember *member = entry.second;
                 uint8_t flags = 0;
                 if (member->bDead) flags |= FLAG_DEAD;
                 if (member->bMindControlled) flags |= FLAG_MIND_CONTROLLED;
@@ -157,7 +166,7 @@ namespace Duels
                 // Where they are heading: the final goal while walking, else where they stand.
                 int goalRoom = member->finalGoal.roomId >= 0 ? member->finalGoal.roomId : member->currentSlot.roomId;
                 int goalSlot = member->finalGoal.roomId >= 0 ? member->finalGoal.slotId : member->currentSlot.slotId;
-                w.U16(entry.first);
+                w.U16(id);
                 w.U8(flags);
                 w.I8((int8_t)member->iRoomId);
                 w.I16((int16_t)std::lround(member->x));
@@ -165,6 +174,59 @@ namespace Duels
                 w.I8((int8_t)goalRoom);
                 w.I8((int8_t)goalSlot);
                 w.U16((uint16_t)std::max(0L, std::lround(member->health.first)));
+            }
+        }
+
+        // A guest's crew member while it is still on our ship (FTL cleans up the dead).
+        static CrewMember *LiveGuest(uint16_t id)
+        {
+            auto found = g_crew.guests.find(id);
+            ShipManager *own = G_->GetShipManager(0);
+            if (found == g_crew.guests.end() || !own) return nullptr;
+            for (CrewMember *crew : own->vCrewList)
+            {
+                if (crew == found->second) return crew;
+            }
+            return nullptr;
+        }
+
+        void WriteState(Writer &w)
+        {
+            std::vector<std::pair<uint16_t, CrewMember*>> crew = OwnCrew();
+            w.U8((uint8_t)crew.size());
+            for (const std::pair<uint16_t, CrewMember*> &entry : crew) WriteEntry(w, entry.first, entry.second);
+            // Guests: their crew aboard our ship, by their ids. One that died and is gone says so once more.
+            std::vector<std::pair<uint16_t, CrewMember*>> guests;
+            for (auto it = g_crew.guests.begin(); it != g_crew.guests.end();)
+            {
+                CrewMember *live = LiveGuest(it->first);
+                if (live)
+                {
+                    guests.push_back(std::make_pair(it->first, live));
+                    ++it;
+                }
+                else
+                {
+                    guests.push_back(std::make_pair(it->first, (CrewMember*)nullptr));
+                    it = g_crew.guests.erase(it);
+                }
+            }
+            w.U8((uint8_t)guests.size());
+            for (const std::pair<uint16_t, CrewMember*> &entry : guests)
+            {
+                if (entry.second)
+                {
+                    WriteEntry(w, entry.first, entry.second);
+                    continue;
+                }
+                w.U16(entry.first);
+                w.U8(FLAG_DEAD);
+                w.I8(-1);
+                w.I16(0);
+                w.I16(0);
+                w.I8(-1);
+                w.I8(-1);
+                w.U16(0);
             }
         }
 
@@ -275,9 +337,9 @@ namespace Duels
             Log("Crew: roster applied (%u crew; %u removed from the replica's own)", (unsigned)roster.size(), (unsigned)others.size());
         }
 
-        bool ReadState(Reader &r)
+        static void ReadEntries(Reader &r, std::vector<std::pair<uint16_t, Sample>> &samples)
         {
-            std::vector<std::pair<uint16_t, Sample>> samples(r.U8());
+            samples.resize(r.U8());
             for (std::pair<uint16_t, Sample> &entry : samples)
             {
                 entry.first = r.U16();
@@ -290,45 +352,54 @@ namespace Duels
                 s.goalSlot = r.I8();
                 s.health = r.U16();
             }
+        }
+
+        bool ReadState(Reader &r)
+        {
+            std::vector<std::pair<uint16_t, Sample>> samples, away;
+            ReadEntries(r, samples);
+            ReadEntries(r, away);
             if (!r.Ok()) return false;
             g_crew.pending.swap(samples);
+            g_crew.pendingAway.swap(away);
             g_crew.havePending = true;
             return true;
         }
 
-        void ApplyState(double localTime)
+        // A puppet takes its owner's sample: their crew (made again when they come back to life), or ours away
+        // (never made here: they are our crew members).
+        static void ApplySample(ShipManager *replica, Puppet &puppet, const Sample &sample, bool mayCreate)
         {
-            if (!g_crew.havePending) return;
-            g_crew.havePending = false;
-            ShipManager *replica = G_->GetShipManager(1);
-            if (!replica || !g_crew.active) return;
-            for (std::pair<uint16_t, Sample> &entry : g_crew.pending)
             {
-                auto found = g_crew.puppets.find(entry.first);
-                if (found == g_crew.puppets.end()) continue;   // not in a roster yet
-                Puppet &puppet = found->second;
-                entry.second.t = localTime;
-                puppet.sample = entry.second;
+                puppet.sample = sample;
                 puppet.haveSample = true;
                 const Sample &s = puppet.sample;
                 CrewMember *crew = LiveCrew(replica, puppet);
 
                 // Alive again (a clone), or never made: a new crew member in their room.
-                if (!(s.flags & FLAG_DEAD) && (!crew || crew->bDead))
+                if (mayCreate && !(s.flags & FLAG_DEAD) && (!crew || crew->bDead))
                 {
                     CreateCrew(replica, puppet);
                     crew = puppet.crew;
                 }
-                if (!crew) continue;
+                if (!crew) return;
                 if ((s.flags & FLAG_DEAD) && !crew->bDead)
                 {
                     crew->health.first = 0.f;
                     crew->Kill(true);
-                    continue;
+                    return;
                 }
-                if (crew->bDead) continue;
+                if (crew->bDead) return;
 
                 crew->health.first = std::min((float)s.health, crew->health.second);
+                // The owner's mind control, when it changes there: our own mind control takes and releases puppets here
+                // first (DuelsMind.cpp), and the owner's older states must not undo that.
+                bool controlled = (s.flags & FLAG_MIND_CONTROLLED) != 0;
+                if (controlled != puppet.ownerControlled)
+                {
+                    puppet.ownerControlled = controlled;
+                    if (crew->bMindControlled != controlled) crew->SetMindControl(controlled);
+                }
                 if (puppet.placeNow)
                 {
                     crew->SetPosition(Point((int)s.x, (int)s.y));
@@ -344,14 +415,43 @@ namespace Duels
             }
         }
 
+        void ApplyState(double localTime)
+        {
+            if (!g_crew.havePending) return;
+            g_crew.havePending = false;
+            ShipManager *replica = G_->GetShipManager(1);
+            if (!replica || !g_crew.active) return;
+            for (std::pair<uint16_t, Sample> &entry : g_crew.pending)
+            {
+                auto found = g_crew.puppets.find(entry.first);
+                if (found == g_crew.puppets.end()) continue;   // not in a roster yet
+                entry.second.t = localTime;
+                ApplySample(replica, found->second, entry.second, true);
+            }
+            for (std::pair<uint16_t, Sample> &entry : g_crew.pendingAway)
+            {
+                auto found = g_crew.away.find(entry.first);
+                if (found == g_crew.away.end()) continue;   // not (or no longer) ours aboard
+                entry.second.t = localTime;
+                ApplySample(replica, found->second, entry.second, false);
+            }
+        }
+
         void AfterReplicaLoop(ShipManager *replica)
         {
             if (!g_crew.active || !replica || replica != G_->GetShipManager(1)) return;
             double now = WallMs();
             g_crew.puppetAnimations.clear();
-            for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            std::vector<Puppet*> all;
+            for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets) all.push_back(&entry.second);
+            for (std::pair<const uint16_t, Puppet> &entry : g_crew.away)
             {
-                Puppet &puppet = entry.second;
+                if (entry.second.crew && !LiveCrew(replica, entry.second)) Log("Crew: our crew member %u left the replica", (unsigned)entry.first);
+                all.push_back(&entry.second);
+            }
+            for (Puppet *each : all)
+            {
+                Puppet &puppet = *each;
                 CrewMember *crew = LiveCrew(replica, puppet);
                 if (!crew || crew->bDead || !puppet.haveSample) continue;
                 const Sample &s = puppet.sample;
@@ -396,10 +496,16 @@ namespace Duels
         static std::string Describe(ShipManager *ship, Describing what)
         {
             // Ours by our ids; the replica's by the owner's ids (the puppets').
-            std::vector<std::pair<uint16_t, CrewMember*>> list;
+            // Guests (the other ship's crew aboard) by their owner's ids, marked "g", after the ship's own.
+            std::vector<std::pair<uint16_t, CrewMember*>> list, guests;
             if (ship && ship == G_->GetShipManager(0))
             {
                 for (const std::pair<const CrewMember*, uint16_t> &entry : g_crew.ownIds) list.push_back(std::make_pair(entry.second, const_cast<CrewMember*>(entry.first)));
+                for (const std::pair<const uint16_t, CrewMember*> &entry : g_crew.guests)
+                {
+                    CrewMember *crew = LiveGuest(entry.first);
+                    if (crew) guests.push_back(std::make_pair(entry.first, crew));
+                }
             }
             else if (ship)
             {
@@ -408,13 +514,23 @@ namespace Duels
                     CrewMember *crew = LiveCrew(ship, entry.second);
                     if (crew) list.push_back(std::make_pair(entry.first, crew));
                 }
+                for (std::pair<const uint16_t, Puppet> &entry : g_crew.away)
+                {
+                    CrewMember *crew = LiveCrew(ship, entry.second);
+                    if (crew) guests.push_back(std::make_pair(entry.first, crew));
+                }
             }
-            std::sort(list.begin(), list.end(),
-                      [](const std::pair<uint16_t, CrewMember*> &a, const std::pair<uint16_t, CrewMember*> &b) { return a.first < b.first; });
+            size_t ownCount = list.size();
+            list.insert(list.end(), guests.begin(), guests.end());
+            auto byId = [](const std::pair<uint16_t, CrewMember*> &a, const std::pair<uint16_t, CrewMember*> &b) { return a.first < b.first; };
+            std::sort(list.begin(), list.begin() + ownCount, byId);
+            std::sort(list.begin() + ownCount, list.end(), byId);
             std::ostringstream out;
-            for (const std::pair<uint16_t, CrewMember*> &entry : list)
+            for (size_t i = 0; i < list.size(); ++i)
             {
+                const std::pair<uint16_t, CrewMember*> &entry = list[i];
                 const CrewMember *crew = entry.second;
+                if (i >= ownCount) out << 'g';
                 switch (what)
                 {
                     case Describing::HEALTH:
@@ -451,13 +567,122 @@ namespace Duels
         {
             std::ostringstream out;
             out << "crew: rosters " << g_crew.rostersApplied << ", puppets " << g_crew.puppets.size() << ", made "
-                << g_crew.created << ", put in place " << g_crew.placed;
+                << g_crew.created << ", put in place " << g_crew.placed << ", boarded " << g_crew.boarded << " (away "
+                << g_crew.away.size() << "), guests made " << g_crew.guestsMade << " (aboard " << g_crew.guests.size() << ")";
             return out.str();
+        }
+
+        int AwayId(const CrewMember *crew)
+        {
+            for (const std::pair<const uint16_t, Puppet> &entry : g_crew.away)
+            {
+                if (crew && entry.second.crew == crew) return entry.first;
+            }
+            return -1;
         }
 
         bool IsPuppet(const CrewMember *crew)
         {
-            return g_crew.active && crew && IsPuppetCrew(crew);
+            return g_crew.active && crew && (IsPuppetCrew(crew) || AwayId(crew) >= 0);
+        }
+
+        int BoardAway(CrewMember *crew)
+        {
+            // Its id from the last state (or the one before, if a state was sent while it teleported).
+            int id = OwnId(crew);
+            if (id < 0)
+            {
+                auto prev = g_crew.prevIds.find(crew);
+                auto held = g_crew.heldIds.find(crew);
+                id = prev != g_crew.prevIds.end() ? prev->second : held != g_crew.heldIds.end() ? held->second : -1;
+            }
+            if (id < 0) return -1;
+            Puppet &puppet = g_crew.away[(uint16_t)id];
+            puppet = Puppet();
+            puppet.crew = crew;
+            puppet.roster.id = (uint16_t)id;
+            puppet.roster.species = crew->species;
+            puppet.roster.name = crew->GetName();
+            puppet.roster.male = crew->blueprint.male;
+            puppet.placeNow = false;   // FTL's teleport put them there
+            g_crew.heldIds[crew] = (uint16_t)id;
+            g_crew.ownIds.erase(crew);
+            ++g_crew.boarded;
+            return id;
+        }
+
+        void CameHome(uint16_t id)
+        {
+            g_crew.away.erase(id);
+        }
+
+        void AddGuest(uint16_t id, CrewMember *crew)
+        {
+            g_crew.guests[id] = crew;
+            ++g_crew.guestsMade;
+        }
+
+        CrewMember *Guest(uint16_t id)
+        {
+            return LiveGuest(id);
+        }
+
+        bool IsGuest(const CrewMember *crew)
+        {
+            for (const std::pair<const uint16_t, CrewMember*> &entry : g_crew.guests)
+            {
+                if (crew && entry.second == crew) return true;
+            }
+            return false;
+        }
+
+        void RemoveGuest(uint16_t id)
+        {
+            g_crew.guests.erase(id);
+        }
+
+        void AdoptPuppet(uint16_t id, CrewMember *crew)
+        {
+            g_crew.guests.erase(id);
+            Puppet &puppet = g_crew.puppets[id];
+            puppet = Puppet();
+            puppet.crew = crew;
+            puppet.roster.id = id;
+            puppet.roster.species = crew->species;
+            puppet.roster.name = crew->GetName();
+            puppet.roster.male = crew->blueprint.male;
+            puppet.placeNow = false;
+        }
+
+        int PuppetId(const CrewMember *crew)
+        {
+            if (!g_crew.active || !crew) return -1;
+            for (const std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            {
+                if (entry.second.crew == crew) return entry.first;
+            }
+            return -1;
+        }
+
+        int OwnId(const CrewMember *crew)
+        {
+            auto found = g_crew.ownIds.find(crew);
+            return found != g_crew.ownIds.end() ? found->second : -1;
+        }
+
+        CrewMember *OwnById(uint16_t id)
+        {
+            ShipManager *own = G_->GetShipManager(0);
+            for (const std::pair<const CrewMember*, uint16_t> &entry : g_crew.ownIds)
+            {
+                if (entry.second != id || !own) continue;
+                // Still one of ours (the map is rebuilt with each state).
+                for (CrewMember *crew : own->vCrewList)
+                {
+                    if (crew == entry.first) return crew;
+                }
+            }
+            return nullptr;
         }
 
         bool MayRepair(const ShipSystem *system)
