@@ -876,9 +876,16 @@ namespace Duels
         {
             if (!ship->HasSystem(system)) continue;
             ShipSystem *shipSystem = ship->GetSystem(system);
-            Log("  system %-10s room %2d power %d/%d health %d/%d", SYSTEM_NAMES[system], ship->GetSystemRoom(system),
+            Log("  system %-10s room %2d power %d/%d health %d/%d manned %d", SYSTEM_NAMES[system], ship->GetSystemRoom(system),
                 ship->GetSystemPower(system), ship->GetSystemPowerMax(system), shipSystem->healthState.first,
-                shipSystem->healthState.second);
+                shipSystem->healthState.second, shipSystem->iActiveManned);
+        }
+        for (ShipSystem *shipSystem : ship->vSystemList)
+        {
+            if (!shipSystem || shipSystem->iSystemType < SYSTEM_COUNT) continue;
+            Log("  system %-10s room %2d power %d/%d health %d/%d", ShipSystem::SystemIdToName(shipSystem->iSystemType).c_str(),
+                shipSystem->roomId, shipSystem->powerState.first, shipSystem->powerState.second,
+                shipSystem->healthState.first, shipSystem->healthState.second);
         }
         if (ship->shieldSystem)
         {
@@ -922,8 +929,10 @@ namespace Duels
         for (size_t index = 0; index < crew.size(); ++index)
         {
             CrewMember *member = crew[index];
-            Log("  crew %u %-8s on ship %d room %2d health %.0f/%.0f%s", (unsigned)index, member->species.c_str(),
-                member->currentShipId, member->iRoomId, member->health.first, member->health.second,
+            // task: FTL's CrewTask (0 = manning, 1 = repairing, ...); mans: the system it gives its skill to
+            Log("  crew %u %-8s on ship %d room %2d health %.0f/%.0f task %d mans %s%s", (unsigned)index, member->species.c_str(),
+                member->currentShipId, member->iRoomId, member->health.first, member->health.second, member->task.taskId,
+                member->bActiveManning && member->currentSystem ? ShipSystem::SystemIdToName(member->currentSystem->iSystemType).c_str() : "-",
                 member->fStunTime > 0.f ? (" stunned " + std::to_string((int)std::ceil(member->fStunTime)) + " s").c_str() : "");
         }
         for (Door *door : ship->ship.vDoorList)

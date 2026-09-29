@@ -1,6 +1,7 @@
 #include "DuelsConfig.h"
 #include "Duels.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -9,6 +10,9 @@ namespace Duels
     namespace Config
     {
         static const char *const FILE_NAME = "duels.cfg";
+
+        // The project's public relays, on every player's list after the relays of their own file (rules, section 6).
+        static const char *const PUBLIC_RELAYS[] = {"18.226.104.62"};
 
         struct Settings
         {
@@ -55,8 +59,19 @@ namespace Duels
                 if (key == "name") s.playerName = value;
                 else if (key == "relay") s.relays.push_back(value);
             }
-            Log("Config: %s: name %s, %u relay(s)", FILE_NAME, s.playerName.empty() ? "(none)" : s.playerName.c_str(),
-                (unsigned)s.relays.size());
+            size_t own = s.relays.size();
+            for (const char *relay : PUBLIC_RELAYS)
+            {
+                // The same server with the default port written out is the same relay.
+                std::string plain = relay, withPort = plain + ":47700";
+                if (std::find(s.relays.begin(), s.relays.end(), plain) == s.relays.end() &&
+                    std::find(s.relays.begin(), s.relays.end(), withPort) == s.relays.end())
+                {
+                    s.relays.push_back(plain);
+                }
+            }
+            Log("Config: %s: name %s, %u relay(s) of its own, %u in all", FILE_NAME,
+                s.playerName.empty() ? "(none)" : s.playerName.c_str(), (unsigned)own, (unsigned)s.relays.size());
         }
 
         const std::string &PlayerName()
