@@ -58,6 +58,27 @@ namespace Duels
         // slanted end, its top left at x, y; returns the band's height.
         float Label(float x, float y, const std::string &title);
 
+        // A place on the screen that takes clicks (a button, a field, a check box and its label).
+        struct Box
+        {
+            float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+            bool Contains(int px, int py) const { return w > 0.f && px >= x && px < x + w && py >= y && py < y + h; }
+        };
+
+        // A window over the main menu (roadmap 3.5): the screen behind it dimmed, FTL: Duels' red and blue, FTL's
+        // outline and a title tab, as the Duels window.
+        void Dialog(float x, float y, float w, float h, const std::string &title);
+        // A check box (22 x 22 at x, y): FTL's light border and dark inside, the light square when it is on; the
+        // border yellow under the mouse.
+        const float CHECK_SIZE = 22.f;
+        void CheckBox(float x, float y, bool on, bool hover);
+        // A text field's frame: the light border (yellow while it has the keyboard) around a dark field.
+        void Field(float x, float y, float w, float h, bool focus);
+        // A text field with its text in font 12 (a password as stars) and, while it has the keyboard, a blinking caret
+        // before the character `caret` (FTL's TextInput keeps the text and the caret; it draws the text itself at an
+        // offset of its own, over the field's border).
+        void TextField(float x, float y, float w, float h, const std::string &text, int caret, bool focus, bool stars);
+
         // The height of one line of a font (FTL's measure).
         float LineHeight(int font);
     }

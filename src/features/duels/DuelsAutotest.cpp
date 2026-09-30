@@ -15,6 +15,7 @@
 //   @nodebug               don't switch debug mode on (it is on for every other scenario: test commands need it)
 //   @config                the host's settings in duels.cfg are read and written as in a player's game (other
 //                          scenarios start from the defaults and leave the file as it is)
+//   @menu                  the scenario runs in the main menu (tests of the menu's windows): no game is started
 //   @ship <BLUEPRINT>      the ship to start with (a player ship, e.g. PLAYER_SHIP_FED), instead of the hangar's
 namespace Duels
 {
@@ -42,6 +43,7 @@ namespace Duels
         double startMs = 0.0;
         std::string ship;        // @ship, empty for the hangar's own choice
         bool config = false;     // @config: the host's settings read from and written to duels.cfg
+        bool menu = false;       // @menu: the scenario runs in the main menu
         std::vector<Command> script;
     };
 
@@ -85,6 +87,7 @@ namespace Duels
             else if (key == "@nodebug") noDebug = true;
             else if (key == "@ship" && (words >> name)) g_auto.ship = name;
             else if (key == "@config") g_auto.config = true;
+            else if (key == "@menu") g_auto.menu = true;
             else Log("Autotest: unknown directive '%s'", directive.c_str());
         }
 
@@ -142,7 +145,15 @@ namespace Duels
         {
         case Phase::WaitMenu:
             // Let the main menu settle for a second before driving it.
-            if (app->menu.bOpen && g_auto.frames >= 60)
+            if (app->menu.bOpen && g_auto.frames >= 60 && g_auto.menu)
+            {
+                Log("Autotest: running the scenario in the main menu");
+                state.script = g_auto.script;
+                state.nextScriptCommand = 0;
+                state.scriptStartMs = WallMs();
+                Enter(Phase::Running);
+            }
+            else if (app->menu.bOpen && g_auto.frames >= 60)
             {
                 app->menu.shipBuilder.Open();
                 Log("Autotest: hangar opened");

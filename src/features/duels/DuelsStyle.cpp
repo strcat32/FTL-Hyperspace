@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "DuelsStyle.h"
+#include "DuelsTrace.h"
 
 #include <algorithm>
 #include <cmath>
@@ -163,6 +164,46 @@ namespace Duels
             freetype::easy_print(62, x + 8.f, y + std::floor((h - LineHeight(62)) / 2.f) + 1.f, title);
             CSurface::GL_SetColor(COLOR_WHITE);
             return h;
+        }
+
+        void Dialog(float x, float y, float w, float h, const std::string &title)
+        {
+            CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, GL_Color(0.f, 0.f, 0.f, 0.55f));
+            Blend(x + 2.f, y + 2.f, w - 4.f, h - 4.f, Rgb(40, 13, 17), Rgb(12, 20, 44), 9.f);
+            WindowOutline((int)x, (int)y, (int)w, (int)h);
+            TitleTab(x, y, title);
+        }
+
+        void CheckBox(float x, float y, bool on, bool hover)
+        {
+            const float s = CHECK_SIZE;
+            CutRect(x, y, s, s, 2.f, ButtonBody(hover ? Look::Hover : Look::Idle));
+            CutRect(x + 3.f, y + 3.f, s - 6.f, s - 6.f, 1.f, Rgb(8, 10, 14));
+            if (on) CutRect(x + 6.f, y + 6.f, s - 12.f, s - 12.f, 0.f, ButtonBody(Look::Idle));
+        }
+
+        void Field(float x, float y, float w, float h, bool focus)
+        {
+            CutRect(x, y, w, h, 3.f, ButtonBody(focus ? Look::Hover : Look::Idle));
+            CutRect(x + 2.f, y + 2.f, w - 4.f, h - 4.f, 2.f, Rgb(8, 10, 14));
+        }
+
+        void TextField(float x, float y, float w, float h, const std::string &text, int caret, bool focus, bool stars)
+        {
+            const int font = 12;
+            Field(x, y, w, h, focus);
+            std::string shown = stars ? std::string(text.size(), '*') : text;
+            // Font 12's capitals sit in the middle of its line 2 px lower than the line's middle (as on the buttons).
+            float ty = y + std::floor((h - LineHeight(font)) / 2.f) + 3.f;
+            CSurface::GL_SetColor(Rgb(255, 255, 255));
+            freetype::easy_print(font, x + 10.f, ty, shown);
+            if (focus && std::fmod(WallMs(), 1000.0) < 600.0)
+            {
+                int at = std::max(0, std::min(caret, (int)shown.size()));
+                float cx = x + 10.f + (float)freetype::easy_measureWidth(font, shown.substr(0, (size_t)at)) + 1.f;
+                CSurface::GL_DrawRect(cx, y + 6.f, 1.f, h - 12.f, Rgb(255, 255, 255));
+            }
+            CSurface::GL_SetColor(COLOR_WHITE);
         }
     }
 }

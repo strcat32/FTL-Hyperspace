@@ -5,6 +5,7 @@
 #include "DuelsConsole.h"
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
+#include "DuelsMenu.h"
 #include "DuelsNet.h"
 #include "DuelsRelay.h"
 #include "DuelsRounds.h"
@@ -216,7 +217,9 @@ namespace Duels
         MouseControl *mouse = G_->GetMouseControl();
         CApp *app = G_->GetCApp();
         if (mouse) mouse->position = Point(g_heldMouse.x, g_heldMouse.y);
-        if (app && app->gui) app->gui->MouseMove(g_heldMouse.x, g_heldMouse.y);
+        // In the main menu FTL's menu takes the mouse (ours over it); the game's interface isn't there.
+        if (app && app->menu.bOpen) app->menu.MouseMove(g_heldMouse.x, g_heldMouse.y);
+        else if (app && app->gui) app->gui->MouseMove(g_heldMouse.x, g_heldMouse.y);
     }
 
     // Commands any player may use. The others change ships or automate play, so they need debug mode.
@@ -406,11 +409,15 @@ namespace Duels
         }
         if (verb == "name")
         {
-            // name <player name>: saved in duels.cfg.
-            if (cmd.raw.size() < 2) { message = "usage: name <player name>"; return false; }
-            Match::SetPlayerName(cmd.raw[1]);
-            Config::SavePlayerName(cmd.raw[1]);
-            message = "player name " + cmd.raw[1];
+            // name <player name>: saved in duels.cfg (the rest of the line: a name may have spaces, as the menu's
+            // name prompt allows). A test scenario leaves the file alone unless it says @config.
+            std::string name = cmd.text.substr(cmd.text.find("name") + 4);
+            size_t start = name.find_first_not_of(' '), end = name.find_last_not_of(' ');
+            name = start == std::string::npos ? "" : name.substr(start, end - start + 1);
+            if (name.empty()) { message = "usage: name <player name>"; return false; }
+            Match::SetPlayerName(name);
+            if (SettingsFromConfig()) Config::SavePlayerName(Match::PlayerName());
+            message = "player name " + Match::PlayerName();
             return true;
         }
         if (verb == "relay" || verb == "host" || verb == "join" || verb == "lobby") UseConfiguredRelay();
@@ -599,10 +606,19 @@ namespace Duels
         if (verb == "click")
         {
             // click <x> <y>: a left click there through the game's whole input (the Duels window, the match's
-            // buttons, then FTL), in its 1280 x 720 coordinates, for tests of the buttons.
+            // buttons, then FTL), in its 1280 x 720 coordinates, for tests of the buttons; in the main menu, through
+            // the menu's (ours over FTL's).
             int x, y;
             if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y)) { message = "usage: click <x> <y>"; return false; }
             CApp *app = G_->GetCApp();
+            if (app && app->menu.bOpen)
+            {
+                app->menu.MouseMove(x, y);
+                app->menu.MouseClick(x, y);
+                app->menu.MouseUp(x, y);
+                message = "clicked at " + std::to_string(x) + "," + std::to_string(y) + " in the main menu";
+                return true;
+            }
             if (!app || !app->gui) { message = "not in the game"; return false; }
             app->gui->MouseMove(x, y);
             app->gui->LButtonDown(x, y, false);
@@ -697,6 +713,8 @@ namespace Duels
 
         // The Duels window (test verb: open, close, a click in it).
         if (verb == "duels") return Window::RunVerb(cmd.args, message);
+        // Ours in the main menu (test verb: the name prompt, the tutorial box, the players' guide).
+        if (verb == "menu") return Menu::RunVerb(cmd.args, message);
 
         // The match flow (DuelsRounds.cpp): its settings, ready, forfeit, concede and draws.
         if (Rounds::IsVerb(verb)) return Rounds::RunVerb(cmd, message);

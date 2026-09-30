@@ -467,8 +467,9 @@ namespace Duels
         return true;
     }
 
-    // keys <text>: types into the game as the keyboard does (tests of the console). {f1}, {enter}, {esc}, {up},
-    // {down} and {back} are those keys; everything else is typed as characters.
+    // keys <text>: types into the game as the keyboard does (tests of the console, and of the main menu's windows
+    // there). {f1}, {enter}, {esc}, {up}, {down}, {pgup}, {pgdn} and {back} are those keys; everything else is typed
+    // as characters.
     static bool DoKeys(const Command &cmd, std::string &message)
     {
         CApp *app = G_->GetCApp();
@@ -476,9 +477,26 @@ namespace Duels
         size_t at = cmd.text.find("keys");
         if (!gui || at == std::string::npos)
         {
-            message = "usage: keys <text with {f1} {tab} {console} {chat} {enter} {esc} {up} {down} {back}>";
+            message = "usage: keys <text with {f1} {tab} {console} {chat} {enter} {esc} {up} {down} {pgup} {pgdn} {back}>";
             return false;
         }
+        // In the main menu the keys go to the menu (ours over FTL's), as the game sends them.
+        MainMenu *menu = app->menu.bOpen ? &app->menu : nullptr;
+        auto keyDown = [&](SDLKey key)
+        {
+            if (menu) menu->OnKeyDown(key, false);
+            else gui->KeyDown(key, false);
+        };
+        auto textInput = [&](int ch)
+        {
+            if (menu) menu->OnTextInput(ch);
+            else gui->OnTextInput(ch);
+        };
+        auto textEvent = [&](CEvent::TextEvent event)
+        {
+            if (menu) menu->OnTextEvent(event);
+            else gui->OnTextEvent(event);
+        };
         std::string text = cmd.text.substr(at + 4);
         if (!text.empty() && text[0] == ' ') text.erase(0, 1);
         int typed = 0;
@@ -488,20 +506,22 @@ namespace Duels
             {
                 size_t end = text.find('}', i);
                 std::string key = end == std::string::npos ? "" : text.substr(i + 1, end - i - 1);
-                if (key == "f1") gui->KeyDown(SDLK_F1, false);
-                else if (key == "tab") gui->KeyDown(SDLK_TAB, false);
+                if (key == "f1") keyDown(SDLK_F1);
+                else if (key == "tab") keyDown(SDLK_TAB);
                 else if (key == "console" || key == "chat")
                 {
                     // The hotkey as set in Options > Controls; a letter key also arrives as a typed character.
                     SDLKey hotkey = Settings::GetHotkey(key == "chat" ? "duels_chat" : "console");
-                    gui->KeyDown(hotkey, false);
-                    if (hotkey >= 32 && hotkey < 127) gui->OnTextInput((int)hotkey);
+                    keyDown(hotkey);
+                    if (hotkey >= 32 && hotkey < 127) textInput((int)hotkey);
                 }
-                else if (key == "esc") gui->KeyDown(SDLK_ESCAPE, false);
-                else if (key == "up") gui->KeyDown(SDLK_UP, false);
-                else if (key == "down") gui->KeyDown(SDLK_DOWN, false);
-                else if (key == "enter") gui->OnTextEvent(CEvent::TEXT_CONFIRM);
-                else if (key == "back") gui->OnTextEvent(CEvent::TEXT_BACKSPACE);
+                else if (key == "esc") keyDown(SDLK_ESCAPE);
+                else if (key == "up") keyDown(SDLK_UP);
+                else if (key == "down") keyDown(SDLK_DOWN);
+                else if (key == "pgup") keyDown(SDLK_PAGEUP);
+                else if (key == "pgdn") keyDown(SDLK_PAGEDOWN);
+                else if (key == "enter") textEvent(CEvent::TEXT_CONFIRM);
+                else if (key == "back") textEvent(CEvent::TEXT_BACKSPACE);
                 else
                 {
                     message = "unknown key {" + key + "}";
@@ -510,7 +530,7 @@ namespace Duels
                 i = end;
                 continue;
             }
-            gui->OnTextInput((unsigned char)text[i]);
+            textInput((unsigned char)text[i]);
             ++typed;
         }
         message = std::to_string(typed) + " characters typed";

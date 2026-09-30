@@ -2332,19 +2332,16 @@ namespace Duels
             if (g_match.initialised) return;
             g_match.initialised = true;
             ResetMatch();
-            // The player's name: the saved one, or a captain named like a crew member (saved for the next time; the
-            // "name" command changes it; later the Steam name).
+            // The player's name: the saved one, or for this start a captain named like a crew member (the menu's name
+            // prompt offers it on a first start and saves the player's choice; the "name" command changes it; later
+            // the Steam name).
             std::string name = Config::PlayerName();
             if (name.empty() && G_->GetBlueprints())
             {
                 bool male = true;
                 std::string crew = G_->GetBlueprints()->GetCrewName(&male);
                 std::replace(crew.begin(), crew.end(), ' ', '_');
-                if (!crew.empty())
-                {
-                    name = "Captain_" + crew;
-                    Config::SavePlayerName(name);
-                }
+                if (!crew.empty()) name = "Captain_" + crew;
             }
             if (!name.empty()) g_match.playerName = name;
             Net::SetListener(&g_listener);

@@ -10,6 +10,7 @@
 //   match_rounds <n>, match_prep <s>, match_stall <s>, match_permadeath on|off, match_env <mode>, match_free on|off,
 //   xp <factor>                 the host's settings for the next duel, as the "match" and "xp" commands last set them
 //                               (roadmap U; a test scenario doesn't change them)
+//   tutorial off                the main menu's tutorial box stays closed ("Don't show this again", DuelsMenu.cpp)
 namespace Duels
 {
     namespace Config
