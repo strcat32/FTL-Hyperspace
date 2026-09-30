@@ -84,6 +84,7 @@ namespace Duels
             bool free = false;
             uint16_t stallSeconds = 300;    // anti-stall: a round without a new low for this long ends (0: never)
             uint8_t env = Environment::MODE_AUTO;   // the fights' environments (rules, section 5)
+            uint8_t hazards = Environment::DEFAULT_HAZARDS;   // the kinds MODE_AUTO may roll
         };
 
         struct Result
@@ -274,6 +275,7 @@ namespace Duels
             w.Bool(d.settings.free);
             w.U16(d.settings.stallSeconds);
             w.U8(d.settings.env);
+            w.U8(d.settings.hazards);
             w.F64(d.phaseEnd);
             w.F64(d.fightStart);
             w.F64(d.stallEnd);
@@ -325,6 +327,7 @@ namespace Duels
             d.settings.free = r.Bool();
             d.settings.stallSeconds = r.U16();
             d.settings.env = r.U8();
+            d.settings.hazards = r.U8();
             d.phaseEnd = r.F64();
             d.fightStart = r.F64();
             d.stallEnd = r.F64();
@@ -699,7 +702,7 @@ namespace Duels
             d.fightStart = -1.0;
             d.scrap = d.settings.free ? 0 : ScrapFor(round);
             d.shop = d.settings.free ? std::vector<Refit::ShopItem>() : Refit::MakeStock(round, g.random);
-            d.env = d.settings.free ? Environment::Plan() : Environment::Roll(d.settings.env, round, g.random);
+            d.env = d.settings.free ? Environment::Plan() : Environment::Roll(d.settings.env, d.settings.hazards, round, g.random);
             g.defeatAt[HOST] = g.defeatAt[GUEST] = -1.0;
             g.defeatReason[HOST] = g.defeatReason[GUEST] = REASON_NONE;
             ClearDraw();
@@ -970,6 +973,9 @@ namespace Duels
             if (text == "on" || text == "off") s.free = text == "on";
             uint8_t mode;
             if (Environment::ParseMode(Config::Value("match_env"), mode)) s.env = mode;
+            uint8_t hazards;
+            text = Config::Value("match_hazards");
+            if (!text.empty() && Environment::ParseHazards(text, hazards)) s.hazards = hazards;
         }
 
         // Kept for the next start; a test scenario leaves duels.cfg as it is (the next test starts from its own).
@@ -983,6 +989,9 @@ namespace Duels
             Config::SaveValue("match_permadeath", s.permadeath ? "on" : "off");
             Config::SaveValue("match_free", s.free ? "on" : "off");
             Config::SaveValue("match_env", Environment::ModeName(s.env));
+            std::string hazards = Environment::HazardsName(s.hazards);   // "sun, pulsar" or "none"
+            hazards.erase(std::remove(hazards.begin(), hazards.end(), ' '), hazards.end());
+            Config::SaveValue("match_hazards", hazards);
         }
 
         void Reset()
@@ -1326,14 +1335,24 @@ namespace Duels
                 uint8_t mode;
                 if (cmd.args.size() < 3 || !Environment::ParseMode(cmd.args[2], mode))
                 {
-                    message = "usage: match env auto|off|sun|pulsar|asteroids";
+                    message = "usage: match env auto|off|sun|pulsar|asteroids|nebula|storm";
                     return false;
                 }
                 s.env = mode;
             }
+            else if (ArgIs(cmd, 1, "hazards"))
+            {
+                uint8_t hazards;
+                if (cmd.args.size() < 3 || !Environment::ParseHazards(cmd.args[2], hazards))
+                {
+                    message = "usage: match hazards default|all|none|<kind>,<kind>... (sun, pulsar, asteroids, nebula, storm, battery)";
+                    return false;
+                }
+                s.hazards = hazards;
+            }
             else if (cmd.args.size() >= 2)
             {
-                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids | free]";
+                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm | hazards <kinds> | free]";
                 return false;
             }
             if (cmd.args.size() >= 2)
@@ -1342,7 +1361,7 @@ namespace Duels
                 message = s.free ? std::string("next duel: a free fight (no rounds)")
                                  : "next duel: best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
                                        " s preparation, permanent death " + (s.permadeath ? "on" : "off") + ", environment " +
-                                       Environment::ModeName(s.env);
+                                       Environment::ModeName(s.env) + (s.env == Environment::MODE_AUTO ? " (" + Environment::HazardsName(s.hazards) + ")" : "");
                 return true;
             }
             message = Status();
@@ -1465,8 +1484,9 @@ namespace Duels
             std::string text = "best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
                                " s preparation, permanent death " + (s.permadeath ? "on" : "off");
             if (s.stallSeconds > 0) text += ", no progress for " + std::to_string(s.stallSeconds / 60) + " min ends a round";
-            if (s.env == Environment::MODE_OFF) text += ", no hazards";
-            else if (s.env != Environment::MODE_AUTO) text += std::string(", every fight near ") + Environment::KindName(s.env - 1);
+            if (s.env == Environment::MODE_OFF || (s.env == Environment::MODE_AUTO && s.hazards == 0)) text += ", no hazards";
+            else if (s.env != Environment::MODE_AUTO) text += std::string(", every fight in ") + Environment::KindName(s.env - 1);
+            else if (s.hazards != Environment::DEFAULT_HAZARDS) text += ", hazards: " + Environment::HazardsName(s.hazards);
             return text + unranked;
         }
 

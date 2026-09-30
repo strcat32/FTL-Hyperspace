@@ -960,10 +960,10 @@ namespace Duels
         ShipManager *ship = ArgShip(cmd, 1, message);
         if (!ship) return false;
 
-        Log("--- ship %d: %s, hull %d/%d, reactor %d/%d, scrap %d, missiles %d, drone parts %d%s ---", ship->iShipId,
+        PowerManager *power = PowerManager::GetPowerManager(ship->iShipId);
+        Log("--- ship %d: %s, hull %d/%d, reactor %d/%d (usable %d), scrap %d, missiles %d, drone parts %d%s ---", ship->iShipId,
             ship->myBlueprint.blueprintName.c_str(), ship->ship.hullIntegrity.first, ship->ship.hullIntegrity.second,
-            PowerManager::GetPowerManager(ship->iShipId)->currentPower.first,
-            PowerManager::GetPowerManager(ship->iShipId)->currentPower.second, ship->currentScrap, ship->GetMissileCount(),
+            power->currentPower.first, power->currentPower.second, power->GetMaxPower(), ship->currentScrap, ship->GetMissileCount(),
             ship->GetDroneCount(), ship->bDestroyed ? ", destroyed" : "");
         for (int system = 0; system < SYSTEM_COUNT; ++system)
         {

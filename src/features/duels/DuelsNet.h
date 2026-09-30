@@ -13,7 +13,7 @@ namespace Duels
     namespace Net
     {
         static const uint16_t DEFAULT_PORT = 47620;
-        static const uint16_t PROTOCOL_VERSION = 8;   // bump whenever a message changes
+        static const uint16_t PROTOCOL_VERSION = 9;   // bump whenever a message changes
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;

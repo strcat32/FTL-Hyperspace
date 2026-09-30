@@ -106,26 +106,91 @@ namespace Duels
         // The host's roll and the names
         // ---------------------------------------------------------------------------------------------------------
 
-        Plan Roll(uint8_t mode, int round, std::mt19937 &random)
+        // Rules, section 5 (v0.16): the chance that a round's fight has a hazard, and the kinds' weights (none, sun,
+        // pulsar, asteroids, nebula, storm, battery). Rounds 1 and 2 have none; round 3 eases in; the storm comes
+        // from round 4, the battery only from round 5 (a kind switched off gives its share to the others).
+        struct Row
+        {
+            int chance;
+            int weights[KIND_COUNT];
+        };
+
+        static const Row ROWS[3] = {
+            {20, {0, 30, 15, 30, 25, 0, 0}},     // round 3
+            {35, {0, 25, 20, 25, 15, 15, 0}},    // round 4
+            {50, {0, 20, 20, 20, 10, 15, 15}},   // round 5 and later
+        };
+
+        // The kinds this build can make (the battery comes with roadmap Y's second part).
+        static const uint8_t BUILT = (1 << SUN) | (1 << PULSAR) | (1 << ASTEROIDS) | (1 << NEBULA) | (1 << STORM);
+
+        Plan Roll(uint8_t mode, uint8_t hazards, int round, std::mt19937 &random)
         {
             Plan plan;
             plan.seed = random();
             if (plan.seed == 0) plan.seed = 1;
-            switch (mode)
+            if (mode == MODE_OFF) return plan;
+            if (mode > MODE_OFF && mode < MODE_COUNT)
             {
-            case MODE_OFF: plan.kind = NONE; break;
-            case MODE_SUN: plan.kind = SUN; break;
-            case MODE_PULSAR: plan.kind = PULSAR; break;
-            case MODE_ASTEROIDS: plan.kind = ASTEROIDS; break;
-            default:
-            {
-                // Rules, section 5: none in rounds 1 and 2; from round 3 a chance of 20%, 35%, then 50%.
-                int chance = round <= 2 ? 0 : std::min(50, 20 + 15 * (round - 3));
-                if ((int)(random() % 100) < chance) plan.kind = (uint8_t)(1 + random() % 3);
-                break;
+                plan.kind = (uint8_t)(mode - 1);   // one kind in every fight
+                return plan;
             }
+            if (round <= 2) return plan;
+            const Row &row = ROWS[round == 3 ? 0 : round == 4 ? 1 : 2];
+            if ((int)(random() % 100) >= row.chance) return plan;
+            int total = 0;
+            for (int kind = 1; kind < KIND_COUNT; ++kind)
+                if ((hazards & BUILT) & (1 << kind)) total += row.weights[kind];
+            if (total <= 0) return plan;
+            int pick = (int)(random() % (uint32_t)total);
+            for (int kind = 1; kind < KIND_COUNT; ++kind)
+            {
+                if (!((hazards & BUILT) & (1 << kind))) continue;
+                pick -= row.weights[kind];
+                if (pick < 0)
+                {
+                    plan.kind = (uint8_t)kind;
+                    break;
+                }
             }
             return plan;
+        }
+
+        static const char *const HAZARD_WORDS[KIND_COUNT] = {"", "sun", "pulsar", "asteroids", "nebula", "storm", "battery"};
+
+        bool ParseHazards(const std::string &word, uint8_t &hazards)
+        {
+            std::string text = word;
+            std::transform(text.begin(), text.end(), text.begin(), [](char c) { return (char)std::tolower((unsigned char)c); });
+            if (text == "default") { hazards = DEFAULT_HAZARDS; return true; }
+            if (text == "all") { hazards = DEFAULT_HAZARDS | (1 << BATTERY); return true; }
+            if (text == "none") { hazards = 0; return true; }
+            uint8_t bits = 0;
+            std::istringstream parts(text);
+            std::string part;
+            while (std::getline(parts, part, ','))
+            {
+                if (part == "rocks" || part == "asteroid") part = "asteroids";
+                if (part == "ionstorm") part = "storm";
+                bool known = false;
+                for (int kind = 1; kind < KIND_COUNT; ++kind)
+                {
+                    if (part != HAZARD_WORDS[kind]) continue;
+                    bits |= (uint8_t)(1 << kind);
+                    known = true;
+                }
+                if (!known) return false;
+            }
+            hazards = bits;
+            return true;
+        }
+
+        std::string HazardsName(uint8_t hazards)
+        {
+            std::string text;
+            for (int kind = 1; kind < KIND_COUNT; ++kind)
+                if (hazards & (1 << kind)) text += std::string(text.empty() ? "" : ", ") + HAZARD_WORDS[kind];
+            return text.empty() ? "none" : text;
         }
 
         bool ParseMode(const std::string &word, uint8_t &mode)
@@ -145,6 +210,11 @@ namespace Duels
                 mode = MODE_ASTEROIDS;
                 return true;
             }
+            if (text == "ionstorm")
+            {
+                mode = MODE_STORM;
+                return true;
+            }
             return false;
         }
 
@@ -157,6 +227,8 @@ namespace Duels
             case MODE_SUN: return "sun";
             case MODE_PULSAR: return "pulsar";
             case MODE_ASTEROIDS: return "asteroids";
+            case MODE_NEBULA: return "nebula";
+            case MODE_STORM: return "storm";
             default: return "?";
             }
         }
@@ -168,6 +240,9 @@ namespace Duels
             case SUN: return "a sun";
             case PULSAR: return "a pulsar";
             case ASTEROIDS: return "an asteroid field";
+            case NEBULA: return "a nebula";
+            case STORM: return "an ion storm";
+            case BATTERY: return "an anti-ship battery";
             default: return "open space";
             }
         }
@@ -179,6 +254,9 @@ namespace Duels
             case SUN: return "solar flares every 28-34 s";
             case PULSAR: return "ion pulses every 11-18 s";
             case ASTEROIDS: return "rocks in waves";
+            case NEBULA: return "no sensors";
+            case STORM: return "the reactor halved, no sensors";
+            case BATTERY: return "a shot through the shields every 20-25 s";
             default: return "no hazard";
             }
         }
@@ -190,6 +268,9 @@ namespace Duels
             case SUN: return "a solar flare every 28-34 s: fires and system damage, fewer with shields up";
             case PULSAR: return "an ion pulse every 11-18 s: ion damage to the shields and one more system";
             case ASTEROIDS: return "rocks in waves: 1 damage each; shields, evasion and defense drones stop them";
+            case NEBULA: return "no sensors on either ship: neither player sees into the other's ship";
+            case STORM: return "a nebula with an ion storm: no sensors, and the reactor at half its power (rounded up)";
+            case BATTERY: return "a shot through the shields every 20-25 s: 3 damage and a breach";
             default: return "no hazard";
             }
         }
@@ -264,13 +345,28 @@ namespace Duels
         // FTL's hazards on and off
         // ---------------------------------------------------------------------------------------------------------
 
+        // FTL's nebula and ion storm as the status effects of its events (StatusEffect::GetNebulaEffect: the sensors
+        // limited to 0; GetStormEffect: the reactor divided by 2), on our own ship only: the opponent's game does its
+        // ship's.
+        static void OnOwnShip(int type, int system, int amount)
+        {
+            WorldManager *world = G_->GetWorld();
+            ShipManager *own = G_->GetShipManager(0);
+            if (!world || !own) return;
+            world->ModifyStatusEffect(StatusEffect{type, system, amount, StatusEffect::TARGET_PLAYER}, own, StatusEffect::TARGET_PLAYER);
+        }
+
         static void HazardsOff(SpaceManager *space)
         {
-            // As Hyperspace's <removeHazards/> does; the nebula and the storm stay as they are.
+            // As Hyperspace's <removeHazards/> does, and the nebula and the storm with their effects on our ship.
             space->asteroidGenerator.bRunning = false;
             if (space->pulsarLevel) space->SetPulsarLevel(false);
             if (space->sunLevel) space->SetFireLevel(false);
             if (space->bPDS) space->SetPlanetaryDefense(false, 0);
+            if (space->bStorm) space->SetStorm(false);
+            if (space->bNebula) space->SetNebula(false);
+            OnOwnShip(StatusEffect::TYPE_CLEAR, SYS_SENSORS, 0);
+            OnOwnShip(StatusEffect::TYPE_CLEAR, SYS_REACTOR, 0);
         }
 
         void Begin(const Plan &plan, int round, double startMs)
@@ -295,6 +391,15 @@ namespace Duels
             case PULSAR:
                 space->SetPulsarLevel(true);
                 NextFlare();
+                break;
+            case NEBULA:
+                space->SetNebula(true);
+                OnOwnShip(StatusEffect::TYPE_LIMIT, SYS_SENSORS, 0);
+                break;
+            case STORM:
+                space->SetStorm(true);   // FTL's storm is a nebula too
+                OnOwnShip(StatusEffect::TYPE_LIMIT, SYS_SENSORS, 0);
+                OnOwnShip(StatusEffect::TYPE_DIVIDE, SYS_REACTOR, 2);
                 break;
             case ASTEROIDS:
             {
@@ -332,9 +437,10 @@ namespace Duels
             End();
             SpaceManager *space = Space();
             if (!space) return;
-            if (space->sunLevel || space->pulsarLevel || space->bPDS || space->asteroidGenerator.bRunning)
+            if (space->sunLevel || space->pulsarLevel || space->bPDS || space->asteroidGenerator.bRunning || space->bNebula || space->bStorm)
             {
-                Log("Environment: the beacon's own hazards are off for the match");
+                Log("Environment: the beacon's own hazards are off for the match (%s%s)", space->bStorm ? "an ion storm" : space->bNebula ? "a nebula" : "",
+                    space->sunLevel || space->pulsarLevel || space->bPDS || space->asteroidGenerator.bRunning ? " a timed hazard or rocks" : "");
             }
             HazardsOff(space);
         }

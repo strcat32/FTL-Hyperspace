@@ -32,6 +32,8 @@ namespace Duels
             Member captain;                 // the first crew member at the start of the match: always returns
             std::vector<Member> crew;       // everyone as the last fight began (Permanent Death off: all return)
             std::vector<bool> weaponsPowered;   // by slot, as the last fight began (powered again in the preparation)
+            std::map<int, int> systemsPowered;  // the other systems' power as the last fight began (an ion storm, a hit
+                                                // or FTL's power loss took some; powered again in the preparation)
             uint32_t revived = 0, shops = 0;
             // Levels as the match began: a level taken back stops there (roadmap V).
             std::map<int, int> startLevels;
@@ -240,6 +242,16 @@ namespace Duels
             if (own && own->weaponSystem)
             {
                 for (ProjectileFactory *weapon : own->GetWeaponList()) g_refit.weaponsPowered.push_back(weapon->powered);
+            }
+            g_refit.systemsPowered.clear();
+            if (own)
+            {
+                for (ShipSystem *system : own->vSystemList)
+                {
+                    int id = system ? system->iSystemType : -1;
+                    if (id < 0 || id >= SYS_ALL || id == SYS_WEAPONS || id == SYS_DRONES || !system->bNeedsPower) continue;
+                    g_refit.systemsPowered[id] = own->GetSystemPower(id);
+                }
             }
             // The captain as they are now (their skills grow).
             for (const Member &member : g_refit.crew)
@@ -475,6 +487,18 @@ namespace Duels
             }
             own->RestoreCrewPositions();
             if (CommandGui *gui = Gui()) gui->crewControl.UpdateCrewBoxes();
+
+            // The systems powered as when the last fight began (an ion storm halved the reactor and FTL took power
+            // from some, oxygen say; a hit or the ship's explosion took more, and FTL doesn't give it back by itself).
+            std::string repowered;
+            for (const auto &entry : g_refit.systemsPowered)
+            {
+                int before = own->GetSystemPower(entry.first);
+                while (own->GetSystemPower(entry.first) < entry.second && own->IncreaseSystemPower(entry.first)) continue;
+                if (own->GetSystemPower(entry.first) != before)
+                    repowered += (repowered.empty() ? "" : ", ") + ShipSystem::SystemIdToName(entry.first) + " " + std::to_string(own->GetSystemPower(entry.first));
+            }
+            if (!repowered.empty()) Log("Refit: powered again as the last fight began: %s", repowered.c_str());
 
             // Shields up for the new fight, and the weapons powered as when the last fight began (a hit on a bay, or the
             // ship's explosion, switched some off; FTL doesn't power them again by itself).
