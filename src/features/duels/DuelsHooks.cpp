@@ -298,6 +298,28 @@ HOOK_METHOD_PRIORITY(UpgradeBox, OnRender, -2000, () -> void)
     Duels::Refit::RenderSaleMark(this);
 }
 
+// Our weapon and drone bays are systems of their own (custom ones), but there is nothing to upgrade about them: while
+// FTL's upgrade screen builds its boxes (Hyperspace's Upgrades::OnInit gives every custom system one), the bays are
+// out of the ship's system keys, so they get none (roadmap AE; they showed as subsystems with a price of 0).
+HOOK_METHOD_PRIORITY(Upgrades, OnInit, -2000, (ShipManager *ship) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Upgrades::OnInit -> Begin (DuelsHooks.cpp)\n")
+    std::vector<std::pair<int, int>> hidden;
+    if (ship)
+    {
+        for (ShipSystem *system : ship->vSystemList)
+        {
+            if (!Duels::Bays::IsBay(system)) continue;
+            int id = system->iSystemType;
+            if (id < 0 || id >= (int)ship->systemKey.size()) continue;
+            hidden.push_back(std::make_pair(id, ship->systemKey[id]));
+            ship->systemKey[id] = -1;
+        }
+    }
+    super(ship);
+    for (const std::pair<int, int> &key : hidden) ship->systemKey[key.first] = key.second;
+}
+
 HOOK_METHOD_PRIORITY(Upgrades, OnLoop, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> Upgrades::OnLoop -> Begin (DuelsHooks.cpp)\n")
