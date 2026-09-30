@@ -12,6 +12,7 @@
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
 #include "DuelsHacking.h"
+#include "DuelsAi.h"
 #include "DuelsMatch.h"
 #include "DuelsMind.h"
 #include "DuelsRooms.h"
@@ -2352,14 +2353,15 @@ namespace Duels
             Net::Update(now);
             // The enemy window fits and mirrors the opponent's ship while it is a duel replica.
             View::SetDuelOpponent(g_match.replicaReady && G_->GetShipManager(1) != nullptr);
-            if (!Net::IsConnected()) return;
+            // A match against the AI runs in this game alone (roadmap 3.6): the frame without the network's part.
+            if (!Net::IsConnected() && !Rounds::IsLocal()) return;
 
             MatchState &m = g_match;
             if (InGame())
             {
                 // The loadout and the state go while the ships meet (the match flow); between rounds each player
                 // refits. The loadout first: the other game builds our ship from it before our crew roster comes.
-                if (Rounds::ShipsMeet())
+                if (Rounds::ShipsMeet() && !Rounds::IsLocal())
                 {
                     if (!m.loadoutSent) SendLoadout();
                     else if (Armament(G_->GetShipManager(0)) != m.sentArmament)
@@ -2467,6 +2469,7 @@ namespace Duels
             FlushShotLog();
             Net::Leave("left the duel");
             ResetMatch();
+            Ai::Stop();   // a match against the AI (roadmap 3.6)
         }
 
         void SetDebug(bool debug)

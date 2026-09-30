@@ -35,6 +35,15 @@ namespace Duels
 
         void Reset();
         void OnConnected();
+
+        // A match against FTL's AI (DuelsAi.cpp, roadmap 3.6): this game hosts it alone and nothing goes over the
+        // network; the guest's part (its readiness, its defeat, the damage its ship takes and its hull and crew now, as
+        // shares) comes from the AI.
+        void StartLocal();
+        bool IsLocal();
+        void OpponentReady();
+        void OpponentDefeated(bool crewDead);
+        void OpponentState(float hullLost, float crewLost, float hullShare, float crewShare);
         // A lost connection pauses the match (roadmap AA; rules, section 3): FTL's world stands still and the ships take
         // no orders until both players are back; the phase, stall and draw timers and the environment wait too.
         void OnConnectionLost();

@@ -7,6 +7,7 @@
 #include "DuelsMatchUi.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
+#include "DuelsAi.h"
 #include "DuelsRounds.h"
 #include "DuelsScript.h"
 #include "DuelsRefit.h"
@@ -144,6 +145,7 @@ namespace Duels
         {
             Settings settings;              // the host's settings for the next match (verb "match")
             bool active = false;            // connected in a duel
+            bool local = false;             // a match against FTL's AI in this game alone (roadmap 3.6)
             uint8_t me = HOST;
             Data data;
             bool dirty = false;             // host: the guest needs the match state
@@ -199,7 +201,7 @@ namespace Duels
         {
             if (player == NOBODY) return "nobody";
             if (player == g.me) return "you";
-            std::string name = Net::PeerName();
+            std::string name = g.local ? Ai::Name() : Net::PeerName();
             return name.empty() ? "the opponent" : name;
         }
 
@@ -375,6 +377,11 @@ namespace Duels
 
         static void SendData()
         {
+            if (g.local)
+            {
+                g.dirty = false;   // nobody to send it to
+                return;
+            }
             Writer w;
             WriteData(w, g.data);
             Net::Send(MSG_MATCH, w, true);
@@ -383,6 +390,7 @@ namespace Duels
 
         static void SendEvent(uint8_t type, uint8_t arg)
         {
+            if (g.local) return;
             Writer w;
             w.U8(type);
             w.U8(arg);
@@ -532,6 +540,7 @@ namespace Duels
             g.peerTaken = 0.f;
             g.peerLevels[0] = g.peerLevels[1] = 1.f;
             Refit::OpenShop(d.round, d.shop);
+            if (g.local) Ai::OnPrep(d.round);
             Announce("Round " + std::to_string(d.round) + " of " + std::to_string(d.settings.rounds) + ": preparation, " +
                      std::to_string(d.settings.prepSeconds) + " s (" + std::to_string(d.scrap) + " scrap, shop and upgrades)");
             // Revealed now, so that the players can prepare for it (rules, section 5).
@@ -923,7 +932,7 @@ namespace Duels
                 if (now >= d.phaseEnd || (d.ready[HOST] && d.ready[GUEST])) SetPhase(Phase::Starting, -1.0);
                 break;
             case Phase::Starting:
-                if (Match::ShipsStand())
+                if (g.local ? Ai::ShipStands() : Match::ShipsStand())
                 {
                     d.fightStart = d.settings.free ? now : now + STARTING_LEAD_MS;
                     d.stallEnd = d.settings.stallSeconds > 0 ? d.fightStart + d.settings.stallSeconds * 1000.0 : -1.0;
@@ -1054,6 +1063,49 @@ namespace Duels
             StartRound(1);
         }
 
+        void StartLocal()
+        {
+            Reset();
+            Environment::ClearBeacon();
+            g.active = true;
+            g.local = true;
+            g.me = HOST;
+            g.random.seed((uint32_t)WallMs());
+            Refit::OnMatchStart();
+            g.data = Data();
+            g.data.settings = g.settings;
+            g.data.token = 1;
+            if (g.data.settings.free) g.data.settings.rounds = 1;
+            Announce(g.data.settings.free ? std::string("A free fight against the AI (no rounds)")
+                                          : "A match against the AI: best of " + std::to_string(g.data.settings.rounds) + " rounds, " +
+                                                std::to_string(g.data.settings.prepSeconds) + " s preparation, permanent death " +
+                                                (g.data.settings.permadeath ? "on" : "off"));
+            StartRound(1);
+        }
+
+        bool IsLocal()
+        {
+            return g.local;
+        }
+
+        void OpponentReady()
+        {
+            if (g.local && g.active) HostEvent(GUEST, EV_READY, 0);
+        }
+
+        void OpponentDefeated(bool crewDead)
+        {
+            if (g.local && g.active) HostEvent(GUEST, EV_DEFEAT, crewDead ? REASON_CREW : REASON_DESTROYED);
+        }
+
+        void OpponentState(float hullLost, float crewLost, float hullShare, float crewShare)
+        {
+            if (!g.local || !g.active || (g.data.phase != Phase::Fight && g.data.phase != Phase::Ending)) return;
+            g.peerTaken = 100.f * (HULL_WEIGHT * hullLost + (1.f - HULL_WEIGHT) * crewLost);
+            g.peerLevels[0] = hullShare;
+            g.peerLevels[1] = crewShare;
+        }
+
         void OnConnectionLost()
         {
             if (!g.active || g.pausedSince >= 0.0) return;
@@ -1151,8 +1203,9 @@ namespace Duels
 
         void OnFrame(double now)
         {
-            if (!g.active || !Net::IsConnected()) return;
+            if (!g.active || !(g.local || Net::IsConnected())) return;
             Data &d = g.data;
+            if (g.local) Ai::OnFrame();
 
 
             if (d.phase == Phase::Fight && !g.fightBegun && d.fightStart >= 0.0 && now >= FromHost(d.fightStart)) BeginFight();
@@ -1537,8 +1590,9 @@ namespace Duels
 
         static std::string SettingsText(const Settings &s)
         {
-            // Why the match is unranked, every reason (debug mode, no public recording).
+            // Why the match is unranked, every reason (debug mode, no public recording, the AI).
             std::string reasons = GetState().debug ? "debug mode is on" : "";
+            if (g.local) reasons += std::string(reasons.empty() ? "" : ", ") + "against the AI";
             if (!s.record) reasons += std::string(reasons.empty() ? "" : ", ") + "not recorded";
             const std::string unranked = reasons.empty() ? "" : "; unranked: " + reasons;
             if (s.free) return std::string("a free fight (no rounds)") + unranked;
@@ -1605,7 +1659,8 @@ namespace Duels
             s.free = d.settings.free;
             s.me = g.me;
             s.names[g.me] = Match::ScreenName(Match::PlayerName());
-            s.names[them] = Net::PeerName().empty() ? std::string("Opponent") : Match::ScreenName(Net::PeerName());
+            s.names[them] = g.local ? Match::ScreenName(Ai::Name())
+                                    : Net::PeerName().empty() ? std::string("Opponent") : Match::ScreenName(Net::PeerName());
             s.points[HOST] = Points(d, HOST);
             s.points[GUEST] = Points(d, GUEST);
             s.opponentReady = d.ready[them];

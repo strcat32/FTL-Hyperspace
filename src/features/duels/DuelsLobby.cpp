@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsConfig.h"
+#include "DuelsAi.h"
 #include "DuelsConsole.h"
 #include "DuelsEnvironment.h"
 #include "DuelsLobby.h"
@@ -49,7 +50,8 @@ namespace Duels
         {
             None,
             Host,   // a room opens when the run begins
-            Join    // the room is joined when the run begins
+            Join,   // the room is joined when the run begins
+            Ai      // the match against FTL's AI begins with the run (roadmap 3.6)
         };
 
         struct LobbyState
@@ -62,6 +64,9 @@ namespace Duels
             bool listed = true;
             Rounds::NextDuel next;
             std::string message;                 // under the buttons: why CHOOSE SHIP didn't go on
+            bool vsAi = false;                   // the opponent: FTL's AI, not another player (roadmap 3.6)
+            int aiShip = 0;                      // the AI's ship: 0 random, else PlayerShips()[aiShip - 1]
+            Style::Box playerBox, aiBox, aiShipLess, aiShipMore;
             Style::Box listedBox, recordBox, roundsLess, roundsMore, prepLess, prepMore, stallLess, stallMore, permadeathBox;
             Style::Box hazardBoxes[Environment::KIND_COUNT];
             Style::Box cancel, choose;
@@ -200,7 +205,14 @@ namespace Duels
         // The Host window
         // ---------------------------------------------------------------------------------------------------------
 
-        static const float HW = 800.f, HH = 540.f, HX = (1280.f - HW) / 2.f, HY = 90.f;
+        static const float HW = 800.f, HH = 610.f, HX = (1280.f - HW) / 2.f, HY = 55.f;
+
+        // The AI's ship as HOST DUEL's window shows it ("Random", "Kestrel Cruiser A").
+        static std::string AiShipBlueprint()
+        {
+            std::vector<std::string> ships = Ai::PlayerShips();
+            return g.aiShip > 0 && g.aiShip <= (int)ships.size() ? ships[g.aiShip - 1] : std::string();
+        }
 
         void OpenHost()
         {
@@ -235,6 +247,14 @@ namespace Duels
                 Config::SaveValue("room_name", g.roomName);
                 Config::SaveValue("room_listed", g.listed ? "on" : "off");
             }
+            if (g.vsAi)
+            {
+                // Against FTL's AI (roadmap 3.6): no room; the match begins with the run.
+                Log("Lobby: choose a ship; the match against the AI (%s) begins with the run: %s",
+                    AiShipBlueprint().empty() ? "a random ship" : AiShipBlueprint().c_str(), message.c_str());
+                OpenHangar(Pending::Ai);
+                return;
+            }
             // The room opens at the first relay of the list that answers (part 4).
             g.attemptRelays = Net::RelayList();
             Log("Lobby: choose a ship; the room '%s' (%s%s) opens with the run, at the first of %u relay(s) that answers: %s",
@@ -248,22 +268,44 @@ namespace Duels
             Style::Dialog(HX, HY, HW, HH, "HOST DUEL");
             const GL_Color white = Rgb(255, 255, 255), soft = Rgb(190, 196, 204), light = Rgb(226, 230, 236), gold = Rgb(255, 235, 170);
 
-            // The room.
+            // The opponent: another player (a room at a relay), or FTL's AI on this computer (roadmap 3.6).
             float lx = HX + 30.f, lw = 340.f, y = HY + 24.f;
+            y += Style::Label(lx, y, "THE OPPONENT") + 14.f;
+            CheckAt(g.playerBox, lx, y, !g.vsAi, "Another player (a room at a relay)");
+            y += 30.f;
+            CheckAt(g.aiBox, lx, y, g.vsAi, "FTL's AI (on this computer, unranked)");
+            y += 34.f;
+            if (g.vsAi)
+            {
+                std::vector<std::string> ships = Ai::PlayerShips();
+                Text(FONT, lx, y + 6.f, "The AI's ship:", light);
+                ButtonAt(g.aiShipLess, lx + 110.f, y, 30.f, 28.f, "<");
+                CSurface::GL_SetColor(white);
+                std::string shipName = g.aiShip == 0 ? std::string("Random") : Ai::ShipTitle(AiShipBlueprint());
+                freetype::easy_printCenter(FONT, lx + 110.f + 30.f + 85.f, y + 6.f, shipName);
+                ButtonAt(g.aiShipMore, lx + 110.f + 30.f + 170.f, y, 30.f, 28.f, ">");
+            }
+            else g.aiShipLess.w = g.aiShipMore.w = 0.f;
+            y += 44.f;
+
+            // The room (not for a match against the AI).
             y += Style::Label(lx, y, "THE ROOM") + 14.f;
-            Text(FONT, lx, y, "Its name, in the room list:", light);
+            const GL_Color labels = g.vsAi ? soft : light;
+            Text(FONT, lx, y, "Its name, in the room list:", labels);
             RenderField(g.name, lx, y + 20.f, lw);
             y += 64.f;
-            Text(FONT, lx, y, "A password (empty: none):", light);
+            Text(FONT, lx, y, "A password (empty: none):", labels);
             RenderField(g.password, lx, y + 20.f, lw);
             y += 66.f;
             CheckAt(g.listedBox, lx, y, g.listed, "In the room list (JOIN DUEL)");
             y += 32.f;
             CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
             y += 40.f;
-            Paragraph(FONT, lx, y, lw, "CHOOSE SHIP opens FTL's hangar. Its START begins the run and opens the room at the relay. "
-                                       "The room's code is in the Duels window (the DUELS button at the top): the other player "
-                                       "joins with it, or finds the room in JOIN DUEL's list.", soft);
+            Paragraph(FONT, lx, y, lw, g.vsAi ? "CHOOSE SHIP opens FTL's hangar. Its START begins the run and the match against "
+                                                "the AI, on this computer: no room, nothing over the network."
+                                              : "CHOOSE SHIP opens FTL's hangar. Its START begins the run and opens the room at the "
+                                                "relay. The room's code is in the Duels window (the DUELS button at the top): the "
+                                                "other player joins with it, or finds the room in JOIN DUEL's list.", soft);
 
             // The match.
             float rx = HX + 410.f, rw = HW - 410.f - 30.f;
@@ -314,7 +356,12 @@ namespace Duels
         static void ClickHost(int x, int y)
         {
             Rounds::NextDuel &n = g.next;
-            if (g.name.box.Contains(x, y)) Focus(&g.name);
+            int ships = (int)Ai::PlayerShips().size();
+            if (g.playerBox.Contains(x, y)) g.vsAi = false;
+            else if (g.aiBox.Contains(x, y)) g.vsAi = true;
+            else if (g.aiShipLess.Contains(x, y)) g.aiShip = (g.aiShip + ships) % (ships + 1);
+            else if (g.aiShipMore.Contains(x, y)) g.aiShip = (g.aiShip + 1) % (ships + 1);
+            else if (g.name.box.Contains(x, y)) Focus(&g.name);
             else if (g.password.box.Contains(x, y)) Focus(&g.password);
             else if (g.listedBox.Contains(x, y)) g.listed = !g.listed;
             else if (g.recordBox.Contains(x, y)) n.record = !n.record;
@@ -786,6 +833,14 @@ namespace Duels
                 return;
             }
             if (!inRun) return;
+            if (g.pending == Pending::Ai)
+            {
+                g.pending = Pending::None;
+                Ai::Start(AiShipBlueprint());
+                Console::Feed("A match against " + Ai::Name() + " (FTL's AI, on this computer)");
+                ::Duels::Window::Open();
+                return;
+            }
             if (!g.attempting)
             {
                 g.attempting = true;
@@ -851,6 +906,25 @@ namespace Duels
             else if (what == "cancel" && IsOpen()) Close();
             else if (what == "start") return ClickStart(message);
             else if (what == "refresh" && g.open == Window::Join) Refresh();
+            else if (what == "ai" && args.size() > 2 && g.open == Window::Host)
+            {
+                // ai on|off: the opponent, FTL's AI or another player.
+                g.vsAi = args[2] == "on";
+            }
+            else if (what == "aiship" && args.size() > 2 && g.open == Window::Host)
+            {
+                // aiship <blueprint>|random: the AI's ship.
+                std::vector<std::string> ships = Ai::PlayerShips();
+                auto found = std::find(ships.begin(), ships.end(), Upper(args[2]));   // the verb's words come in lower case
+                if (args[2] != "random" && found == ships.end())
+                {
+                    message = "no player ship " + Upper(args[2]) + " in the hangar (" + std::to_string(ships.size()) + ":";
+                    for (const std::string &ship : ships) message += " " + ship;
+                    message += ")";
+                    return false;
+                }
+                g.aiShip = args[2] == "random" ? 0 : (int)(found - ships.begin()) + 1;
+            }
             else if (what == "pick" && args.size() > 2 && g.open == Window::Join)
             {
                 // pick <code|@file>: a click on that room's row in the list (on its page).

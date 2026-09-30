@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsAi.h"
 #include "DuelsHud.h"
 #include "DuelsLobby.h"
 #include "DuelsMatch.h"
@@ -312,8 +313,15 @@ namespace Duels
         {
             const GL_Color white = Rgb(255, 255, 255), soft = Rgb(206, 210, 216), gold = Rgb(255, 235, 170);
             y += Style::Label(x, y, "THE MATCH") + 8.f;
-            std::string opponent = Net::IsConnected() ? Net::PeerName() : "";
-            if (opponent.empty() && Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
+            std::string opponent = Net::IsConnected() ? Net::PeerName() : Rounds::IsLocal() ? Ai::Name() : "";
+            if (Rounds::IsLocal())
+            {
+                Text(FONT, x, y, "Opponent: " + Match::ScreenName(opponent), gold);
+                y += 15.f;
+                Text(FONT, x, y, "FTL's AI, on this computer", soft);
+                y += 17.f;
+            }
+            else if (opponent.empty() && Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
             {
                 // The room waits for its guest (HOST DUEL, or the console's host relay).
                 Text(FONT, x, y, "Room " + Net::RelayCode() + " is open", gold);
