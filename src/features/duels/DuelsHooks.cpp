@@ -11,6 +11,7 @@
 #include "DuelsEnvironment.h"
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
+#include "DuelsMatchUi.h"
 #include "DuelsNet.h"
 #include "DuelsRooms.h"
 #include "DuelsRounds.h"
@@ -947,6 +948,7 @@ HOOK_METHOD_PRIORITY(CommandGui, MouseMove, -2000, (int mX, int mY) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::MouseMove -> Begin (DuelsHooks.cpp)\n")
     // Over the Duels window, the game underneath doesn't see the mouse.
+    Duels::MatchUi::MouseMove(mX, mY);
     if (Duels::Window::MouseMove(mX, mY)) return;
     Duels::View::BeginDecorations();
     super(mX, mY);
@@ -1264,6 +1266,7 @@ HOOK_METHOD_PRIORITY(CommandGui, LButtonDown, -2000, (int mX, int mY, bool shift
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::LButtonDown -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Window::LButtonDown(mX, mY)) return;
+    if (Duels::MatchUi::LButtonDown(mX, mY)) return;
     if (OrdersHeld(this, mX, mY)) return;
     super(mX, mY, shiftHeld);
 }
@@ -1309,8 +1312,9 @@ HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> MouseControl::OnRender -> Begin (DuelsHooks.cpp)\n")
     Duels::Hud::Render();
-    Duels::Rounds::Render();
+    Duels::MatchUi::Render();
     Duels::Window::Render();
+    Duels::MatchUi::RenderSplash();
     if (!Duels::Console::Render()) return super();
     PrintHelper *printer = PrintHelper::GetInstance();
     int x = printer->x;

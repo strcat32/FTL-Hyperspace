@@ -4,6 +4,7 @@
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsEnvironment.h"
+#include "DuelsMatchUi.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsRounds.h"
@@ -32,8 +33,6 @@ namespace Duels
         static const double DRAW_AGAIN_MS = 60000.0;     // after a declined offer, the same player waits this long
         static const float HULL_WEIGHT = 0.65f;          // the damage score: hull 0.65, crew 0.35 (rules, section 3)
         static const float SCORE_TIE = 0.05f;            // damage scores closer than this are equal
-        static const int DISPLAY_FONT = 12;              // the match display's font and line height (roadmap K)
-        static const float DISPLAY_LINE = 17.f;
         // Anti-stall (rules, section 3): a new low of either player's hull or crew health (by more than this share of
         // the round's start) restarts the timer; when it runs out, the lows decide, and a lead under 10 is a draw.
         static const float STALL_STEP = 0.02f;
@@ -46,7 +45,8 @@ namespace Duels
             EV_FORFEIT = 3,      // we give up the match
             EV_CONCEDE = 4,      // we give up this round
             EV_DRAW_OFFER = 5,   // arg: DRAW_ROUND or DRAW_MATCH
-            EV_DRAW_ANSWER = 6   // arg: 1 accepted, 0 declined
+            EV_DRAW_ANSWER = 6,  // arg: 1 accepted, 0 declined
+            EV_UNREADY = 7       // Ready taken back (the preparation goes on to its end)
         };
 
         enum Reason : uint8_t
@@ -533,7 +533,11 @@ namespace Duels
             g.fightBegun = false;
             g.roundCleaned = false;
             g.defeatSent = false;
-            if (!g.data.settings.free) Note("round " + std::to_string(g.data.round) + ": the ships meet");
+            if (!g.data.settings.free)
+            {
+                Note("round " + std::to_string(g.data.round) + ": the ships meet");
+                MatchUi::Splash("ROUND " + std::to_string(g.data.round), MatchUi::WHITE, 1500.0, "environWarning", true);
+            }
         }
 
         // The opponent's ship a target again. FTL lets go of a ship as a target while it isn't hostile (our weapons
@@ -564,6 +568,7 @@ namespace Duels
             StartCounting();
             if (!g.data.settings.free) Environment::Begin(g.data.env, g.data.round, FromHost(g.data.fightStart));
             if (!g.data.settings.free) Announce("Round " + std::to_string(g.data.round) + ": fight!");
+            MatchUi::Splash("FIGHT!", MatchUi::GOLD, 1300.0, "surgeWarning");
         }
 
         // A player's points in halves: 2 for a round won, 1 for a round drawn (rules, section 1: as in chess).
@@ -604,6 +609,9 @@ namespace Duels
                 result.dealt[HOST], result.dealt[GUEST], Points(d, HOST).c_str(), Points(d, GUEST).c_str());
             std::string text = "Round " + std::to_string(d.results.size()) + ": ";
             text += result.winner == NOBODY ? "a draw" : result.winner == g.me ? "you win it" : Who(them) + " wins it";
+            if (result.winner == NOBODY) MatchUi::Splash("DRAW", MatchUi::WHITE, 2500.0, "jumpReady");
+            else if (result.winner == g.me) MatchUi::Splash("YOU WIN", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "achievement");
+            else MatchUi::Splash("YOU LOSE", g.me == HOST ? MatchUi::BLUE : MatchUi::RED, 2500.0, "powerUpFail");
             Announce(text + " (" + ReasonText(result.reason) + "). Points " + PointsLine(d, g.me, them));
             Note("round " + std::to_string(d.results.size()) + ": damage dealt " + Number(result.dealt[g.me]) + " : " +
                  Number(result.dealt[them]) + ", " + ScoreLine());
@@ -619,6 +627,9 @@ namespace Duels
             uint8_t them = Other(g.me);
             std::string text = "Match over: ";
             text += d.matchWinner == NOBODY ? "a draw" : d.matchWinner == g.me ? "you win" : Who(d.matchWinner) + " wins";
+            if (d.matchWinner == NOBODY) MatchUi::Splash("MATCH DRAWN", MatchUi::WHITE, 4000.0, "jumpReady");
+            else if (d.matchWinner == g.me) MatchUi::Splash("MATCH WON", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 4000.0, "victory");
+            else MatchUi::Splash("MATCH LOST", g.me == HOST ? MatchUi::BLUE : MatchUi::RED, 4000.0, "powerUpFail");
             Announce(text + ", " + PointsLine(d, g.me, them) + " (" + ReasonText(d.matchReason) + ")");
             Note("match over: " + ScoreLine());
         }
@@ -761,6 +772,14 @@ namespace Duels
                     Announce(player == g.me ? std::string("You are ready") : Who(player) + " is ready");
                 }
                 break;
+            case EV_UNREADY:
+                if (d.phase == Phase::Prep && d.ready[player])
+                {
+                    d.ready[player] = false;
+                    g.dirty = true;
+                    Announce(player == g.me ? std::string("You are not ready any more") : Who(player) + " is not ready any more");
+                }
+                break;
             case EV_DEFEAT:
                 if ((d.phase == Phase::Fight || d.phase == Phase::Ending) && g.defeatAt[player] < 0.0)
                 {
@@ -796,7 +815,7 @@ namespace Duels
                     g.dirty = true;
                     Announce(player == g.me ? std::string("You offer a draw for the ") + (arg == DRAW_MATCH ? "match" : "round")
                                             : Who(player) + " offers a draw for the " + (arg == DRAW_MATCH ? "match" : "round") +
-                                                  ": accept in the Duels window (15 s)");
+                                                  (arg == DRAW_MATCH ? ": accept in the Duels window (15 s)" : ": the DRAW button accepts (15 s)"));
                 }
                 break;
             }
@@ -1065,7 +1084,7 @@ namespace Duels
                 if (data.drawBy == HOST && drawBefore != HOST)
                 {
                     Announce(Who(HOST) + " offers a draw for the " + (data.drawScope == DRAW_MATCH ? "match" : "round") +
-                             ": accept in the Duels window (15 s)");
+                             (data.drawScope == DRAW_MATCH ? ": accept in the Duels window (15 s)" : ": the DRAW button accepts (15 s)"));
                 }
                 if (data.ready[HOST] && !readyBefore && data.phase == Phase::Prep) Announce(Who(HOST) + " is ready");
                 ApplyLocal();
@@ -1122,6 +1141,11 @@ namespace Duels
                 for (double mark : {30.0, 10.0, 5.0})
                 {
                     if (left <= mark && g.lastSecondsShown > mark) Announce(std::to_string((int)mark) + " s to the fight");
+                }
+                // The last five seconds, big in the middle of the screen with a beep each (roadmap AC).
+                for (int mark = 5; mark >= 1; --mark)
+                {
+                    if (left <= mark && g.lastSecondsShown > mark) MatchUi::Splash(std::to_string(mark), MatchUi::WHITE, 900.0, "powerUpSystem");
                 }
                 g.lastSecondsShown = left;
             }
@@ -1280,8 +1304,9 @@ namespace Duels
             if (verb == "ready")
             {
                 if (d.phase != Phase::Prep) { message = "'ready' ends the preparation early"; return false; }
-                OwnEvent(EV_READY, 0);
-                message = "ready";
+                bool off = ArgIs(cmd, 1, "off");
+                OwnEvent(off ? EV_UNREADY : EV_READY, 0);
+                message = off ? "not ready" : "ready";
                 return true;
             }
             if (verb == "forfeit")
@@ -1327,106 +1352,6 @@ namespace Duels
             char buffer[16];
             snprintf(buffer, sizeof(buffer), "%d:%02d", seconds / 60, seconds % 60);
             return buffer;
-        }
-
-        // The display (roadmap 3.3): short lines between the weapons bar and the subsystems, where no window of
-        // FTL's covers them (the preparation's timer stays in sight while shopping).
-        static void DisplayLines(std::vector<std::string> &lines)
-        {
-            const Data &d = g.data;
-            double now = Now();
-            uint8_t them = Other(g.me);
-            double waitMs;
-            bool cutOff;
-            if (Net::Reconnecting(waitMs, cutOff))
-            {
-                lines.push_back("Connection lost: paused " + Clock(waitMs));
-                lines.push_back(cutOff ? "Getting back into the match" : "Waiting for " + Who(them) + " to come back");
-            }
-            std::string head = d.settings.free ? std::string("Free fight")
-                                               : "Round " + std::to_string(d.round) + " of " + std::to_string(d.settings.rounds);
-            std::string state, env;
-            switch (d.phase)
-            {
-            case Phase::Prep:
-                head += "   Preparation " + Clock(FromHost(d.phaseEnd) - now);
-                state = std::string(d.ready[g.me] ? "You: ready" : "You: preparing") + "   " +
-                        (d.ready[them] ? "Opponent: ready" : "Opponent: preparing");
-                break;
-            case Phase::Starting: state = "The ships meet"; break;
-            case Phase::Fight:
-                state = g.fightBegun ? "Fight" : "Fight in " + Clock(FromHost(d.fightStart) - now);
-                if (g.fightBegun && d.stallEnd >= 0.0 && FromHost(d.stallEnd) - now < 60000.0)
-                {
-                    state += "   No progress: ends in " + Clock(FromHost(d.stallEnd) - now);
-                }
-                break;
-            case Phase::Ending: state = "A ship is down"; break;
-            case Phase::RoundOver:
-                if (!d.results.empty())
-                {
-                    const Result &result = d.results.back();
-                    state = result.winner == NOBODY ? "Round over: a draw"
-                          : result.winner == g.me ? "Round over: you win it" : "Round over: you lose it";
-                }
-                break;
-            case Phase::MatchOver:
-                head = d.matchWinner == NOBODY ? "Match over: a draw" : d.matchWinner == g.me ? "Match over: you win" : "Match over: you lose";
-                break;
-            default:
-                break;
-            }
-            lines.push_back(head);
-            if (!state.empty()) lines.push_back(state);
-            // The round's environment, named while the players prepare for it (roadmap N: in the fight it is plain
-            // to see).
-            if (!d.settings.free && d.env.kind != Environment::NONE && (d.phase == Phase::Prep || d.phase == Phase::Starting))
-            {
-                env = std::string("The fight: near ") + Environment::KindName(d.env.kind);
-                lines.push_back(env);
-            }
-            if (d.drawBy != NOBODY)
-            {
-                lines.push_back(std::string("Draw offered (") + (d.drawScope == DRAW_MATCH ? "match" : "round") + ") by " +
-                                (d.drawBy == g.me ? "you" : "the opponent"));
-            }
-            // The damage score of the rounds played, shown once a round is over (roadmap N: in the fight it distracted).
-            std::string rounds = "Points " + PointsLine(d, g.me, them);
-            bool fighting = d.phase == Phase::Starting || d.phase == Phase::Fight || d.phase == Phase::Ending;
-            if (!fighting && !d.results.empty()) rounds += "   Damage " + Number(d.score[g.me]) + " : " + Number(d.score[them]);
-            lines.push_back(rounds);
-        }
-
-        void Render()
-        {
-            if (!g.active && g.data.phase != Phase::MatchOver) return;
-            if (g.data.phase == Phase::None) return;
-            WorldManager *world = G_->GetWorld();
-            CApp *app = G_->GetCApp();
-            if (!world || !world->playerShip || !world->commandGui || !app || app->menu.bOpen) return;
-
-            std::vector<std::string> lines;
-            DisplayLines(lines);
-            // Above the drone systems (and the weapons' charge numbers), its right edge left of the enemy window
-            // (roadmap K; it starts at x 822 in a duel). While there is no enemy window (the preparation, where the store
-            // covers the middle), at the right, above the subsystems.
-            const int font = DISPLAY_FONT;
-            bool enemyWindow = G_->GetShipManager(1) != nullptr;
-            const float lineHeight = DISPLAY_LINE, right = enemyWindow ? 806.f : 1266.f, bottom = 594.f;
-            float top = bottom - lineHeight * lines.size();
-            float width = 0.f;
-            for (const std::string &line : lines) width = std::max(width, (float)freetype::easy_measureWidth(font, line));
-            float centre = right - width / 2.f;
-            CSurface::GL_DrawRect(right - width - 8.f, top - 4.f, width + 16.f, lineHeight * lines.size() + 8.f,
-                                  GL_Color(0.f, 0.f, 0.f, 0.6f));
-            CSurface::GL_SetColor(GL_Color(1.f, 0.95f, 0.8f, 1.f));
-            float y = top;
-            for (const std::string &line : lines)
-            {
-                freetype::easy_print(font, centre - freetype::easy_measureWidth(font, line) / 2.f, y, line);
-                y += lineHeight;
-            }
-            CSurface::GL_SetColor(COLOR_WHITE);
         }
 
         std::string Status()
@@ -1527,6 +1452,48 @@ namespace Duels
             s.canOfferRoundDraw = running && noOffer && (d.phase == Phase::Starting || d.phase == Phase::Fight);
             s.canOfferMatchDraw = running && noOffer && (d.phase == Phase::Prep || d.phase == Phase::Starting || d.phase == Phase::Fight);
             s.drawToAnswer = running && d.drawBy == them;
+            s.weOfferDraw = running && d.drawBy == g.me;
+            s.phase = d.phase;
+            s.round = d.round;
+            s.rounds = d.settings.rounds;
+            s.free = d.settings.free;
+            s.me = g.me;
+            s.names[g.me] = Match::PlayerName();
+            s.names[them] = Net::PeerName().empty() ? std::string("Opponent") : Net::PeerName();
+            s.points[HOST] = Points(d, HOST);
+            s.points[GUEST] = Points(d, GUEST);
+            s.opponentReady = d.ready[them];
+            s.canUnready = running && d.phase == Phase::Prep && s.ready;
+            if (!d.settings.free && d.env.kind != Environment::NONE && (d.phase == Phase::Prep || d.phase == Phase::Starting))
+            {
+                s.envName = Environment::KindName(d.env.kind);
+            }
+            // The timer that counts now: a lost connection's wait first, then the preparation, a draw offer, and the
+            // anti-stall timer in its last minute.
+            double now = Now(), waitMs;
+            bool cutOff;
+            if (Net::Reconnecting(waitMs, cutOff))
+            {
+                s.paused = true;
+                s.pausedText = cutOff ? std::string("Getting back into the match") : "Waiting for " + Who(them);
+                s.countdownLabel = "Paused";
+                s.countdownMs = waitMs;
+            }
+            else if (d.phase == Phase::Prep && d.phaseEnd >= 0.0)
+            {
+                s.countdownLabel = "Fight in";
+                s.countdownMs = FromHost(d.phaseEnd) - now;
+            }
+            else if (d.phase == Phase::Fight && d.drawBy != NOBODY && d.drawEnd >= 0.0)
+            {
+                s.countdownLabel = "Draw offer";
+                s.countdownMs = FromHost(d.drawEnd) - now;
+            }
+            else if (d.phase == Phase::Fight && g.fightBegun && d.stallEnd >= 0.0 && FromHost(d.stallEnd) - now < 60000.0)
+            {
+                s.countdownLabel = "No progress";
+                s.countdownMs = FromHost(d.stallEnd) - now;
+            }
             if (d.drawBy != NOBODY)
             {
                 s.drawText = (d.drawBy == g.me ? std::string("You offer") : Who(them) + " offers") + " a draw for the " +

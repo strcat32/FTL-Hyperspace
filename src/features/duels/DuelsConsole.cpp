@@ -63,7 +63,7 @@ namespace Duels
             "droneparts", "dronepower", "export", "fire", "host", "import", "install", "ionize", "join", "keys", "leave", "lobby",
             "name", "nebula", "net", "netsim", "netstats", "nopause", "note", "pausetest", "power", "quit", "relay", "rooms", "say", "screenshot", "swap",
             "script", "spawn", "status", "stop", "supershield", "trace", "tracepower", "upgrade", "version", "view",
-            "weapon", "window", "xp", "match", "ready", "forfeit", "concede", "draw", "hull", "kill", "duels", "fonttest", "mouse", "chatflood"};
+            "weapon", "window", "xp", "match", "ready", "forfeit", "concede", "draw", "hull", "kill", "duels", "fonttest", "mouse", "click", "chatflood"};
 
         static std::string Lower(std::string text)
         {
@@ -323,10 +323,33 @@ namespace Duels
 
         // The feed at the bottom left, above the power bars and systems: its recent lines fading, or (open for chat)
         // more lines and the input line.
+        // A line cut into rows no wider than the width, at spaces (a word longer than the width gets a row of its own).
+        static std::vector<std::string> WrapRows(int font, const std::string &text, float width)
+        {
+            std::vector<std::string> rows;
+            std::string row;
+            std::istringstream words(text);
+            std::string word;
+            while (words >> word)
+            {
+                std::string longer = row.empty() ? word : row + " " + word;
+                if (!row.empty() && (float)freetype::easy_measureWidth(font, longer) > width)
+                {
+                    rows.push_back(row);
+                    row = word;
+                }
+                else row = longer;
+            }
+            if (!row.empty() || rows.empty()) rows.push_back(row);
+            return rows;
+        }
+
         static void RenderFeed()
         {
+            // Its rows wrap before x 336: in the preparation the store starts right of that, in a fight the match's
+            // countdown and buttons (roadmap S; DuelsMatchUi.cpp).
             const int font = 10;
-            const float x = 16.f, bottom = 588.f, lineHeight = 14.f, maxWidth = 440.f;
+            const float x = 16.f, bottom = 588.f, lineHeight = 14.f, maxWidth = 318.f;
             double now = WallMs();
             bool typing = g_console.open && g_console.chat && g_console.input;
             // The Duels window shows the match itself, and the feed would run over its left side.
@@ -339,22 +362,35 @@ namespace Duels
                 shown.push_back(&*it);
             }
             if (shown.empty() && !typing) return;
-            float lines = (float)shown.size() + (typing ? 1.f : 0.f);
-            float top = bottom - lines * lineHeight;
-            // Fading with its newest line.
-            float alpha = 1.f;
-            if (!typing && !shown.empty()) alpha = (float)std::min(1.0, std::max(0.0, (FEED_MS - (now - shown.front()->at)) / 2000.0));
-            // As wide as its longest line (the chat's input line gets the whole width).
-            float width = typing ? maxWidth : 0.f;
-            for (const Timed *line : shown) width = std::max(width, (float)freetype::easy_measureWidth(font, line->text));
-            Backdrop(x, top, std::min(width, maxWidth), lines * lineHeight, typing ? 1.f : alpha);
-            float y = top;
+
+            // The rows, oldest first, each with its line's fading.
+            struct FeedRow
+            {
+                std::string text;
+                bool chat;
+                float alpha;
+            };
+            std::vector<FeedRow> rows;
             for (auto it = shown.rbegin(); it != shown.rend(); ++it)
             {
                 const Timed &line = **it;
                 float lineAlpha = typing ? 1.f : (float)std::min(1.0, std::max(0.0, (FEED_MS - (now - line.at)) / 2000.0));
-                CSurface::GL_SetColor(line.chat ? GL_Color(0.75f, 0.95f, 1.f, lineAlpha) : GL_Color(1.f, 0.95f, 0.8f, lineAlpha));
-                freetype::easy_print(font, x, y, line.text);
+                for (const std::string &text : WrapRows(font, line.text, maxWidth)) rows.push_back(FeedRow{text, line.chat, lineAlpha});
+            }
+            float count = (float)rows.size() + (typing ? 1.f : 0.f);
+            float top = bottom - count * lineHeight;
+            // Fading with its newest line.
+            float alpha = 1.f;
+            if (!typing && !shown.empty()) alpha = (float)std::min(1.0, std::max(0.0, (FEED_MS - (now - shown.front()->at)) / 2000.0));
+            // As wide as its longest row (the chat's input line gets the whole width).
+            float width = typing ? maxWidth : 0.f;
+            for (const FeedRow &row : rows) width = std::max(width, (float)freetype::easy_measureWidth(font, row.text));
+            Backdrop(x, top, std::min(width, maxWidth), count * lineHeight, typing ? 1.f : alpha);
+            float y = top;
+            for (const FeedRow &row : rows)
+            {
+                CSurface::GL_SetColor(row.chat ? GL_Color(0.75f, 0.95f, 1.f, row.alpha) : GL_Color(1.f, 0.95f, 0.8f, row.alpha));
+                freetype::easy_print(font, x, y, row.text);
                 y += lineHeight;
             }
             if (typing)

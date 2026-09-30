@@ -596,6 +596,20 @@ namespace Duels
             message = std::to_string(Match::ChatFlood(count)) + " chat lines sent past the limits";
             return true;
         }
+        if (verb == "click")
+        {
+            // click <x> <y>: a left click there through the game's whole input (the Duels window, the match's
+            // buttons, then FTL), in its 1280 x 720 coordinates, for tests of the buttons.
+            int x, y;
+            if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y)) { message = "usage: click <x> <y>"; return false; }
+            CApp *app = G_->GetCApp();
+            if (!app || !app->gui) { message = "not in the game"; return false; }
+            app->gui->MouseMove(x, y);
+            app->gui->LButtonDown(x, y, false);
+            app->gui->LButtonUp(x, y, false);
+            message = "clicked at " + std::to_string(x) + "," + std::to_string(y);
+            return true;
+        }
         if (verb == "mouse")
         {
             // mouse <x> <y> [seconds]: FTL's mouse stays there (in its 1280 x 720 coordinates), for tooltips in

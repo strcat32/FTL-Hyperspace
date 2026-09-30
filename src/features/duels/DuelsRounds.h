@@ -68,8 +68,6 @@ namespace Duels
         bool IsVerb(const std::string &verb);
         bool RunVerb(const Command &cmd, std::string &message);
 
-        // The lines between the weapons bar and the subsystems: round, phase and its time, round wins, damage score.
-        void Render();
         std::string Status();
 
         // The Duels window (DuelsWindow.cpp, roadmap 3.2): what it shows, and what its buttons may do now.
@@ -85,9 +83,27 @@ namespace Duels
             bool canConcede = false, canOfferRoundDraw = false, canOfferMatchDraw = false, canForfeit = false;
             bool drawToAnswer = false;      // the opponent offers a draw
             std::string drawText;           // about an open draw offer
+
+            // The match on screen (DuelsMatchUi.cpp, roadmap R, AB, AC).
+            Phase phase = Phase::None;
+            int round = 0, rounds = 0;
+            bool free = false;
+            uint8_t me = 0;                 // 0: we host (red), 1: we joined (blue)
+            std::string names[2];           // the host's (red) and the guest's (blue)
+            std::string points[2];          // "1.5"
+            bool opponentReady = false;
+            bool weOfferDraw = false;       // our draw offer is open (the round's or the match's)
+            bool canUnready = false;
+            std::string envName;            // the next fight's environment in the preparation ("a sun"), or ""
+            // The timer that runs now: its label and the time left (ms); msLeft < 0: none.
+            std::string countdownLabel;
+            double countdownMs = -1.0;
+            bool paused = false;            // the connection is lost: the match waits
+            std::string pausedText;         // "Waiting for Captain_Lil" / "Getting back into the match"
         };
         Summary GetSummary();
-        // A player's action, as its verb: "ready", "forfeit", "concede", "draw round", "draw match", "draw yes", "draw no".
+        // A player's action, as its verb: "ready", "ready off", "forfeit", "concede", "draw round", "draw match",
+        // "draw yes", "draw no".
         bool Act(const std::string &command, std::string &message);
     }
 }
