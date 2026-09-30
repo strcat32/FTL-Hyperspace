@@ -85,6 +85,9 @@ namespace Duels
             uint16_t stallSeconds = 300;    // anti-stall: a round without a new low for this long ends (0: never)
             uint8_t env = Environment::MODE_AUTO;   // the fights' environments (rules, section 5)
             uint8_t hazards = Environment::DEFAULT_HAZARDS;   // the kinds MODE_AUTO may roll
+            // Public recording (roadmap 3.5): the server records the match (roadmap 4.2, 5.1); a match is ranked only
+            // when it is recorded, so switching it off makes the match unranked.
+            bool record = true;
         };
 
         struct Result
@@ -276,6 +279,7 @@ namespace Duels
             w.U16(d.settings.stallSeconds);
             w.U8(d.settings.env);
             w.U8(d.settings.hazards);
+            w.Bool(d.settings.record);
             w.F64(d.phaseEnd);
             w.F64(d.fightStart);
             w.F64(d.stallEnd);
@@ -328,6 +332,7 @@ namespace Duels
             d.settings.stallSeconds = r.U16();
             d.settings.env = r.U8();
             d.settings.hazards = r.U8();
+            d.settings.record = r.Bool();
             d.phaseEnd = r.F64();
             d.fightStart = r.F64();
             d.stallEnd = r.F64();
@@ -976,6 +981,8 @@ namespace Duels
             uint8_t hazards;
             text = Config::Value("match_hazards");
             if (!text.empty() && Environment::ParseHazards(text, hazards)) s.hazards = hazards;
+            text = Config::Value("match_record");
+            if (text == "on" || text == "off") s.record = text == "on";
         }
 
         // Kept for the next start; a test scenario leaves duels.cfg as it is (the next test starts from its own).
@@ -992,6 +999,7 @@ namespace Duels
             std::string hazards = Environment::HazardsName(s.hazards);   // "sun, pulsar" or "none"
             hazards.erase(std::remove(hazards.begin(), hazards.end(), ' '), hazards.end());
             Config::SaveValue("match_hazards", hazards);
+            Config::SaveValue("match_record", s.record ? "on" : "off");
         }
 
         void Reset()
@@ -1324,6 +1332,12 @@ namespace Duels
                 if (!ArgInt(cmd, 2, seconds) || seconds < 0 || seconds > 3600) { message = "usage: match stall <seconds> (0: off)"; return false; }
                 s.stallSeconds = (uint16_t)seconds;
             }
+            else if (ArgIs(cmd, 1, "record"))
+            {
+                if (ArgIs(cmd, 2, "on")) s.record = true;
+                else if (ArgIs(cmd, 2, "off")) s.record = false;
+                else { message = "usage: match record on|off (public recording; off: the match is unranked)"; return false; }
+            }
             else if (ArgIs(cmd, 1, "permadeath"))
             {
                 if (ArgIs(cmd, 2, "on")) s.permadeath = true;
@@ -1352,7 +1366,7 @@ namespace Duels
             }
             else if (cmd.args.size() >= 2)
             {
-                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm|battery | hazards <kinds> | free]";
+                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm|battery | hazards <kinds> | record on|off | free]";
                 return false;
             }
             if (cmd.args.size() >= 2)
@@ -1361,7 +1375,8 @@ namespace Duels
                 message = s.free ? std::string("next duel: a free fight (no rounds)")
                                  : "next duel: best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
                                        " s preparation, permanent death " + (s.permadeath ? "on" : "off") + ", environment " +
-                                       Environment::ModeName(s.env) + (s.env == Environment::MODE_AUTO ? " (" + Environment::HazardsName(s.hazards) + ")" : "");
+                                       Environment::ModeName(s.env) + (s.env == Environment::MODE_AUTO ? " (" + Environment::HazardsName(s.hazards) + ")" : "") +
+                                       (s.record ? ", recorded" : ", not recorded (unranked)");
                 return true;
             }
             message = Status();
@@ -1379,6 +1394,7 @@ namespace Duels
             next.permadeath = s.permadeath;
             next.env = s.env;
             next.hazards = s.hazards;
+            next.record = s.record;
             return next;
         }
 
@@ -1397,12 +1413,14 @@ namespace Duels
             s.permadeath = next.permadeath;
             s.env = next.env < Environment::MODE_COUNT ? next.env : (uint8_t)Environment::MODE_AUTO;
             s.hazards = next.hazards;
+            s.record = next.record;
             s.free = false;
             SaveSettings();
             message = "best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) + " s preparation, anti-stall " +
                       (s.stallSeconds ? std::to_string(s.stallSeconds) + " s" : std::string("off")) + ", permanent death " +
                       (s.permadeath ? "on" : "off") + ", environment " + Environment::ModeName(s.env) +
-                      (s.env == Environment::MODE_AUTO ? " (" + Environment::HazardsName(s.hazards) + ")" : "");
+                      (s.env == Environment::MODE_AUTO ? " (" + Environment::HazardsName(s.hazards) + ")" : "") +
+                      (s.record ? ", recorded" : ", not recorded (unranked)");
             return true;
         }
 
@@ -1488,7 +1506,8 @@ namespace Duels
                     << (s.free ? std::string("a free fight") : "best of " + std::to_string(s.rounds) + " rounds, " +
                                                                    std::to_string(s.prepSeconds) + " s preparation, permanent death " +
                                                                    (s.permadeath ? "on" : "off") + ", environment " +
-                                                                   Environment::ModeName(s.env));
+                                                                   Environment::ModeName(s.env))
+                    << (s.record ? ", recorded" : ", not recorded (unranked)");
                 return out.str();
             }
             out << "match: round " << (int)d.round << "/" << (int)d.settings.rounds << (d.settings.free ? " (free fight)" : "")
@@ -1499,6 +1518,7 @@ namespace Duels
                     << ReasonText(result.reason) << " " << Number(result.dealt[HOST]) << ":" << Number(result.dealt[GUEST]) << "]";
             }
             out << ", environment " << Environment::KindName(d.env.kind) << " (setting " << Environment::ModeName(d.settings.env) << ")";
+            out << (d.settings.record ? ", recorded" : ", not recorded (unranked)");
             if (Environment::Active()) out << ", " << Environment::Status();
             out << ", our damage taken " << Number(g.taken.Taken()) << " (hull " << g.taken.hullLost << "/" << g.taken.hullPool
                 << ", crew " << Number(g.taken.crewLost) << "/" << Number(g.taken.crewPool) << "), theirs " << Number(g.peerTaken)
@@ -1517,7 +1537,10 @@ namespace Duels
 
         static std::string SettingsText(const Settings &s)
         {
-            const char *unranked = GetState().debug ? "; unranked: debug mode is on" : "";
+            // Why the match is unranked, every reason (debug mode, no public recording).
+            std::string reasons = GetState().debug ? "debug mode is on" : "";
+            if (!s.record) reasons += std::string(reasons.empty() ? "" : ", ") + "not recorded";
+            const std::string unranked = reasons.empty() ? "" : "; unranked: " + reasons;
             if (s.free) return std::string("a free fight (no rounds)") + unranked;
             std::string text = "best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
                                " s preparation, permanent death " + (s.permadeath ? "on" : "off");

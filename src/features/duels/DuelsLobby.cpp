@@ -62,7 +62,7 @@ namespace Duels
             bool listed = true;
             Rounds::NextDuel next;
             std::string message;                 // under the buttons: why CHOOSE SHIP didn't go on
-            Style::Box listedBox, roundsLess, roundsMore, prepLess, prepMore, stallLess, stallMore, permadeathBox;
+            Style::Box listedBox, recordBox, roundsLess, roundsMore, prepLess, prepMore, stallLess, stallMore, permadeathBox;
             Style::Box hazardBoxes[Environment::KIND_COUNT];
             Style::Box cancel, choose;
 
@@ -258,6 +258,8 @@ namespace Duels
             RenderField(g.password, lx, y + 20.f, lw);
             y += 66.f;
             CheckAt(g.listedBox, lx, y, g.listed, "In the room list (JOIN DUEL)");
+            y += 32.f;
+            CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
             y += 40.f;
             Paragraph(FONT, lx, y, lw, "CHOOSE SHIP opens FTL's hangar. Its START begins the run and opens the room at the relay. "
                                        "The room's code is in the Duels window (the DUELS button at the top): the other player "
@@ -315,6 +317,7 @@ namespace Duels
             if (g.name.box.Contains(x, y)) Focus(&g.name);
             else if (g.password.box.Contains(x, y)) Focus(&g.password);
             else if (g.listedBox.Contains(x, y)) g.listed = !g.listed;
+            else if (g.recordBox.Contains(x, y)) n.record = !n.record;
             else if (g.roundsLess.Contains(x, y) && n.rounds > 1) n.rounds = n.rounds % 2 == 0 ? n.rounds - 1 : n.rounds - 2;
             else if (g.roundsMore.Contains(x, y) && n.rounds < 15) n.rounds = n.rounds % 2 == 0 ? n.rounds + 1 : n.rounds + 2;
             else if (g.prepLess.Contains(x, y) && n.prepSeconds > 30) n.prepSeconds = std::max(30, (n.prepSeconds - 1) / 15 * 15);

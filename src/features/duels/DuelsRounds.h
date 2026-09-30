@@ -91,6 +91,7 @@ namespace Duels
             bool permadeath = true;
             uint8_t env = 0;        // Environment::Mode
             uint8_t hazards = 0;    // the kinds MODE_AUTO may roll
+            bool record = true;     // public recording (off: unranked)
         };
         NextDuel GetNextDuel();
         bool SetNextDuel(const NextDuel &next, std::string &message);
