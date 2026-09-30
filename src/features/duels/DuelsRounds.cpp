@@ -1335,7 +1335,7 @@ namespace Duels
                 uint8_t mode;
                 if (cmd.args.size() < 3 || !Environment::ParseMode(cmd.args[2], mode))
                 {
-                    message = "usage: match env auto|off|sun|pulsar|asteroids|nebula|storm";
+                    message = "usage: match env auto|off|sun|pulsar|asteroids|nebula|storm|battery";
                     return false;
                 }
                 s.env = mode;
@@ -1352,7 +1352,7 @@ namespace Duels
             }
             else if (cmd.args.size() >= 2)
             {
-                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm | hazards <kinds> | free]";
+                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm|battery | hazards <kinds> | free]";
                 return false;
             }
             if (cmd.args.size() >= 2)

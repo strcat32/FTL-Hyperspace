@@ -16,6 +16,10 @@ namespace Duels
         static const int PULSAR_MIN_MS = 11000, PULSAR_MAX_MS = 18000;
         // The first rock comes this long after the fight's start.
         static const int ROCKS_LEAD_MS = 2000;
+        // FTL's anti-ship battery (SpaceManager::SetPlanetaryDefense, UpdatePDS): a shot at a random room of the target
+        // every 20-25 s (its flash timer), and misses for show every 2-5 s between.
+        static const int BATTERY_MIN_MS = 20000, BATTERY_MAX_MS = 25000;
+        static const int BATTERY_MISS_MIN_MS = 2000, BATTERY_MISS_MAX_MS = 5000;
 
         // FTL's asteroid generator (AsteroidGenerator::Initialize): the waves' lengths and the time between rocks, in
         // ms, for a ship with 2 shield layers and with 3. The generator sends every other rock to each of two ships,
@@ -92,6 +96,13 @@ namespace Duels
             int rocksMade = 0;             // at our ship
             Rock nextRock;
             bool hasNextRock = false;
+
+            // The battery's shots (the same in both games) and its misses (each game's own, for show).
+            Numbers shotNumbers;
+            int shots = 0;
+            double nextShotMs = 0.0;
+            uint32_t nextShotRoom = 0;
+            double nextMissMs = 0.0;
         };
 
         static State g;
@@ -121,8 +132,8 @@ namespace Duels
             {50, {0, 20, 20, 20, 10, 15, 15}},   // round 5 and later
         };
 
-        // The kinds this build can make (the battery comes with roadmap Y's second part).
-        static const uint8_t BUILT = (1 << SUN) | (1 << PULSAR) | (1 << ASTEROIDS) | (1 << NEBULA) | (1 << STORM);
+        // The kinds this build can make.
+        static const uint8_t BUILT = (1 << SUN) | (1 << PULSAR) | (1 << ASTEROIDS) | (1 << NEBULA) | (1 << STORM) | (1 << BATTERY);
 
         Plan Roll(uint8_t mode, uint8_t hazards, int round, std::mt19937 &random)
         {
@@ -215,6 +226,11 @@ namespace Duels
                 mode = MODE_STORM;
                 return true;
             }
+            if (text == "asb")
+            {
+                mode = MODE_BATTERY;
+                return true;
+            }
             return false;
         }
 
@@ -229,6 +245,7 @@ namespace Duels
             case MODE_ASTEROIDS: return "asteroids";
             case MODE_NEBULA: return "nebula";
             case MODE_STORM: return "storm";
+            case MODE_BATTERY: return "battery";
             default: return "?";
             }
         }
@@ -325,6 +342,38 @@ namespace Duels
             g.hasNextRock = false;
         }
 
+        // Where FTL's battery fires from: its planet, as seen from our ship (Hyperspace's UpdatePDS), or a side of the
+        // screen when the beacon has none.
+        static Point BatteryOrigin(SpaceManager *space)
+        {
+            if (space->currentPlanet.w <= 0) return Point((int)Projectile::RandomSidePoint(0).x, (int)Projectile::RandomSidePoint(0).y);
+            Point origin(space->currentPlanet.x + space->currentPlanet.w / 2 - space->shipPosition.x,
+                         space->currentPlanet.y + space->currentPlanet.h / 2 - space->shipPosition.y);
+            origin.x = std::min(origin.x, 800);
+            origin.y = std::min(origin.y, 800);
+            return origin;
+        }
+
+        static void NextShot()
+        {
+            g.nextShotMs += g.shotNumbers.Between(Range{BATTERY_MIN_MS, BATTERY_MAX_MS});
+            g.nextShotRoom = g.shotNumbers.Next();
+        }
+
+        // FTL's battery shot (PDS_SHOT: 3 damage, through 5 shield layers, a breach) at our own ship, as FTL's battery
+        // fires it (Hyperspace's CreatePDSFire); a miss goes past to a side of the screen.
+        static void FireBattery(bool miss)
+        {
+            ShipManager *own = G_->GetShipManager(0);
+            SpaceManager *space = Space();
+            ShipGraph *graph = ShipGraph::GetShipInfo(0);
+            int rooms = graph ? (int)graph->rooms.size() : 0;
+            WeaponBlueprint *shot = G_->GetBlueprints()->GetWeaponBlueprint("PDS_SHOT");
+            if (!own || !space || own->bDestroyed || rooms <= 0 || !shot) return;
+            Pointf target = miss ? Projectile::RandomSidePoint(0) : own->GetRoomCenter((int)(g.nextShotRoom % (uint32_t)rooms));
+            space->CreatePDSFire(shot, BatteryOrigin(space), target, 0, true);
+        }
+
         static void MakeRock(const Rock &rock)
         {
             ++g.rocks;
@@ -392,6 +441,14 @@ namespace Duels
                 space->SetPulsarLevel(true);
                 NextFlare();
                 break;
+            case BATTERY:
+                // FTL's battery for its look (the planet, its hazard sign), aimed at us; its own shots are held
+                // (ReplacesBattery), ours come on the schedule.
+                g.shotNumbers.state = ((uint64_t)plan.seed << 32) ^ 0xBA77E4EEull;
+                space->SetPlanetaryDefense(true, 0);
+                NextShot();
+                g.nextMissMs = BATTERY_MISS_MIN_MS;
+                break;
             case NEBULA:
                 space->SetNebula(true);
                 OnOwnShip(StatusEffect::TYPE_LIMIT, SYS_SENSORS, 0);
@@ -422,7 +479,7 @@ namespace Duels
             if (!g.active) return;
             g.active = false;
             if (SpaceManager *space = Space()) HazardsOff(space);
-            Log("Environment: over (%d flares or pulses, %d rocks, %d of them at our ship)", g.flares, g.rocks, g.rocksMade);
+            Log("Environment: over (%d flares or pulses, %d rocks, %d of them at our ship, %d battery shots)", g.flares, g.rocks, g.rocksMade, g.shots);
         }
 
         void Shift(double ms)
@@ -474,6 +531,23 @@ namespace Duels
                     MakeRock(rock);
                 }
             }
+            else if (g.plan.kind == BATTERY)
+            {
+                while (g.nextShotMs <= t)
+                {
+                    ++g.shots;
+                    ShipGraph *graph = ShipGraph::GetShipInfo(0);
+                    int rooms = graph ? (int)graph->rooms.size() : 1;
+                    Log("Environment: shot %d at %.0f room %d", g.shots, g.nextShotMs, (int)(g.nextShotRoom % (uint32_t)std::max(1, rooms)));
+                    FireBattery(false);
+                    NextShot();
+                }
+                if (t >= g.nextMissMs)
+                {
+                    FireBattery(true);
+                    g.nextMissMs = t + BATTERY_MISS_MIN_MS + std::rand() % (BATTERY_MISS_MAX_MS - BATTERY_MISS_MIN_MS + 1);
+                }
+            }
         }
 
         void AfterSpaceLoop()
@@ -504,6 +578,12 @@ namespace Duels
             return g.active && g.plan.kind == ASTEROIDS;
         }
 
+        bool ReplacesBattery()
+        {
+            // FTL's own battery never fires then: ours does, on the schedule, at our own ship only.
+            return g.active && g.plan.kind == BATTERY;
+        }
+
         bool Active()
         {
             return g.active;
@@ -530,6 +610,10 @@ namespace Duels
             else if (g.plan.kind == ASTEROIDS)
             {
                 out << ", " << g.rocks << " rocks, wave " << (g.wave == WAVE_CALM ? "calm" : g.wave == WAVE_NORMAL ? "normal" : "barrage");
+            }
+            else if (g.plan.kind == BATTERY)
+            {
+                out << ", " << g.shots << " battery shots, the next in " << (int)std::max(0.0, (g.nextShotMs - t) / 1000.0) << " s";
             }
             return out.str();
         }

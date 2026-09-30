@@ -23,7 +23,7 @@ namespace Duels
             ASTEROIDS = 3,   // rocks
             NEBULA = 4,      // no sensors
             STORM = 5,       // a nebula with the reactor halved
-            BATTERY = 6,     // an anti-ship battery (roadmap Y, second part: not built yet)
+            BATTERY = 6,     // an anti-ship battery: a shot through the shields every 20-25 s
             KIND_COUNT = 7
         };
 
@@ -41,7 +41,8 @@ namespace Duels
             MODE_ASTEROIDS = 4,
             MODE_NEBULA = 5,
             MODE_STORM = 6,
-            MODE_COUNT = 7
+            MODE_BATTERY = 7,
+            MODE_COUNT = 8
         };
 
         struct Plan
@@ -78,8 +79,10 @@ namespace Duels
         void AfterSpaceLoop();
         // FTL's flare or pulse on a ship: in a duel only on our own (the opponent's game does its ship's).
         bool AllowsHazardDamage(ShipManager *ship);
-        // FTL's asteroid generator stays quiet while our schedule makes the rocks.
+        // FTL's asteroid generator stays quiet while our schedule makes the rocks, and FTL's anti-ship battery
+        // (SpaceManager::UpdatePDS: its shots and misses) while ours fires.
         bool ReplacesAsteroidGenerator();
+        bool ReplacesBattery();
         // FTL's "SOLAR FLARE / ION PULSE IMMINENT!" text (its sound still plays): not drawn in a duel (roadmap N).
         bool HidesWarning(const WarningMessage *message);
 

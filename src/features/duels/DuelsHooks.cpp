@@ -254,6 +254,15 @@ HOOK_METHOD_PRIORITY(FTLButton, MouseClick, -2000, (int mX, int mY) -> bool)
     return false;
 }
 
+// FTL's anti-ship battery holds its fire while ours runs (roadmap Y): ours fires on the schedule both games share, at
+// our own ship only (DuelsEnvironment.cpp).
+HOOK_METHOD_PRIORITY(SpaceManager, UpdatePDS, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SpaceManager::UpdatePDS -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Environment::ReplacesBattery()) return;
+    super();
+}
+
 // FTL fills the FTL drive whenever the ship is safe (WorldManager::OnLoop: no hostile ship, as in the fight's first
 // frames before the opponent's replica turns hostile). In a match the drive charges at FTL's own pace in the fight,
 // from empty (roadmap AD); what else SetSafe readies stays.
