@@ -155,6 +155,7 @@ namespace Duels
         View::OnFrame();
         Screen::OnFrame();
         RunDueScriptCommands();
+        SwapOnFrame();
         AutotestOnFrame();
         TraceFrame();
         TraceProjectiles();

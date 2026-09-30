@@ -42,8 +42,15 @@ namespace Duels
         bool OnLines(std::vector<GL_Line> &lines, float thickness);
 
         // After ShipManager::OnLoop: each bay's bars follow its weapon; on our own ship, a weapon whose bay is
-        // damaged, ioned or hacked goes off.
+        // damaged, ioned or hacked goes off. A bay's damage belongs to its room, not to the weapon: when a weapon
+        // moves to another slot (dragged in the weapons bar, even in a fight), it leaves its bay's damage behind, and a
+        // weapon with fewer bars moving into a damaged bay leaves the damage its bars can't show kept there (it shows
+        // again when a bigger one moves in; the crew mend it point by point, as they would the bars).
         void AfterLoop(ShipManager *ship);
+        // A system is new (ShipManager::AddSystem), or the round's repair made it whole (DuelsRefit.cpp): no kept
+        // damage.
+        void SystemAdded(ShipManager *ship, int systemId);
+        void Repaired(ShipSystem *system);
 
         // --- hook entry points ---
 
@@ -85,6 +92,8 @@ namespace Duels
         // while it does, the system may be damaged (BufferHit). Ion is not buffered: FTL's ion takes power from the
         // whole system, which would switch weapons off and lock all of them.
         int TakeBuffer(ShipSystem *bay, int amount);
+        // A bay takes damage (after its buffer points): logged with its room and the weapon or drone in it now.
+        void LogDamage(ShipSystem *bay, int amount);
         bool BufferPartial(ShipSystem *bay, float amount, bool overTime, bool &result);
         bool BufferHit();
         // CrewAI::SelectRepair runs: crew pick what to repair in their room (a fire, else "the system in this room",

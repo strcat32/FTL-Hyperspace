@@ -52,6 +52,8 @@ namespace Duels
         // Test verb "chatflood <count>": that many chat lines at once, past the sender's limits.
         int ChatFlood(int count);
         const std::string &PlayerName();
+        // The opponent's shots received in this game (tests).
+        uint32_t ShotsReceived();
 
         // The match flow (DuelsRounds.cpp): both ships stand for this round (we built theirs, they built ours); and a
         // new round: the opponent's ship leaves and everything of the last fight is forgotten, the connection stays.

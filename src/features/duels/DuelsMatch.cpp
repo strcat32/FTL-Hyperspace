@@ -2405,6 +2405,11 @@ namespace Duels
             return g_match.playerName;
         }
 
+        uint32_t ShotsReceived()
+        {
+            return g_match.shotsReceived;
+        }
+
         bool ShipsStand()
         {
             return g_match.replicaReady && g_match.peerReady;

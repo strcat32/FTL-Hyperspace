@@ -97,6 +97,9 @@ namespace Duels
             std::map<const Ship*, std::vector<Door*>> hiddenDoors;
             // The kind each bay's icons show, with the room icon they were made for (a new system gets new ones).
             std::map<const ShipSystem*, std::pair<const GL_Primitive*, std::string>> icons;
+            // Damage a bay holds beyond its bars (a weapon or drone with fewer bars moved in); our own ship's only.
+            std::map<const ShipSystem*, int> keptDamage;
+            uint32_t damageKept = 0, keptShown = 0;
             uint32_t layoutsCut = 0, blueprintsPatched = 0, switchedOff = 0;
             uint32_t doorsHidden = 0, wallsLeftOut = 0, iconsChanged = 0;
         };
@@ -696,14 +699,54 @@ namespace Duels
         // ---------------------------------------------------------------------------------------------------------
 
         // A bay's bars are its weapon's or drone's power (an empty slot's bay has one). Damage stays damage.
-        static void SetLevel(ShipSystem *bay, int level)
+        // The bay's bars follow the weapon (drone) in its slot; its damage stays (AfterLoop). What the bars can't show
+        // is kept, on the ship whose game decides its damage; there, a bar the crew mend while some is kept takes the
+        // next kept point, so each point is mended once.
+        static void SetLevel(ShipSystem *bay, int level, bool owned)
         {
-            if (bay->healthState.second == level && bay->powerState.second == level) return;
-            int damage = std::max(0, bay->healthState.second - bay->healthState.first);
-            bay->healthState.second = level;
-            bay->healthState.first = std::max(0, level - damage);
-            bay->powerState.second = level;
-            bay->powerState.first = bay->healthState.first;
+            auto kept = g_bays.keptDamage.find(bay);
+            int extra = owned && kept != g_bays.keptDamage.end() ? kept->second : 0;
+            if (bay->healthState.second != level || bay->powerState.second != level)
+            {
+                int damage = std::max(0, bay->healthState.second - bay->healthState.first) + extra;
+                bay->healthState.second = level;
+                bay->healthState.first = std::max(0, level - damage);
+                bay->powerState.second = level;
+                bay->powerState.first = bay->healthState.first;
+                int left = std::max(0, damage - level);
+                if (owned && left > extra)
+                {
+                    ++g_bays.damageKept;
+                    Log("Bays: %s keeps %d point%s of damage its %d bar%s can't show", ShipSystem::SystemIdToName(bay->iSystemType).c_str(),
+                        left, left == 1 ? "" : "s", level, level == 1 ? "" : "s");
+                }
+                extra = left;
+            }
+            else if (extra > 0 && bay->healthState.first > 0)
+            {
+                // Mended while damage was kept: the kept damage shows in the mended bar.
+                int shown = std::min(extra, bay->healthState.first);
+                bay->healthState.first -= shown;
+                bay->powerState.first = std::min(bay->powerState.first, bay->healthState.first);
+                extra -= shown;
+                g_bays.keptShown += (uint32_t)shown;
+                Log("Bays: %s mended a bar; %d kept point%s of damage left", ShipSystem::SystemIdToName(bay->iSystemType).c_str(), extra,
+                    extra == 1 ? "" : "s");
+            }
+            if (!owned) return;
+            if (extra > 0) g_bays.keptDamage[bay] = extra;
+            else if (kept != g_bays.keptDamage.end()) g_bays.keptDamage.erase(bay);
+        }
+
+        void SystemAdded(ShipManager *ship, int systemId)
+        {
+            ShipSystem *system = ship ? ship->GetSystem(systemId) : nullptr;
+            if (system) g_bays.keptDamage.erase(system);
+        }
+
+        void Repaired(ShipSystem *system)
+        {
+            g_bays.keptDamage.erase(system);
         }
 
         // The kind of weapon a bay shows (its icons s_bay_<kind>_*.png): what the weapon does to the target.
@@ -807,7 +850,7 @@ namespace Duels
                     ShipSystem *bay = Bay(ship, kind, number);
                     if (!bay) continue;
                     int index = number - 1;
-                    SetLevel(bay, ItemPower(ship, kind, index));
+                    SetLevel(bay, ItemPower(ship, kind, index), owned);
                     std::string icon = ItemKind(ship, kind, index);
                     auto shown = g_bays.icons.find(bay);
                     if (shown == g_bays.icons.end() || shown->second.first != bay->iconPrimitive || shown->second.second != icon)
@@ -1070,6 +1113,27 @@ namespace Duels
             return taken;
         }
 
+        void LogDamage(ShipSystem *bay, int amount)
+        {
+            int kind = 0, number = 0;
+            if (!bay || amount <= 0 || !BayOf(bay->iSystemType, kind, number)) return;
+            ShipManager *ship = ShipOf(bay);
+            std::string item = "empty";
+            if (ship && kind == WEAPONS)
+            {
+                ProjectileFactory *weapon = Weapon(ship, number - 1);
+                if (weapon && weapon->blueprint) item = weapon->blueprint->name;
+            }
+            else if (ship)
+            {
+                Drone *drone = DroneIn(ship, number - 1);
+                if (drone && drone->blueprint) item = drone->blueprint->name;
+            }
+            Log("Bays: %s %s bay %d (room %d, %s) takes %d damage at %d/%d", ship && ship->iShipId == 0 ? "our" : "their",
+                kind == WEAPONS ? "weapon" : "drone", number, bay->roomId, item.c_str(), amount, bay->healthState.first,
+                bay->healthState.second);
+        }
+
         bool BufferPartial(ShipSystem *bay, float amount, bool overTime, bool &result)
         {
             int spare = 0, kind = 0, number = 0;
@@ -1178,6 +1242,8 @@ namespace Duels
                     out << ", " << ShipSystem::SystemIdToName(system->iSystemType) << " " << system->healthState.first << "/"
                         << system->healthState.second;
                     if (system->iLockCount) out << " lock " << system->iLockCount;
+                    auto kept = g_bays.keptDamage.find(system);
+                    if (kept != g_bays.keptDamage.end()) out << " (" << kept->second << " more damage kept)";
                 }
             }
             return out.str();

@@ -30,6 +30,9 @@ namespace Duels
     // Logs every power change of the replaced enemy ship's systems ("tracepower on").
     void TracePowerChanges(int frame);
 
+    // "swap ... incoming": the swap, once the opponent's next shot is in the air.
+    void SwapOnFrame();
+
     // Per-frame projectile tracing to duels_projectiles.csv (only while tracing and in a game).
     void TraceProjectiles();
     void CloseProjectileTrace();

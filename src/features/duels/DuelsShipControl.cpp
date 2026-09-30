@@ -4,6 +4,7 @@
 #include "DuelsBays.h"
 #include "DuelsBoarding.h"
 #include "DuelsHacking.h"
+#include "DuelsMatch.h"
 #include "DuelsMind.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
@@ -916,26 +917,71 @@ namespace Duels
         return false;
     }
 
-    // swap <slot> <slot>: two of our weapons change places, as when the player drags one onto the other.
+    // A swap that waits for the opponent's next shot to be in the air ("swap ... incoming").
+    struct PendingSwap
+    {
+        bool armed = false;
+        bool drones = false;
+        int a = 0, b = 0;
+        uint32_t shots = 0;   // the opponent's shots received when it was armed
+    };
+    static PendingSwap g_pendingSwap;
+
+    static bool SwapNow(bool drones, int a, int b, std::string &message)
+    {
+        ShipManager *ship = G_->GetShipManager(0);
+        CApp *app = G_->GetCApp();
+        int count = !ship ? 0 : drones ? (ship->droneSystem ? (int)ship->GetDroneList().size() : 0)
+                                      : (ship->weaponSystem ? (int)ship->GetWeaponList().size() : 0);
+        if (!app || !app->gui || a < 0 || b < 0 || a >= count || b >= count || a == b)
+        {
+            message = std::string("no such ") + (drones ? "drone" : "weapon") + " slots (" + std::to_string(count) + ")";
+            return false;
+        }
+        if (drones) app->gui->combatControl.droneControl.SwapArmaments((unsigned)a, (unsigned)b);
+        else app->gui->combatControl.weapControl.SwapArmaments((unsigned)a, (unsigned)b);
+        message = drones ? "drones:" : "weapons:";
+        if (drones) for (Drone *drone : ship->GetDroneList()) message += " " + (drone->blueprint ? drone->blueprint->name : "?");
+        else for (ProjectileFactory *weapon : ship->GetWeaponList()) message += " " + (weapon->blueprint ? weapon->blueprint->name : "?");
+        return true;
+    }
+
+    // swap [drone] <slot> <slot> [incoming]: two of our weapons (drones) change places, as when the player drags one
+    // onto the other in the weapons (drones) bar, which FTL allows in a fight too; with "incoming", as soon as the
+    // opponent's next shot is in the air (tests of a shot at a bay whose weapon moves away, roadmap -2).
     static bool DoSwap(const Command &cmd, std::string &message)
     {
+        size_t next = 1;
+        bool drones = ArgIs(cmd, 1, "drone") || ArgIs(cmd, 1, "drones");
+        if (drones) ++next;
         int a, b;
-        ShipManager *ship = G_->GetShipManager(0);
-        if (!ArgInt(cmd, 1, a) || !ArgInt(cmd, 2, b))
+        if (!ArgInt(cmd, next, a) || !ArgInt(cmd, next + 1, b))
         {
-            message = "usage: swap <slot> <slot>";
+            message = "usage: swap [drone] <slot> <slot> [incoming]";
             return false;
         }
-        int count = ship && ship->weaponSystem ? (int)ship->GetWeaponList().size() : 0;
-        if (a < 0 || b < 0 || a >= count || b >= count || a == b)
+        if (ArgIs(cmd, next + 2, "incoming"))
         {
-            message = "no such weapon slots (" + std::to_string(count) + " weapons)";
-            return false;
+            g_pendingSwap.armed = true;
+            g_pendingSwap.drones = drones;
+            g_pendingSwap.a = a;
+            g_pendingSwap.b = b;
+            g_pendingSwap.shots = Match::ShotsReceived();
+            message = std::string(drones ? "drones " : "weapons ") + std::to_string(a) + " and " + std::to_string(b) +
+                      " change places when the next shot comes";
+            return true;
         }
-        G_->GetCApp()->gui->combatControl.weapControl.SwapArmaments((unsigned)a, (unsigned)b);
-        message = "weapons:";
-        for (ProjectileFactory *weapon : ship->GetWeaponList()) message += " " + (weapon->blueprint ? weapon->blueprint->name : "?");
-        return true;
+        return SwapNow(drones, a, b, message);
+    }
+
+    void SwapOnFrame()
+    {
+        PendingSwap &p = g_pendingSwap;
+        if (!p.armed || Match::ShotsReceived() <= p.shots) return;
+        p.armed = false;
+        std::string message;
+        bool ok = SwapNow(p.drones, p.a, p.b, message);
+        Log("swap with shot %u of the opponent in the air: %s%s", (unsigned)Match::ShotsReceived(), ok ? "" : "FAILED: ", message.c_str());
     }
 
     // rooms <ship>: the ship's rooms (tiles), their consoles and systems (the weapon bays' cut, DuelsBays.cpp).

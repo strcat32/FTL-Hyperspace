@@ -551,6 +551,7 @@ HOOK_METHOD_PRIORITY(ShipManager, AddSystem, -2000, (int systemId) -> int)
     Duels::Bays::Building(&myBlueprint.layoutFile);
     int ret = super(systemId);
     Duels::Bays::Building(nullptr);
+    Duels::Bays::SystemAdded(this, systemId);
     return ret;
 }
 
@@ -620,6 +621,7 @@ HOOK_METHOD_PRIORITY(ShipSystem, AddDamage, -2000, (int amount) -> void)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::AddDamage -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Bays::Untouchable(this) && !Duels::Bays::BufferHit()) return;
     amount -= Duels::Bays::TakeBuffer(this, amount);
+    if (amount > 0) Duels::Bays::LogDamage(this, amount);
     if (amount > 0) super(amount);
 }
 

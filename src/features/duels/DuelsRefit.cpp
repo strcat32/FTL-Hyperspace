@@ -2,6 +2,7 @@
 #include "CustomShipSelect.h"
 #include "CustomStore.h"
 #include "Duels.h"
+#include "DuelsBays.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsRefit.h"
@@ -430,6 +431,7 @@ namespace Duels
             {
                 if (!system) continue;
                 system->healthState.first = system->healthState.second;
+                Bays::Repaired(system);
                 system->fDamageOverTime = 0.f;
                 system->fRepairOverTime = 0.f;
                 if (system->iLockCount != 0) system->LockSystem(0);
