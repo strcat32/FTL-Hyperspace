@@ -573,6 +573,91 @@ namespace Duels
             return false;
         }
 
+        // FTL's ion number over a system's room (blue, as ShipManager::PulsarDamage shows it).
+        static void IonMessage(ShipManager *ship, ShipSystem *system, int amount)
+        {
+            DamageMessage *message = new DamageMessage(1.f, amount, ship->ship.GetRoomCenter(system->roomId), false);
+            message->color = GL_Color(0.157f, 0.824f, 0.902f, 1.f);
+            ship->damMessages.push_back(message);
+        }
+
+        bool SmartPulse(ShipManager *ship)
+        {
+            if (!g.active || g.plan.kind != PULSAR || !ship || ship->iShipId != 0) return false;
+            // The ion armor, as FTL: its value in tenths is the chance to resist the whole pulse.
+            if (ship->HasAugmentation("ION_ARMOR"))
+            {
+                int chance = (int)(ship->GetAugmentationValue("ION_ARMOR") * 10.f);
+                if ((int)(random32() % 10) + 1 <= chance)
+                {
+                    if (ship->HasSystem(SYS_SHIELDS) && ship->shieldSystem)
+                    {
+                        DamageMessage *message = new DamageMessage(1.f, ship->ship.GetRoomCenter(ship->shieldSystem->roomId), DamageMessage::RESIST);
+                        message->color = GL_Color(0.157f, 0.824f, 0.902f, 1.f);
+                        ship->damMessages.push_back(message);
+                    }
+                    Log("Environment: the pulse is resisted (ion armor)");
+                    return true;
+                }
+            }
+            // The shields as FTL: a Zoltan shield takes the pulse (-1); powered shields take ion (their power / 2 + 1)
+            // and one more system follows; unpowered shields (0) let two through.
+            int picks = 2, exclude = -1;
+            std::string hit;
+            if (ship->HasSystem(SYS_SHIELDS) && ship->shieldSystem)
+            {
+                int ion = ship->shieldSystem->PulsarDamage();
+                if (ion == -1)
+                {
+                    Log("Environment: the pulse hits the Zoltan shield");
+                    return true;
+                }
+                if (ion > 0)
+                {
+                    IonMessage(ship, ship->shieldSystem, ion);
+                    picks = 1;
+                    exclude = SYS_SHIELDS;
+                    hit = "shields " + std::to_string(ion);
+                }
+            }
+            // The other system(s): only powered ones, one more often the more power it has (FTL: any, evenly).
+            for (int p = 0; p < picks; ++p)
+            {
+                std::vector<ShipSystem*> candidates;
+                int total = 0;
+                for (ShipSystem *system : ship->vSystemList)
+                {
+                    if (!system) continue;
+                    int id = system->iSystemType;
+                    if (id == exclude || (id >= SYS_ALL && id != SYS_TEMPORAL)) continue;   // not the bays
+                    int power = system->GetEffectivePower();
+                    if (power <= 0) continue;
+                    candidates.push_back(system);
+                    total += power;
+                }
+                if (total <= 0) break;
+                int pick = (int)(random32() % (uint32_t)total);
+                ShipSystem *chosen = nullptr;
+                for (ShipSystem *candidate : candidates)
+                {
+                    pick -= candidate->GetEffectivePower();
+                    if (pick < 0)
+                    {
+                        chosen = candidate;
+                        break;
+                    }
+                }
+                if (!chosen) break;
+                int amount = chosen->GetEffectivePower() / 2 + 1;
+                chosen->IonDamage(amount);
+                IonMessage(ship, chosen, amount);
+                exclude = chosen->iSystemType;
+                hit += (hit.empty() ? "" : ", ") + ShipSystem::SystemIdToName(chosen->iSystemType) + " " + std::to_string(amount);
+            }
+            Log("Environment: the pulse hits %s", hit.empty() ? "nothing (no powered system)" : hit.c_str());
+            return true;
+        }
+
         bool ReplacesAsteroidGenerator()
         {
             return g.active && g.plan.kind == ASTEROIDS;

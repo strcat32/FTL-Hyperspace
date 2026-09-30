@@ -79,6 +79,11 @@ namespace Duels
         void AfterSpaceLoop();
         // FTL's flare or pulse on a ship: in a duel only on our own (the opponent's game does its ship's).
         bool AllowsHazardDamage(ShipManager *ship);
+        // The pulsar's smart targeting (roadmap W, the user's idea; rules, section 5): on our own ship in a duel the
+        // pulse still hits the shields as FTL's does (a Zoltan shield takes it; the ion armor may resist it), but the
+        // other system (two with the shields unpowered) comes only from the powered ones, one more often the more
+        // power it has. A pulse that finds nothing powered does nothing more. True when it was done here.
+        bool SmartPulse(ShipManager *ship);
         // FTL's asteroid generator stays quiet while our schedule makes the rocks, and FTL's anti-ship battery
         // (SpaceManager::UpdatePDS: its shots and misses) while ours fires.
         bool ReplacesAsteroidGenerator();

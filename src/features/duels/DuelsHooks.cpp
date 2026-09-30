@@ -929,6 +929,7 @@ HOOK_METHOD_PRIORITY(ShipManager, PulsarDamage, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::PulsarDamage -> Begin (DuelsHooks.cpp)\n")
     if (!Duels::Environment::AllowsHazardDamage(this)) return;
+    if (Duels::Environment::SmartPulse(this)) return;   // powered systems only (roadmap W)
     super();
 }
 

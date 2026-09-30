@@ -114,15 +114,16 @@ namespace Duels
 
     bool SetSystemPower(ShipManager *ship, int system, int level)
     {
-        // User-style changes, like the power bars in the UI. ForceDecreaseSystemPower is the ion/damage path:
-        // the game restores that power on its own later (Step 1 finding).
+        // User-style changes, like the power bars in the UI. ShipSystem::DecreasePower(true) is the user's own: it
+        // records the power as the player's choice (lastUserPower); with false, and with ForceDecreaseSystemPower (the
+        // ion and damage path), FTL gives the power back on its own a moment later.
         ShipSystem *shipSystem = ship->GetSystem(system);
         if (!shipSystem) return false;
         for (int guard = 0; guard < 32; ++guard)
         {
             int power = ship->GetSystemPower(system);
             if (power == level) break;
-            bool changed = power < level ? ship->IncreaseSystemPower(system) : shipSystem->DecreasePower(false);
+            bool changed = power < level ? ship->IncreaseSystemPower(system) : shipSystem->DecreasePower(true);
             if (!changed) break;
         }
         return ship->GetSystemPower(system) == level;
