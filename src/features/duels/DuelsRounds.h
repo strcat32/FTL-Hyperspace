@@ -62,6 +62,8 @@ namespace Duels
         bool GameOverAllowed();
         // Upgrades, buying and selling: only in the preparation (rules, section 1).
         bool ShoppingAllowed();
+        // A match runs and is in a round's preparation (ShoppingAllowed is also true outside a match).
+        bool InPreparation();
 
         // Player verbs: match [rounds <n>|prep <seconds>|permadeath on|off|free|rounds], ready, forfeit, concede,
         // draw round|match|yes|no.

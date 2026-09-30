@@ -63,7 +63,7 @@ The same commands are used by scenario scripts, the in-game console (F1, then `<
 | `DuelsAutotest.cpp` | The harness |
 | `DuelsMatch.*` | The duel: loadout, replica, state sync, shots and verdicts |
 | `DuelsRounds.*` | The match flow: rounds of preparation and fight, best of N, the score (damage taken, in the state), ready, forfeit, concede and draws; the host's game runs it (`docs/design/match-flow.md`) |
-| `DuelsRefit.*` | Our ship between rounds: the captain and the crew to bring back, the round's scrap, the shop, full repair, crew home at the round's end |
+| `DuelsRefit.*` | Our ship between rounds: the captain and the crew to bring back, the round's scrap, the shop, full repair, crew home at the round's end; in the preparation the store and the ship's screens (upgrades, crew, equipment) switch at a click or key |
 | `DuelsEnvironment.*` | The fight's environment (a sun, a pulsar or an asteroid field): the host's roll, the schedule both games share, FTL's flares, pulses and rocks on our own ship only |
 | `DuelsCrew.*` | Crew: ids and roster, crew in the state, the replica's crew as puppets |
 | `DuelsRooms.*` | Rooms: oxygen, fires, breaches, doors and lockdowns in the state, held on the replica |

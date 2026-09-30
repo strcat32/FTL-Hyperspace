@@ -12,6 +12,7 @@
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
 #include "DuelsMatchUi.h"
+#include "DuelsRefit.h"
 #include "DuelsNet.h"
 #include "DuelsRooms.h"
 #include "DuelsRounds.h"
@@ -1267,6 +1268,7 @@ HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) ->
     if (Duels::Console::KeyDown(this, key)) return;
     if (Duels::Window::KeyDown((int)key)) return;
     if (Duels::Rounds::NetPaused() && !menuBox.bOpen && key != SDLK_ESCAPE) return;
+    Duels::Refit::SwitchScreensKey((int)key);   // the preparation: the store and the ship's screens switch
     super(key, shiftHeld);
 }
 
@@ -1276,6 +1278,7 @@ HOOK_METHOD_PRIORITY(CommandGui, LButtonDown, -2000, (int mX, int mY, bool shift
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::LButtonDown -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Window::LButtonDown(mX, mY)) return;
     if (Duels::MatchUi::LButtonDown(mX, mY)) return;
+    if (Duels::Refit::SwitchScreensClick(mX, mY)) return;
     if (OrdersHeld(this, mX, mY)) return;
     super(mX, mY, shiftHeld);
 }

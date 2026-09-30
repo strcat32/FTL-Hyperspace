@@ -67,5 +67,14 @@ namespace Duels
 
         // The fight begins as at a new beacon: weapons start uncharged.
         void ResetWeaponCharge();
+
+        // The store and the ship's screens (upgrades, crew, equipment) in the preparation (roadmap Q). FTL sends every
+        // click and key to its open window, so with the store open (it opens by itself) the upgrade button and the
+        // U, C and I keys did nothing, and with the upgrade screen open the STORE button did nothing. In a match's
+        // preparation they switch: the open window closes (upgrades already paid for are made) and the other opens.
+        // SwitchScreensClick takes the click when it switched; SwitchScreensKey only closes the store (or the ship's
+        // screens), and FTL then opens what the key asks for.
+        bool SwitchScreensClick(int x, int y);
+        void SwitchScreensKey(int key);
     }
 }

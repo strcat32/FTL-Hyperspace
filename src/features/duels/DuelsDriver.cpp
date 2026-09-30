@@ -610,6 +610,36 @@ namespace Duels
             message = "clicked at " + std::to_string(x) + "," + std::to_string(y);
             return true;
         }
+        if (verb == "drag")
+        {
+            // drag <x1> <y1> <x2> <y2>: press the left button at the first point, move to the second (in steps) and
+            // let go there, through the game's whole input (moving weapons, drones and crew in FTL's screens).
+            int x1, y1, x2, y2;
+            if (!ArgInt(cmd, 1, x1) || !ArgInt(cmd, 2, y1) || !ArgInt(cmd, 3, x2) || !ArgInt(cmd, 4, y2))
+            {
+                message = "usage: drag <x1> <y1> <x2> <y2>";
+                return false;
+            }
+            CApp *app = G_->GetCApp();
+            if (!app || !app->gui) { message = "not in the game"; return false; }
+            app->gui->MouseMove(x1, y1);
+            app->gui->LButtonDown(x1, y1, false);
+            for (int step = 1; step <= 8; ++step) app->gui->MouseMove(x1 + (x2 - x1) * step / 8, y1 + (y2 - y1) * step / 8);
+            app->gui->LButtonUp(x2, y2, false);
+            message = "dragged from " + std::to_string(x1) + "," + std::to_string(y1) + " to " + std::to_string(x2) + "," + std::to_string(y2);
+            return true;
+        }
+        if (verb == "hotkey")
+        {
+            // hotkey <name>: the key set for one of FTL's controls (Options > Controls), as pressed: ship_info (U),
+            // ship_crew (C), ship_inv (I), store, ...
+            CApp *app = G_->GetCApp();
+            if (cmd.args.size() < 2 || !app || !app->gui) { message = "usage: hotkey <control name>"; return false; }
+            SDLKey key = Settings::GetHotkey(cmd.args[1]);
+            app->gui->KeyDown(key, false);
+            message = "pressed the key of " + cmd.args[1] + " (" + std::to_string((int)key) + ")";
+            return true;
+        }
         if (verb == "mouse")
         {
             // mouse <x> <y> [seconds]: FTL's mouse stays there (in its 1280 x 720 coordinates), for tooltips in

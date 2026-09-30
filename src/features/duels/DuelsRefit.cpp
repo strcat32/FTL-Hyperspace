@@ -3,6 +3,7 @@
 #include "Duels.h"
 #include "DuelsCrew.h"
 #include "DuelsRefit.h"
+#include "DuelsRounds.h"
 
 #include <algorithm>
 #include <map>
@@ -538,6 +539,50 @@ namespace Duels
             gui->SetStore(nullptr, false);
             // The upgrade (crew, equipment) screens close too; upgrades already paid for are made.
             if (gui->shipScreens.bOpen) gui->shipScreens.Close();
+        }
+
+        static bool Inside(const Globals::Rect &r, int x, int y)
+        {
+            return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        }
+
+        bool SwitchScreensClick(int x, int y)
+        {
+            CommandGui *gui = Gui();
+            if (!gui || !Rounds::InPreparation()) return false;
+            if (gui->storeScreens.bOpen && gui->upgradeButton.bActive && Inside(gui->upgradeButton.hitbox, x, y))
+            {
+                gui->storeScreens.Close();
+                gui->shipScreens.Open();   // as FTL's upgrade button does
+                Log("Refit: the store closes, the ship's screens open (upgrade button)");
+                return true;
+            }
+            if (gui->shipScreens.bOpen && gui->storeButton.bActive && Inside(gui->storeButton.hitbox, x, y) && gui->storeScreens.GetWindow(0))
+            {
+                gui->shipScreens.Close();
+                gui->storeScreens.Open();   // as FTL's STORE button does
+                Log("Refit: the ship's screens close, the store opens (STORE button)");
+                return true;
+            }
+            return false;
+        }
+
+        void SwitchScreensKey(int key)
+        {
+            CommandGui *gui = Gui();
+            if (!gui || key <= 0 || !Rounds::InPreparation()) return;   // 0: a control with no key set
+            bool shipKey = key == (int)Settings::GetHotkey("ship_info") || key == (int)Settings::GetHotkey("ship_crew") ||
+                           key == (int)Settings::GetHotkey("ship_inv");
+            if (gui->storeScreens.bOpen && shipKey)
+            {
+                gui->storeScreens.Close();
+                Log("Refit: the store closes for the ship's screens (key %d)", key);
+            }
+            else if (gui->shipScreens.bOpen && key == (int)Settings::GetHotkey("store") && gui->storeButton.bActive)
+            {
+                gui->shipScreens.Close();
+                Log("Refit: the ship's screens close for the store (key %d)", key);
+            }
         }
 
         void ResetWeaponCharge()

@@ -1023,8 +1023,8 @@ namespace Duels
         {
             CrewMember *member = crew[index];
             // task: FTL's CrewTask (0 = manning, 1 = repairing, ...); mans: the system it gives its skill to
-            Log("  crew %u %-8s on ship %d room %2d health %.0f/%.0f task %d mans %s%s", (unsigned)index, member->species.c_str(),
-                member->currentShipId, member->iRoomId, member->health.first, member->health.second, member->task.taskId,
+            Log("  crew %u %-8s %-12s on ship %d room %2d health %.0f/%.0f task %d mans %s%s", (unsigned)index, member->species.c_str(),
+                member->GetName().c_str(), member->currentShipId, member->iRoomId, member->health.first, member->health.second, member->task.taskId,
                 member->bActiveManning && member->currentSystem ? ShipSystem::SystemIdToName(member->currentSystem->iSystemType).c_str() : "-",
                 member->fStunTime > 0.f ? (" stunned " + std::to_string((int)std::ceil(member->fStunTime)) + " s").c_str() : "");
         }
