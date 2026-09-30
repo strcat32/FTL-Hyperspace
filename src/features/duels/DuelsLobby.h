@@ -22,6 +22,11 @@ namespace Duels
         bool TextEvent(int event);
         bool KeyDown(int key);
 
+        // The end screen's LOBBY (part 5), the Duels window's after STAY: the duel is left, FTL goes to its main menu
+        // (as its pause menu's MAIN MENU: CommandGui::GetCommand gives FTL command 5 once), and the room list opens there.
+        void ToLobby();
+        bool TakeMenuRequest();
+
         // Every frame: a room waits for the run the hangar starts (the menu gone, our ship there), then opens or is
         // joined; back from the hangar to the menu drops it. At a run's start FTL's first message box (its story) is
         // closed: the tutorial box explained the duel instead.

@@ -89,6 +89,9 @@ namespace Duels
             // FTL's first message box at a run's start.
             bool inRun = false;
             double closeBoxUntilMs = 0.0;
+
+            // LOBBY: FTL's main menu asked for, then the room list there.
+            bool toMenu = false, listOnMenu = false;
         };
 
         static LobbyState g;
@@ -523,9 +526,9 @@ namespace Duels
             std::string status;
             if (search.Busy()) status = "Asking " + std::to_string(search.relays - search.answered - search.failed) + " of " +
                                         std::to_string(search.relays) + " relays...";
-            else if (shown.empty()) status = "No open rooms. A room that isn't listed is joined by its code (below).";
+            else if (shown.empty()) status = "No open rooms. An unlisted room is joined by its code, below.";
             else status = std::to_string(shown.size()) + (shown.size() == 1 ? " room" : " rooms") + " open.";
-            Text(FONT, lx, sy, status, light);
+            Text(FONT, lx, sy, Fit(FONT, status, lw - 170.f), light);
             if (!search.errors.empty()) Text(FONT, lx, sy + 16.f, Fit(FONT, search.errors.front(), lw - 170.f), red);
             ButtonAt(g.pagePrev, lx + lw - 160.f, sy - 2.f, 36.f, 26.f, "<", g.page > 0);
             CSurface::GL_SetColor(light);
@@ -726,10 +729,30 @@ namespace Duels
             ::Duels::Window::Open();   // the room's code, the opponent, or why not
         }
 
+        void ToLobby()
+        {
+            Match::Leave();
+            g.toMenu = true;
+            g.listOnMenu = true;
+            Log("Lobby: to the lobby: the duel left, FTL's main menu, then the room list");
+        }
+
+        bool TakeMenuRequest()
+        {
+            bool asked = g.toMenu;
+            g.toMenu = false;
+            return asked;
+        }
+
         void OnFrame()
         {
             CApp *app = G_->GetCApp();
             if (!app) return;
+            if (g.listOnMenu && app->menu.bOpen && !app->menu.shipBuilder.bOpen)
+            {
+                g.listOnMenu = false;
+                OpenJoin();
+            }
             bool inRun = InRun();
             if (inRun && !g.inRun) g.closeBoxUntilMs = WallMs() + 5000.0;   // a run begins
             g.inRun = inRun;

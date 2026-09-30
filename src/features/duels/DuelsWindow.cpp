@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsHud.h"
+#include "DuelsLobby.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsRounds.h"
@@ -166,7 +167,10 @@ namespace Duels
                 add("DRAW ROUND", "draw round", s.canOfferRoundDraw, false);
                 add("DRAW MATCH", "draw match", s.canOfferMatchDraw, false);
             }
-            add("FORFEIT", "forfeit", s.canForfeit, true);
+            // Once the match is over there is nothing to forfeit: LOBBY leaves the run for the room list (after the end
+            // screen's STAY, roadmap 3.5 part 5).
+            if (s.phase == Rounds::Phase::MatchOver) add("LOBBY", "lobby", true, false);
+            else add("FORFEIT", "forfeit", s.canForfeit, true);
             g_win.actions.swap(actions);
         }
 
@@ -501,6 +505,12 @@ namespace Duels
                 }
                 g_win.armed.clear();
                 std::string message;
+                if (action.command == "lobby")
+                {
+                    g_win.open = false;
+                    Lobby::ToLobby();
+                    return true;
+                }
                 Rounds::Act(action.command, message);
                 g_win.message = message;
                 g_win.messageUntil = WallMs() + 5000.0;
@@ -524,6 +534,11 @@ namespace Duels
         void Open()
         {
             g_win.open = true;
+        }
+
+        void Close()
+        {
+            g_win.open = false;
         }
 
         bool IsOpen()

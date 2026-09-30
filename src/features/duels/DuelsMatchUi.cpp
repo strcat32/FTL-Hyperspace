@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsHud.h"
+#include "DuelsLobby.h"
 #include "DuelsMatchUi.h"
 #include "DuelsRounds.h"
 #include "DuelsStyle.h"
@@ -47,9 +48,19 @@ namespace Duels
             bool names = false;
         };
 
+        // The end screen (roadmap 3.5, part 5): after the match's splash, until LOBBY or STAY.
+        struct EndScreen
+        {
+            double overSince = -1.0;   // when the match was seen over, -1 while it runs
+            bool dismissed = false;    // STAY
+            bool shown = false;
+            Box lobby, stay;
+        };
+
         struct State
         {
             int mouseX = 0, mouseY = 0;
+            EndScreen end;
             Box ready, draw, concede;
             double concedeArmedUntil = 0.0;
             SplashState splash;
@@ -339,6 +350,98 @@ namespace Duels
         }
 
         // ---------------------------------------------------------------------------------------------------------
+        // The end screen (roadmap 3.5, part 5): the match's end, a forfeit's too: both names and the points, who won
+        // and why, the damage score, each round's result; LOBBY (the run left for the room list) or STAY (the run kept
+        // for a look and a chat: the Duels window has LOBBY then)
+        // ---------------------------------------------------------------------------------------------------------
+
+        static const float EW = 660.f, EH = 450.f, EX = (1280.f - EW) / 2.f, EY = 120.f;
+        static const double END_AFTER_MS = 3000.0;   // the match's splash first
+
+        static void EndButton(Box &box, float x, float y, float w, const std::string &label, const GL_Color *body)
+        {
+            box.x = x;
+            box.y = y;
+            box.w = w;
+            box.h = 34.f;
+            box.shown = true;
+            bool hover = box.Contains(g.mouseX, g.mouseY);
+            Style::Button(x, y, w, 34.f, label, 12, hover ? Style::Look::Hover : Style::Look::Idle, hover ? nullptr : body);
+        }
+
+        static void RenderEnd(const Rounds::Summary &s)
+        {
+            EndScreen &e = g.end;
+            e.lobby.shown = e.stay.shown = false;
+            if (s.phase != Rounds::Phase::MatchOver) return;
+            double now = WallMs();
+            if (e.overSince < 0.0) e.overSince = now;
+            e.shown = !e.dismissed && now - e.overSince >= END_AFTER_MS;
+            if (!e.shown) return;
+            if (Window::IsOpen()) Window::Close();
+
+            Style::Dialog(EX, EY, EW, EH, "MATCH OVER");
+            // The band: the host's name on the red side, the guest's on the blue side, the points between them.
+            float bx = EX + 24.f, bw = EW - 48.f, by = EY + 26.f;
+            Style::Blend(bx, by, bw, 56.f, Style::Mix(Style::Red(1.f), GL_Color(0.f, 0.f, 0.f, 1.f), 0.45f),
+                         Style::Mix(Style::Blue(1.f), GL_Color(0.f, 0.f, 0.f, 1.f), 0.45f), 4.f);
+            std::string points = s.points[0] + " : " + s.points[1];
+            float side = (bw - Width(24, points)) / 2.f - 30.f;
+            PrintCentre(24, bx + bw / 2.f, by - 5.f, points, ColourOf(WHITE, 1.f));
+            Print(24, bx + 16.f, by - 5.f, Fit(24, s.names[0], side), GL_Color(1.f, 0.77f, 0.74f, 1.f));
+            CSurface::GL_SetColor(GL_Color(0.77f, 0.85f, 1.f, 1.f));
+            freetype::easy_printRightAlign(24, bx + bw - 16.f, by - 5.f, Fit(24, s.names[1], side));
+
+            // Who won, and why ("match over: you win (the other player forfeited)").
+            std::string verdict = "A DRAW";
+            GL_Color colour = ColourOf(WHITE, 1.f);
+            if (s.state.find("you win") != std::string::npos)
+            {
+                verdict = "YOU WIN";
+                colour = ColourOf(GOLD, 1.f);
+            }
+            else if (s.state.find("you lose") != std::string::npos)
+            {
+                verdict = "YOU LOSE";
+                colour = GL_Color(1.f, 0.55f, 0.5f, 1.f);
+            }
+            float y = by + 70.f;
+            PrintCentre(24, EX + EW / 2.f, y - 12.f, verdict, colour);
+            y += 40.f;
+            size_t open = s.state.find('('), close = s.state.rfind(')');
+            if (open != std::string::npos && close != std::string::npos && close > open)
+            {
+                PrintCentre(12, EX + EW / 2.f, y, s.state.substr(open + 1, close - open - 1), ColourOf(WHITE, 0.9f));
+            }
+            y += 26.f;
+            std::string score = s.score;
+            if (!score.empty()) score[0] = (char)std::toupper((unsigned char)score[0]);
+            PrintCentre(10, EX + EW / 2.f, y, score, GL_Color(0.75f, 0.78f, 0.82f, 1.f));
+            y += 28.f;
+
+            // Each round.
+            float lx = EX + 40.f;
+            y += Style::Label(lx, y, "THE ROUNDS") + 10.f;
+            size_t first = s.results.size() > 7 ? s.results.size() - 7 : 0;
+            if (s.results.empty()) Print(10, lx, y, "No round was finished.", GL_Color(0.75f, 0.78f, 0.82f, 1.f));
+            for (size_t i = first; i < s.results.size(); ++i)
+            {
+                Print(10, lx, y, s.results[i], GL_Color(0.87f, 0.89f, 0.92f, 1.f));
+                y += 17.f;
+            }
+
+            // LOBBY or STAY.
+            float fy = EY + EH - 58.f;
+            CSurface::GL_SetColor(GL_Color(0.75f, 0.78f, 0.82f, 1.f));
+            freetype::easy_printAutoNewlines(10, lx, fy - 4.f, 300, "LOBBY leaves the run for the room list. STAY keeps it for a "
+                                                                   "look and a chat; the DUELS window has LOBBY then.");
+            const GL_Color goldBody(1.f, 0.84f, 0.35f, 1.f);
+            EndButton(e.stay, EX + EW - 30.f - 170.f - 12.f - 120.f, fy, 120.f, "STAY", nullptr);
+            EndButton(e.lobby, EX + EW - 30.f - 170.f, fy, 170.f, "LOBBY", &goldBody);
+            CSurface::GL_SetColor(COLOR_WHITE);
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
         // Entry points
         // ---------------------------------------------------------------------------------------------------------
 
@@ -347,6 +450,7 @@ namespace Duels
             g.ready.shown = g.draw.shown = g.concede.shown = false;
             if (!InGame()) return;
             Rounds::Summary s = Rounds::GetSummary();
+            if (s.phase != Rounds::Phase::MatchOver) g.end = EndScreen();   // a new match, or none
             if (!s.inMatch) return;
             // The preparation has no enemy window, and the store covers the middle: its countdown and Ready go right.
             bool prepLayout = G_->GetShipManager(1) == nullptr;
@@ -357,6 +461,7 @@ namespace Duels
             RenderCountdown(s, prepLayout);
             RenderButtons(s, prepLayout);
             CSurface::GL_PopMatrix();
+            RenderEnd(s);   // over the rest, the whole screen dimmed
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
@@ -368,6 +473,24 @@ namespace Duels
 
         bool LButtonDown(int x, int y)
         {
+            // The end screen takes every click while it is up: LOBBY or STAY.
+            if (g.end.shown)
+            {
+                if (g.end.lobby.Contains(x, y))
+                {
+                    Log("MatchUi: the end screen: LOBBY");
+                    g.end.shown = false;
+                    g.end.dismissed = true;
+                    Lobby::ToLobby();
+                }
+                else if (g.end.stay.Contains(x, y))
+                {
+                    Log("MatchUi: the end screen: STAY");
+                    g.end.shown = false;
+                    g.end.dismissed = true;
+                }
+                return true;
+            }
             std::string command, message;
             Rounds::Summary s = Rounds::GetSummary();
             if (g.ready.Contains(x, y)) command = s.ready ? "ready off" : "ready";

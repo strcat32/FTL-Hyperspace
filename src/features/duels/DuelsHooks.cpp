@@ -10,6 +10,7 @@
 #include "DuelsDrones.h"
 #include "DuelsEnvironment.h"
 #include "DuelsHud.h"
+#include "DuelsLobby.h"
 #include "DuelsMatch.h"
 #include "DuelsMatchUi.h"
 #include "DuelsRefit.h"
@@ -29,6 +30,15 @@
 // ---------------------------------------------------------------------------------------------
 // Frame tick and loop counters
 // ---------------------------------------------------------------------------------------------
+
+// The end screen's LOBBY (roadmap 3.5, part 5): FTL's main menu, as its pause menu's MAIN MENU asks for it (CApp::OnLoop
+// carries out the command CommandGui::GetCommand gives: 5 saves the score, cleans the game up and opens the menu).
+HOOK_METHOD_PRIORITY(CommandGui, GetCommand, -2000, () -> int)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::GetCommand -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Lobby::TakeMenuRequest()) return 5;
+    return super();
+}
 
 // Outermost CApp::OnLoop hook, so the per-frame work sees everything the frame did.
 HOOK_METHOD_PRIORITY(CApp, OnLoop, -5000, () -> void)
