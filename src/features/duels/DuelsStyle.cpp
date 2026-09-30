@@ -19,6 +19,7 @@ namespace Duels
         // TextButton's colours in FTL 1.6 (TextButton::InitColors): off, on, under the mouse; the letters.
         GL_Color ButtonBody(Look look)
         {
+            if (look == Look::Pressed) return Rgb(196, 204, 190);
             switch (look)
             {
             case Look::Hover: return Rgb(255, 230, 94);
@@ -94,20 +95,26 @@ namespace Duels
 
         void Button(float x, float y, float w, float h, const std::string &label, int font, Look look, const GL_Color *body)
         {
-            // Outside in: the glow (three fading rings), the light border (3 px), the dark line (2 px), the body.
+            // Outside in: the glow (three fading rings), the light border (3 px), the dark line (2 px), the body. Held
+            // down: no glow, a thicker dark line and a darker body, the letters a pixel lower.
+            const bool pressed = look == Look::Pressed;
             const GL_Color glow = Rgb(121, 242, 253);
-            for (int i = 3; i >= 1; --i)
+            for (int i = 3; i >= 1 && !pressed; --i)
             {
                 GL_Color ring(glow.r, glow.g, glow.b, 0.07f * (4 - i));
                 CutRect(x - i, y - i, w + 2.f * i, h + 2.f * i, 4.f + i, ring);
             }
             CutRect(x, y, w, h, 4.f, ButtonBody(Look::Idle));
             CutRect(x + 3.f, y + 3.f, w - 6.f, h - 6.f, 3.f, FrameLine());
-            CutRect(x + 5.f, y + 5.f, w - 10.f, h - 10.f, 2.f, body ? *body : ButtonBody(look));
+            float inset = pressed ? 6.f : 5.f;
+            CutRect(x + inset, y + inset, w - 2.f * inset, h - 2.f * inset, 2.f, body ? *body : ButtonBody(look));
             GL_Color text = ButtonText();
             if (look == Look::Off) text.a = 0.55f;
             CSurface::GL_SetColor(text);
-            freetype::easy_printCenter(font, x + w / 2.f, y + std::floor((h - LineHeight(font)) / 2.f) + 1.f, label);
+            // FTL's line of a font has room for letters below the line: the capitals of font 12 sat 2 px above the
+            // middle (roadmap AI).
+            float lower = (font == 12 ? 3.f : 1.f) + (pressed ? 1.f : 0.f);
+            freetype::easy_printCenter(font, x + w / 2.f, y + std::floor((h - LineHeight(font)) / 2.f) + lower, label);
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 

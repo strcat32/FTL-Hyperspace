@@ -53,7 +53,7 @@ namespace Duels
         static MenuState g;
 
         static const int FONT = 10, TEXT = 12, BIG = 24;
-        static const size_t NAME_MAX = 24;
+        static const size_t NAME_MAX = Match::NAME_MAX;   // the name prompt takes what the name command takes
 
         static GL_Color Rgb(int r, int g, int b, float a = 1.f)
         {

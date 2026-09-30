@@ -119,16 +119,20 @@ namespace Duels
         }
 
         // ---------------------------------------------------------------------------------------------------------
-        // The score panel (AB): the red player's name, the points, the blue player's name; the phase in its colour
+        // The score panel (AB, AG): three rows around the middle's colon, as a scoreboard: the host's name (red) and
+        // the guest's (blue), the points, the round and its phase in its colour
         // ---------------------------------------------------------------------------------------------------------
 
         static void RenderPanel(const Rounds::Summary &s)
         {
             const int font = 12;
-            const float line = 17.f;
-            std::string points = s.points[0] + " : " + s.points[1];
-            float nameWidth = (PANEL_MAX_WIDTH - 12.f - Width(font, points) - 20.f) / 2.f;
-            std::string red = Fit(font, s.names[0], nameWidth), blue = Fit(font, s.names[1], nameWidth);
+            const float line = 17.f, inner = PANEL_MAX_WIDTH - 12.f;
+            const std::string colon = " : ";
+            // The names each keep to their half of the panel; in the smaller font when they don't fit in the larger.
+            float half = (inner - Width(font, colon)) / 2.f;
+            int nameFont = Width(font, s.names[0]) <= half && Width(font, s.names[1]) <= half ? font : 10;
+            float nameHalf = (inner - Width(nameFont, colon)) / 2.f;
+            std::string red = Fit(nameFont, s.names[0], nameHalf), blue = Fit(nameFont, s.names[1], nameHalf);
 
             std::string phase;
             GL_Color phaseColour(1.f, 1.f, 1.f, 1.f);
@@ -151,18 +155,26 @@ namespace Duels
             // The phase in the smaller font when it doesn't fit ("ROUND 2  PREPARATION").
             int phaseFont = Width(font, phase) <= PANEL_MAX_WIDTH - 12.f ? font : 10;
 
-            float top = Width(font, red) + Width(font, points) + Width(font, blue) + 20.f;
-            float width = std::min(PANEL_MAX_WIDTH, std::max(top, Width(phaseFont, phase)) + 12.f);
+            // Symmetric about the colon: as wide as the wider side of each row needs.
+            float sideNames = std::max(Width(nameFont, red), Width(nameFont, blue)) * 2.f + Width(nameFont, colon);
+            float sidePoints = std::max(Width(font, s.points[0]), Width(font, s.points[1])) * 2.f + Width(font, colon);
+            float width = std::min(PANEL_MAX_WIDTH, std::max({sideNames, sidePoints, Width(phaseFont, phase)}) + 12.f);
             float x = PANEL_CENTRE - width / 2.f;
-            Panel(x, PANEL_TOP - 4.f, width, line * 2.f + 8.f);
+            Panel(x, PANEL_TOP - 4.f, width, line * 3.f + 8.f);
 
-            float lineX = PANEL_CENTRE - top / 2.f;
-            Print(font, lineX, PANEL_TOP, red, ColourOf(RED, 1.f));
-            lineX += Width(font, red) + 10.f;
-            Print(font, lineX, PANEL_TOP, points, ColourOf(WHITE, 1.f));
-            lineX += Width(font, points) + 10.f;
-            Print(font, lineX, PANEL_TOP, blue, ColourOf(BLUE, 1.f));
-            PrintCentre(phaseFont, PANEL_CENTRE, PANEL_TOP + line + (phaseFont == font ? 0.f : 2.f), phase, phaseColour);
+            // Each row: the left side right-aligned to the colon, the right side after it.
+            auto row = [&](int rowFont, float y, const std::string &left, const std::string &right, const GL_Color &leftColour,
+                           const GL_Color &rightColour)
+            {
+                float colonWidth = Width(rowFont, colon);
+                CSurface::GL_SetColor(leftColour);
+                freetype::easy_printRightAlign(rowFont, PANEL_CENTRE - colonWidth / 2.f, y, left);
+                PrintCentre(rowFont, PANEL_CENTRE, y, colon, ColourOf(WHITE, 1.f));
+                Print(rowFont, PANEL_CENTRE + colonWidth / 2.f, y, right, rightColour);
+            };
+            row(nameFont, PANEL_TOP + (nameFont == font ? 0.f : 2.f), red, blue, ColourOf(RED, 1.f), ColourOf(BLUE, 1.f));
+            row(font, PANEL_TOP + line, s.points[0], s.points[1], ColourOf(WHITE, 1.f), ColourOf(WHITE, 1.f));
+            PrintCentre(phaseFont, PANEL_CENTRE, PANEL_TOP + 2.f * line + (phaseFont == font ? 0.f : 2.f), phase, phaseColour);
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -249,11 +261,20 @@ namespace Duels
             else if (s.phase == Rounds::Phase::Starting || s.phase == Rounds::Phase::Fight)
             {
                 float x = FIGHT_SPLIT, y = FIGHT_TOP;
+                // A draw offer (AH): ours keeps the button pressed down while it is open; the other player's makes it
+                // "DRAW?", flashing (a click accepts). No text under it: the chat log has the offer.
                 bool blink = (long long)(WallMs() / 400.0) % 2 == 0;
-                std::string drawLabel = s.drawToAnswer ? "ACCEPT DRAW" : "DRAW";
-                Button(g.draw, x, y, 110.f, drawLabel, s.canOfferRoundDraw || s.drawToAnswer, s.drawToAnswer && blink, goldBody);
-                if (s.drawToAnswer) PrintCentre(10, x + 55.f, y + BUTTON_H + 3.f, them + " offers a draw", ColourOf(GOLD, 1.f));
-                else if (s.weOfferDraw) PrintCentre(10, x + 55.f, y + BUTTON_H + 3.f, "You offer a draw", grey);
+                if (s.weOfferDraw)
+                {
+                    g.draw.x = x;
+                    g.draw.y = y;
+                    g.draw.w = 110.f;
+                    g.draw.h = BUTTON_H;
+                    g.draw.shown = true;
+                    Style::Button(x, y, 110.f, BUTTON_H, "DRAW", 12, Style::Look::Pressed);
+                }
+                else Button(g.draw, x, y, 110.f, s.drawToAnswer ? "DRAW?" : "DRAW", s.canOfferRoundDraw || s.drawToAnswer,
+                            s.drawToAnswer && blink, goldBody);
                 bool armed = WallMs() < g.concedeArmedUntil;
                 Button(g.concede, x + 116.f, y, 94.f, armed ? "SURE?" : "CONCEDE", s.canConcede, armed, redBody);
             }

@@ -1543,8 +1543,8 @@ namespace Duels
             s.rounds = d.settings.rounds;
             s.free = d.settings.free;
             s.me = g.me;
-            s.names[g.me] = Match::PlayerName();
-            s.names[them] = Net::PeerName().empty() ? std::string("Opponent") : Net::PeerName();
+            s.names[g.me] = Match::ScreenName(Match::PlayerName());
+            s.names[them] = Net::PeerName().empty() ? std::string("Opponent") : Match::ScreenName(Net::PeerName());
             s.points[HOST] = Points(d, HOST);
             s.points[GUEST] = Points(d, GUEST);
             s.opponentReady = d.ready[them];
@@ -1560,7 +1560,7 @@ namespace Duels
             if (Net::Reconnecting(waitMs, cutOff))
             {
                 s.paused = true;
-                s.pausedText = cutOff ? std::string("Getting back into the match") : "Waiting for " + Who(them);
+                s.pausedText = cutOff ? std::string("Getting back into the match") : "Waiting for " + s.names[them];
                 s.countdownLabel = "Paused";
                 s.countdownMs = waitMs;
             }

@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsHud.h"
+#include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsRounds.h"
 #include "DuelsStyle.h"
@@ -297,7 +298,7 @@ namespace Duels
             }
             else
             {
-                Text(FONT, x, y, "Opponent: " + opponent, gold);
+                Text(FONT, x, y, "Opponent: " + Match::ScreenName(opponent), gold);
                 y += 15.f;
                 Text(FONT, x, y, Net::UsesRelay() ? "Room: " + Net::RelayCode() : "Direct connection", soft);
                 y += 17.f;

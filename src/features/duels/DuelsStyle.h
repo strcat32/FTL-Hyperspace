@@ -22,7 +22,8 @@ namespace Duels
         {
             Idle,    // FTL's light body
             Hover,   // FTL's yellow, under the mouse
-            Off      // FTL's grey: can't be used now
+            Off,     // FTL's grey: can't be used now
+            Pressed  // held down: a darker body, the letters a pixel lower, no glow (our draw offer, roadmap AH)
         };
 
         // FTL's colours for text buttons (TextButton's own: the body idle, under the mouse and off; the letters) and the

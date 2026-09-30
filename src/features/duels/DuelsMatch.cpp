@@ -2332,16 +2332,14 @@ namespace Duels
             if (g_match.initialised) return;
             g_match.initialised = true;
             ResetMatch();
-            // The player's name: the saved one, or for this start a captain named like a crew member (the menu's name
-            // prompt offers it on a first start and saves the player's choice; the "name" command changes it; later
-            // the Steam name).
+            // The player's name: the saved one, or for this start a crew member's name (the menu's name prompt offers
+            // it on a first start and saves the player's choice; the "name" command changes it; later the Steam name).
+            // Plain, without the "Captain_" of before: the screen shows 10 letters of a name (roadmap AG).
             std::string name = Config::PlayerName();
             if (name.empty() && G_->GetBlueprints())
             {
                 bool male = true;
-                std::string crew = G_->GetBlueprints()->GetCrewName(&male);
-                std::replace(crew.begin(), crew.end(), ' ', '_');
-                if (!crew.empty()) name = "Captain_" + crew;
+                name = G_->GetBlueprints()->GetCrewName(&male);
             }
             if (!name.empty()) g_match.playerName = name;
             Net::SetListener(&g_listener);
@@ -2402,6 +2400,12 @@ namespace Duels
             return g_match.playerName;
         }
 
+        std::string ScreenName(const std::string &name)
+        {
+            if (name.size() <= SCREEN_NAME_MAX) return name;
+            return name.substr(0, SCREEN_NAME_MAX - 1) + "..";
+        }
+
         uint32_t ShotsReceived()
         {
             return g_match.shotsReceived;
@@ -2424,8 +2428,8 @@ namespace Duels
         void SetPlayerName(const std::string &name)
         {
             Init();
-            g_match.playerName = name;
-            Net::SetIdentity(name, VERSION, BUILD_IDENTIFIER_HASH);
+            g_match.playerName = name.size() > NAME_MAX ? name.substr(0, NAME_MAX) : name;
+            Net::SetIdentity(g_match.playerName, VERSION, BUILD_IDENTIFIER_HASH);
         }
 
         bool Host(uint16_t port, bool loopbackOnly, std::string &message)

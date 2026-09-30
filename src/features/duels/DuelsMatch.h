@@ -52,6 +52,12 @@ namespace Duels
         // Test verb "chatflood <count>": that many chat lines at once, past the sender's limits.
         int ChatFlood(int count);
         const std::string &PlayerName();
+        // Players' names (roadmap AG): the name prompt and the name command take up to NAME_MAX characters, and the
+        // console and the chat log show them whole. On the screen (the score panel, the lines under the buttons, the
+        // splashes, the Duels window) a name is cut after SCREEN_NAME_MAX characters, as FTL cuts crew names: what the
+        // score panel's half has room for (measured: about 9 letters of font 10 beside "..").
+        static const size_t NAME_MAX = 24, SCREEN_NAME_MAX = 10;
+        std::string ScreenName(const std::string &name);
         // The opponent's shots received in this game (tests).
         uint32_t ShotsReceived();
 
