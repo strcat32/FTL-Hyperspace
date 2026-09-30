@@ -77,6 +77,40 @@ namespace Duels
         // The relay's list of rooms waiting for a guest, a page at a time; it comes as notices (Listener::OnNotice).
         // Has a socket of its own: a session isn't touched.
         bool ListRelayRooms(const std::string &server, uint16_t port, int page, std::string &message);
+
+        // The last error a relay gave this game's room (hosting or joining): the relay's ERROR code, or
+        // Relay::Event::NO_ANSWER; 0 when the last try had none. HostRelay and JoinRelay clear it.
+        int LastRelayError(std::string *text = nullptr);
+
+        // A relay of the list: its name there ("server[:port]"), and where it is.
+        struct RelayAddress
+        {
+            std::string name, server;
+            uint16_t port = 0;
+        };
+        // The open rooms of every relay given (the Join window, roadmap 3.5): each is asked for its list, page by page
+        // (at most 10), all at once, with a socket of its own (a session isn't touched); the answers come over the next
+        // frames.
+        struct FoundRoom
+        {
+            RelayAddress relay;
+            std::string code, roomName, hostName, version;
+            bool password = false;
+        };
+        struct RoomSearch
+        {
+            int relays = 0, answered = 0, failed = 0;
+            std::vector<FoundRoom> rooms;
+            std::vector<std::string> errors;   // "<relay>: no answer from the relay"
+            bool Busy() const { return answered + failed < relays; }
+        };
+        void SearchRooms(const std::vector<RelayAddress> &relays);
+        // The relays for the menu's rooms, in the order they are tried (DuelsDriver.cpp: one the relay command chose,
+        // then duels.cfg's and the public relay).
+        std::vector<RelayAddress> RelayList();
+        const RoomSearch &Search();
+        // Our version, as the relay compares it (a room of another version can't be joined).
+        const std::string &Version();
         bool UsesRelay();
         std::string RelayCode();
         uint64_t MatchSeed();   // from the relay, 0 without one

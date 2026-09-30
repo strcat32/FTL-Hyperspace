@@ -29,5 +29,7 @@ namespace Duels
 
         // The relay servers: the file's, in its order, then the project's public relay.
         const std::vector<std::string> &Relays();
+        // The server is the project's public relay (built in).
+        bool IsPublicRelay(const std::string &server);
     }
 }

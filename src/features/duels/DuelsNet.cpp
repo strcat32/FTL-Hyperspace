@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdio>
 #include <deque>
+#include <memory>
 #include <random>
 
 namespace Duels
@@ -102,6 +103,24 @@ namespace Duels
 
         static Browser g_browser;
 
+        // The room search over every relay of the list (SearchRooms): one searcher per relay.
+        struct Searcher
+        {
+            RelayAddress address;
+            UdpSocket socket;
+            NetAddress relay;
+            Relay::Client client;
+            bool active = false;
+        };
+
+        static std::vector<std::unique_ptr<Searcher>> g_searchers;
+        static RoomSearch g_search;
+        static const int SEARCH_PAGES = 10;
+
+        // The last error a relay gave the session's room.
+        static int g_lastRelayError = 0;
+        static std::string g_lastRelayErrorText;
+
         static uint32_t NewSessionId()
         {
             // std::random_device is deterministic on some MinGW versions; mix in the clock instead.
@@ -176,6 +195,8 @@ namespace Duels
                 }
                 if (!events.empty())
                 {
+                    g_lastRelayError = events.front().errorCode;
+                    g_lastRelayErrorText = events.front().text;
                     Notice("relay: " + events.front().text);
                     Close();
                     return;
@@ -521,6 +542,8 @@ namespace Duels
                        bool listed, std::string &message)
         {
             Session &s = g_session;
+            g_lastRelayError = 0;
+            g_lastRelayErrorText.clear();
             if (!OpenRelay(server, port, message)) return false;
             s.host = true;
             s.acceptsJoin = true;
@@ -537,6 +560,8 @@ namespace Duels
                        std::string &message)
         {
             Session &s = g_session;
+            g_lastRelayError = 0;
+            g_lastRelayErrorText.clear();
             if (!Relay::Client::IsRoomCode(code))
             {
                 message = "a room code has 6 letters and digits, e.g. K7M4QX";
@@ -632,6 +657,105 @@ namespace Duels
             }
         }
 
+        int LastRelayError(std::string *text)
+        {
+            if (text) *text = g_lastRelayErrorText;
+            return g_lastRelayError;
+        }
+
+        const std::string &Version()
+        {
+            return g_session.version;
+        }
+
+        void SearchRooms(const std::vector<RelayAddress> &relays)
+        {
+            g_searchers.clear();
+            g_search = RoomSearch();
+            for (const RelayAddress &address : relays)
+            {
+                ++g_search.relays;
+                std::unique_ptr<Searcher> searcher(new Searcher());
+                searcher->address = address;
+                std::string error;
+                if (!ResolveAddress(address.server, address.port, searcher->relay, error) ||
+                    !searcher->socket.Open(0, IsLoopback(searcher->relay), error))
+                {
+                    ++g_search.failed;
+                    g_search.errors.push_back(address.name + ": " + error);
+                    continue;
+                }
+                searcher->client.List(0, g_session.version, g_session.now);
+                searcher->active = true;
+                g_searchers.push_back(std::move(searcher));
+            }
+            Log("Net: asking %d relay%s for their open rooms", g_search.relays, g_search.relays == 1 ? "" : "s");
+        }
+
+        const RoomSearch &Search()
+        {
+            return g_search;
+        }
+
+        // The searchers' answers: the rooms of a page, the next page asked for (the relay's client is idle again after
+        // each), or the relay's failure.
+        static void UpdateSearch(double now)
+        {
+            for (std::unique_ptr<Searcher> &searcher : g_searchers)
+            {
+                Searcher &s = *searcher;
+                if (!s.active) continue;
+                std::vector<Relay::Event> events;
+                uint8_t buffer[2048];
+                for (int guard = 0; guard < 16; ++guard)
+                {
+                    NetAddress from;
+                    int size = s.socket.ReceiveFrom(from, buffer, sizeof(buffer));
+                    if (size <= 0) break;
+                    if (from != s.relay) continue;
+                    Link::Bytes payload;
+                    s.client.Receive(buffer, (size_t)size, now, payload, events);
+                }
+                std::vector<std::vector<uint8_t>> packets;
+                s.client.Update(now, packets, events);
+                for (const std::vector<uint8_t> &packet : packets) s.socket.SendTo(s.relay, packet.data(), packet.size());
+                for (const Relay::Event &event : events)
+                {
+                    if (event.kind == Relay::Event::Error)
+                    {
+                        s.active = false;
+                        ++g_search.failed;
+                        g_search.errors.push_back(s.address.name + ": " + event.text);
+                        Log("Net: the room search at %s: %s", s.address.name.c_str(), event.text.c_str());
+                        break;
+                    }
+                    if (event.kind != Relay::Event::RoomList) continue;
+                    for (const Relay::Listing &listing : event.rooms)
+                    {
+                        FoundRoom room;
+                        room.relay = s.address;
+                        room.code = listing.code;
+                        room.roomName = listing.roomName;
+                        room.hostName = listing.hostName;
+                        room.version = listing.version;
+                        room.password = listing.password;
+                        g_search.rooms.push_back(room);
+                    }
+                    if (!event.rooms.empty() && event.page + 1 < event.pages && event.page + 1 < SEARCH_PAGES)
+                    {
+                        s.client.List(event.page + 1, g_session.version, now);
+                    }
+                    else
+                    {
+                        s.active = false;
+                        ++g_search.answered;
+                        Log("Net: the room search at %s: %u rooms in all so far", s.address.name.c_str(), (unsigned)g_search.rooms.size());
+                    }
+                }
+                if (!s.active) s.socket.Close();
+            }
+        }
+
         bool UsesRelay() { return g_session.relay; }
         std::string RelayCode() { return g_session.relayCode; }
         uint64_t MatchSeed() { return g_session.relay ? g_session.relayClient.MatchSeed() : 0; }
@@ -689,6 +813,8 @@ namespace Duels
                 case Relay::Event::RoomList:
                     break;   // only the room list's own client asks for it
                 case Relay::Event::Error:
+                    g_lastRelayError = event.errorCode;
+                    g_lastRelayErrorText = event.text;
                     Notice("relay: " + event.text);
                     Close();
                     return false;
@@ -734,6 +860,7 @@ namespace Duels
             Session &s = g_session;
             s.now = now;
             UpdateBrowser(now);
+            UpdateSearch(now);
             UpdateLost(now);
             if (s.phase == Phase::Idle) return;
 

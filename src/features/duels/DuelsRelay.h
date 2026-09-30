@@ -42,13 +42,17 @@ namespace Duels
                 Error          // text: what went wrong
             };
             Event(Kind eventKind, const std::string &eventText = std::string(), uint64_t seed = 0)
-                : kind(eventKind), text(eventText), matchSeed(seed), page(0), pages(0) {}
+                : kind(eventKind), text(eventText), matchSeed(seed), page(0), pages(0), errorCode(0) {}
 
             Kind kind;
             std::string text;
             uint64_t matchSeed;
             std::vector<Listing> rooms;
             int page, pages;
+            // Error: the relay's ERROR code (docs/design/relay-protocol.md: 2 no such room, 3 room full, 4 server full,
+            // 5 another version, 6 rate limited, 8 wrong password), or NO_ANSWER when it didn't answer.
+            int errorCode;
+            static const int NO_ANSWER = -1;
         };
 
         class Client

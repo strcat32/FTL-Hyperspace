@@ -131,6 +131,15 @@ namespace Duels
             WriteSetting(key, value);
         }
 
+        bool IsPublicRelay(const std::string &server)
+        {
+            for (const char *relay : PUBLIC_RELAYS)
+            {
+                if (server == relay) return true;
+            }
+            return false;
+        }
+
         const std::vector<std::string> &Relays()
         {
             Load();

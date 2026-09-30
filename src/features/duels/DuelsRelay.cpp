@@ -315,7 +315,9 @@ namespace Duels
                         return false;
                     }
                     state = State::Failed;
-                    events.push_back(Event{Event::Error, message.empty() ? "the relay refused (" + std::to_string(errorCode) + ")" : message, 0});
+                    Event failed{Event::Error, message.empty() ? "the relay refused (" + std::to_string(errorCode) + ")" : message, 0};
+                    failed.errorCode = errorCode;
+                    events.push_back(failed);
                 }
                 return false;
             }
@@ -369,7 +371,9 @@ namespace Duels
                 if (now - startMs > HANDSHAKE_TIMEOUT_MS)
                 {
                     state = State::Failed;
-                    events.push_back(Event{Event::Error, "no answer from the relay", 0});
+                    Event failed{Event::Error, "no answer from the relay", 0};
+                    failed.errorCode = Event::NO_ANSWER;
+                    events.push_back(failed);
                     return;
                 }
                 if (now - lastSendMs >= RETRY_MS)

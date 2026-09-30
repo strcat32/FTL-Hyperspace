@@ -5,6 +5,7 @@
 #include "DuelsEnvironment.h"
 #include "DuelsLobby.h"
 #include "DuelsMatch.h"
+#include "DuelsNet.h"
 #include "DuelsRelay.h"
 #include "DuelsRounds.h"
 #include "DuelsStyle.h"
@@ -15,6 +16,7 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <set>
 
 namespace Duels
 {
@@ -64,11 +66,25 @@ namespace Duels
             Style::Box hazardBoxes[Environment::KIND_COUNT];
             Style::Box cancel, choose;
 
-            // After CHOOSE SHIP: the room waits for the run.
+            // The Join window's list: the relays asked, the ones filtered out, the room picked (its relay and code), the
+            // page; the rows and the relays' check boxes as drawn.
+            std::vector<Net::RelayAddress> relays;
+            std::set<std::string> hiddenRelays;
+            std::string pickedRelay, pickedCode;
+            int page = 0;
+            std::vector<Style::Box> rows;
+            std::vector<std::string> rowKeys;         // each row's relay and code ("relay|code")
+            std::vector<Style::Box> relayBoxes;
+            Style::Box refresh, pagePrev, pageNext;
+
+            // After CHOOSE SHIP: the room waits for the run, then the relays are tried in order (part 4).
             Pending pending = Pending::None;
             std::string roomName, roomPassword, roomCode;
             bool roomListed = true;
             bool sawHangar = false;
+            std::vector<Net::RelayAddress> attemptRelays;
+            size_t attemptIndex = 0;
+            bool attempting = false;
 
             // FTL's first message box at a run's start.
             bool inRun = false;
@@ -216,8 +232,11 @@ namespace Duels
                 Config::SaveValue("room_name", g.roomName);
                 Config::SaveValue("room_listed", g.listed ? "on" : "off");
             }
-            Log("Lobby: choose a ship; the room '%s' (%s%s) opens with the run: %s", g.roomName.c_str(),
-                g.roomListed ? "listed" : "unlisted", g.roomPassword.empty() ? "" : ", with a password", message.c_str());
+            // The room opens at the first relay of the list that answers (part 4).
+            g.attemptRelays = Net::RelayList();
+            Log("Lobby: choose a ship; the room '%s' (%s%s) opens with the run, at the first of %u relay(s) that answers: %s",
+                g.roomName.c_str(), g.roomListed ? "listed" : "unlisted", g.roomPassword.empty() ? "" : ", with a password",
+                (unsigned)g.attemptRelays.size(), message.c_str());
             OpenHangar(Pending::Host);
         }
 
@@ -316,10 +335,78 @@ namespace Duels
         }
 
         // ---------------------------------------------------------------------------------------------------------
-        // The Join window (a room's code; the room list comes with part 3)
+        // The Join window (parts 3 and 4): the open rooms of every relay on the list (a filter by relay; a click on a
+        // room shows it on the right), or a room by its code, tried at every relay
         // ---------------------------------------------------------------------------------------------------------
 
-        static const float JW = 560.f, JH = 330.f, JX = (1280.f - JW) / 2.f, JY = 180.f;
+        static const float JW = 960.f, JH = 580.f, JX = (1280.f - JW) / 2.f, JY = 76.f;
+        static const int ROWS = 11;
+        static const float ROW_H = 24.f;
+
+        static std::string Upper(std::string text)
+        {
+            std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return (char)std::toupper(c); });
+            return text;
+        }
+
+        static std::string Key(const Net::FoundRoom &room)
+        {
+            return room.relay.name + "|" + room.code;
+        }
+
+        // The text cut to fit a width ("Captain_Kaz..").
+        static std::string Fit(int font, const std::string &text, float width)
+        {
+            if ((float)freetype::easy_measureWidth(font, text) <= width) return text;
+            std::string cut = text;
+            while (!cut.empty() && (float)freetype::easy_measureWidth(font, cut + "..") > width) cut.pop_back();
+            return cut + "..";
+        }
+
+        // Where the list's rows are: under the title, the relays' line and the list's head row.
+        static const float LIST_X = JX + 30.f, LIST_W = 580.f, LIST_Y = JY + 94.f;
+
+        static Style::Box RowBox(int index)
+        {
+            Style::Box box;
+            box.x = LIST_X + 3.f;
+            box.y = LIST_Y + 4.f + ROW_H * (index + 1);
+            box.w = LIST_W - 6.f;
+            box.h = ROW_H;
+            return box;
+        }
+
+        // The found rooms the relay filter lets through, in the order they came.
+        static std::vector<Net::FoundRoom> Shown()
+        {
+            std::vector<Net::FoundRoom> shown;
+            for (const Net::FoundRoom &room : Net::Search().rooms)
+            {
+                if (!g.hiddenRelays.count(room.relay.name)) shown.push_back(room);
+            }
+            return shown;
+        }
+
+        static bool Picked(Net::FoundRoom &picked)
+        {
+            for (const Net::FoundRoom &room : Shown())
+            {
+                if (room.relay.name == g.pickedRelay && room.code == g.pickedCode)
+                {
+                    picked = room;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        static void Refresh()
+        {
+            g.relays = Net::RelayList();
+            Net::SearchRooms(g.relays);
+            g.page = 0;
+            Log("Lobby: the room list asks %u relay(s)", (unsigned)g.relays.size());
+        }
 
         void OpenJoin()
         {
@@ -328,50 +415,185 @@ namespace Duels
             g.code.input->SetText("");
             g.joinPassword.input->SetText("");
             g.message.clear();
+            g.pickedRelay.clear();
+            g.pickedCode.clear();
             g.open = Window::Join;
-            Focus(&g.code);
+            Focus(nullptr);
+            Refresh();
             Log("Lobby: the Join window");
         }
 
         static void ChooseJoin()
         {
-            std::string code = g.code.Text();
-            std::transform(code.begin(), code.end(), code.begin(), [](unsigned char c) { return (char)std::toupper(c); });
-            if (!Relay::Client::IsRoomCode(code))
+            std::string code = Upper(g.code.Text());
+            g.roomPassword = g.joinPassword.Text();
+            if (!code.empty())
             {
-                g.message = "A room's code has 6 letters and digits (the host's Duels window shows it).";
+                // A room by its code: every relay of the list is asked for it in turn.
+                if (!Relay::Client::IsRoomCode(code))
+                {
+                    g.message = "A room's code has 6 letters and digits (the host's Duels window shows it).";
+                    return;
+                }
+                g.roomCode = code;
+                g.attemptRelays = Net::RelayList();
+                Log("Lobby: choose a ship; the room %s is joined with the run (looked for at %u relay(s))%s", code.c_str(),
+                    (unsigned)g.attemptRelays.size(), g.roomPassword.empty() ? "" : " (with a password)");
+                OpenHangar(Pending::Join);
                 return;
             }
-            g.roomCode = code;
-            g.roomPassword = g.joinPassword.Text();
-            Log("Lobby: choose a ship; the room %s is joined with the run%s", code.c_str(), g.roomPassword.empty() ? "" : " (with a password)");
+            Net::FoundRoom room;
+            if (!Picked(room))
+            {
+                g.message = "Pick a room in the list, or type a room's code.";
+                return;
+            }
+            if (room.version != Net::Version())
+            {
+                g.message = "That room's game is version " + room.version + ", yours " + Net::Version() + ": a duel needs the same.";
+                return;
+            }
+            if (room.password && g.roomPassword.empty())
+            {
+                g.message = "That room needs its password.";
+                Focus(&g.joinPassword);
+                return;
+            }
+            g.roomCode = room.code;
+            g.attemptRelays = {room.relay};
+            Log("Lobby: choose a ship; the room %s ('%s', %s's) at %s is joined with the run", room.code.c_str(), room.roomName.c_str(),
+                room.hostName.c_str(), room.relay.name.c_str());
             OpenHangar(Pending::Join);
         }
 
         static void RenderJoin()
         {
             Style::Dialog(JX, JY, JW, JH, "JOIN DUEL");
-            const GL_Color soft = Rgb(190, 196, 204), light = Rgb(226, 230, 236);
-            float x = JX + 30.f, w = JW - 60.f, y = JY + 24.f;
-            y += Style::Label(x, y, "A ROOM BY ITS CODE") + 14.f;
-            Text(FONT, x, y, "The room's code (6 letters and digits):", light);
-            RenderField(g.code, x, y + 20.f, 160.f);
-            y += 64.f;
-            Text(FONT, x, y, "Its password, if it has one:", light);
-            RenderField(g.joinPassword, x, y + 20.f, 300.f);
-            y += 64.f;
-            Paragraph(FONT, x, y, w, "CHOOSE SHIP opens FTL's hangar; its START begins the run and joins the room. The list of "
-                                     "open rooms comes here soon; until then the console's lobby command shows it.", soft);
-            float by = JY + JH - 58.f;
-            if (!g.message.empty()) Paragraph(FONT, x, by - 20.f, w, g.message, Rgb(255, 140, 120));
+            const GL_Color soft = Rgb(190, 196, 204), light = Rgb(226, 230, 236), gold = Rgb(255, 235, 170), white = Rgb(255, 255, 255),
+                           red = Rgb(255, 140, 120);
+            const Net::RoomSearch &search = Net::Search();
+
+            // The list's head: its title, REFRESH, and the relays as a filter.
+            float lx = JX + 30.f, lw = 580.f, y = JY + 24.f;
+            Style::Label(lx, y, "OPEN ROOMS");
+            ButtonAt(g.refresh, lx + lw - 110.f, y - 4.f, 110.f, 28.f, "REFRESH", !search.Busy());
+            y += 36.f;
+            g.relayBoxes.resize(g.relays.size());
+            float rx = lx;
+            for (size_t i = 0; i < g.relays.size(); ++i)
+            {
+                const std::string &name = g.relays[i].name;
+                CheckAt(g.relayBoxes[i], rx, y, !g.hiddenRelays.count(name), name);
+                rx += g.relayBoxes[i].w + 18.f;
+            }
+            y += 34.f;
+
+            // The rooms: a head row, then a page of them.
+            const float cName = lx + 10.f, cHost = lx + 240.f, cRelay = lx + 380.f, cLock = lx + 498.f;
+            float listY = LIST_Y, listH = ROW_H * (ROWS + 1) + 8.f;
+            Style::Field(lx, listY, lw, listH, false);
+            Text(FONT, cName, listY + 6.f, "ROOM", soft);
+            Text(FONT, cHost, listY + 6.f, "HOST", soft);
+            Text(FONT, cRelay, listY + 6.f, "RELAY", soft);
+            std::vector<Net::FoundRoom> shown = Shown();
+            int pages = std::max(1, ((int)shown.size() + ROWS - 1) / ROWS);
+            g.page = std::max(0, std::min(g.page, pages - 1));
+            g.rows.clear();
+            g.rowKeys.clear();
+            for (int i = 0; i < ROWS && g.page * ROWS + i < (int)shown.size(); ++i)
+            {
+                const Net::FoundRoom &room = shown[g.page * ROWS + i];
+                Style::Box box = RowBox(i);
+                bool picked = room.relay.name == g.pickedRelay && room.code == g.pickedCode;
+                if (picked) CSurface::GL_DrawRect(box.x, box.y, box.w, box.h, Rgb(255, 230, 94, 0.28f));
+                else if (Hover(box)) CSurface::GL_DrawRect(box.x, box.y, box.w, box.h, Rgb(255, 255, 255, 0.08f));
+                bool sameVersion = room.version == Net::Version();
+                float ty = box.y + 4.f;
+                Text(FONT, cName, ty, Fit(FONT, room.roomName.empty() ? "(no name)" : room.roomName, 220.f), sameVersion ? white : soft);
+                Text(FONT, cHost, ty, Fit(FONT, Match::ScreenName(room.hostName), 130.f), sameVersion ? light : soft);
+                Text(FONT, cRelay, ty, Fit(FONT, room.relay.name, 110.f), soft);
+                if (!sameVersion) Text(FONT, cLock, ty, "v" + Fit(FONT, room.version, 56.f), red);
+                else if (room.password) Text(FONT, cLock, ty, "PASSWORD", gold);
+                g.rows.push_back(box);
+                g.rowKeys.push_back(Key(room));
+            }
+
+            // Under the list: how the search goes, and the pages.
+            float sy = listY + listH + 8.f;
+            std::string status;
+            if (search.Busy()) status = "Asking " + std::to_string(search.relays - search.answered - search.failed) + " of " +
+                                        std::to_string(search.relays) + " relays...";
+            else if (shown.empty()) status = "No open rooms. A room that isn't listed is joined by its code (below).";
+            else status = std::to_string(shown.size()) + (shown.size() == 1 ? " room" : " rooms") + " open.";
+            Text(FONT, lx, sy, status, light);
+            if (!search.errors.empty()) Text(FONT, lx, sy + 16.f, Fit(FONT, search.errors.front(), lw - 170.f), red);
+            ButtonAt(g.pagePrev, lx + lw - 160.f, sy - 2.f, 36.f, 26.f, "<", g.page > 0);
+            CSurface::GL_SetColor(light);
+            freetype::easy_printCenter(FONT, lx + lw - 80.f, sy + 3.f, std::to_string(g.page + 1) + " / " + std::to_string(pages));
+            ButtonAt(g.pageNext, lx + lw - 36.f, sy - 2.f, 36.f, 26.f, ">", g.page + 1 < pages);
+
+            // The room picked, on the right.
+            float dx = JX + 640.f, dw = JW - 640.f - 30.f, dy = JY + 24.f;
+            dy += Style::Label(dx, dy, "THE ROOM") + 14.f;
+            Net::FoundRoom room;
+            if (Picked(room))
+            {
+                dy += Paragraph(TEXT, dx, dy, dw, room.roomName.empty() ? "(no name)" : room.roomName, white) + 8.f;
+                auto line = [&](const std::string &label, const std::string &value, const GL_Color &colour)
+                {
+                    Text(FONT, dx, dy, label, soft);
+                    dy += Paragraph(FONT, dx + 84.f, dy, dw - 84.f, value, colour) + 4.f;
+                };
+                line("Host", room.hostName, light);
+                line("Relay", room.relay.name, light);
+                line("Code", room.code, light);
+                bool sameVersion = room.version == Net::Version();
+                line("Version", room.version + (sameVersion ? "" : " (yours: " + Net::Version() + ")"), sameVersion ? light : red);
+                line("Password", room.password ? "needed: type it below" : "none", room.password ? gold : light);
+                dy += 6.f;
+                Paragraph(FONT, dx, dy, dw, "Whether it is ranked, needs Steam or runs debug mode, and its match settings come with "
+                                            "the relay's next version.", soft);
+            }
+            else Paragraph(FONT, dx, dy, dw, "A click on a room in the list shows it here.", soft);
+
+            // A room by its code (one that isn't listed, say), and the password for either.
+            float by = JY + JH - 58.f, fy = by - 72.f;
+            Text(FONT, lx, fy, "Or a room by its code:", light);
+            RenderField(g.code, lx, fy + 18.f, 130.f);
+            Text(FONT, lx + 160.f, fy, "The room's password, if it has one:", light);
+            RenderField(g.joinPassword, lx + 160.f, fy + 18.f, 260.f);
+            if (!g.message.empty()) Paragraph(FONT, dx, by - 40.f, dw, g.message, red);
             ButtonAt(g.cancel, JX + JW - 30.f - 190.f - 12.f - 130.f, by, 130.f, 34.f, "CANCEL");
             ButtonAt(g.choose, JX + JW - 30.f - 190.f, by, 190.f, 34.f, "CHOOSE SHIP");
         }
 
         static void ClickJoin(int x, int y)
         {
+            for (size_t i = 0; i < g.rows.size(); ++i)
+            {
+                if (!g.rows[i].Contains(x, y)) continue;
+                size_t bar = g.rowKeys[i].find('|');
+                g.pickedRelay = g.rowKeys[i].substr(0, bar);
+                g.pickedCode = g.rowKeys[i].substr(bar + 1);
+                if (g.code.input) g.code.input->SetText("");   // the list's room, not a typed code
+                g.message.clear();
+                Log("Lobby: picked the room %s at %s", g.pickedCode.c_str(), g.pickedRelay.c_str());
+                return;
+            }
+            for (size_t i = 0; i < g.relayBoxes.size() && i < g.relays.size(); ++i)
+            {
+                if (!g.relayBoxes[i].Contains(x, y)) continue;
+                const std::string &name = g.relays[i].name;
+                if (g.hiddenRelays.count(name)) g.hiddenRelays.erase(name);
+                else g.hiddenRelays.insert(name);
+                g.page = 0;
+                return;
+            }
             if (g.code.box.Contains(x, y)) Focus(&g.code);
             else if (g.joinPassword.box.Contains(x, y)) Focus(&g.joinPassword);
+            else if (g.refresh.Contains(x, y) && !Net::Search().Busy()) Refresh();
+            else if (g.pagePrev.Contains(x, y) && g.page > 0) --g.page;
+            else if (g.pageNext.Contains(x, y)) ++g.page;   // kept to the pages there are when drawn
             else if (g.cancel.Contains(x, y))
             {
                 Close();
@@ -451,6 +673,59 @@ namespace Duels
             return app && !app->menu.bOpen && world && world->bStartedGame && world->playerShip && world->commandGui;
         }
 
+        // The room at the relay of this attempt: opened (the host) or joined (the guest), as "host relay" and "join" do.
+        // A relay that can't be reached at all is skipped.
+        static bool StartAttempt()
+        {
+            while (g.attemptIndex < g.attemptRelays.size())
+            {
+                const Net::RelayAddress &relay = g.attemptRelays[g.attemptIndex];
+                std::string message;
+                bool ok = g.pending == Pending::Host
+                              ? Match::HostRelay(relay.server, relay.port, g.roomName, g.roomPassword, g.roomListed, message)
+                              : Match::JoinRelay(relay.server, relay.port, g.roomCode, g.roomPassword, message);
+                Log("Lobby: %s at %s: %s", g.pending == Pending::Host ? "the room" : "joining", relay.name.c_str(), message.c_str());
+                if (ok) return true;
+                ++g.attemptIndex;
+            }
+            return false;
+        }
+
+        // How the attempt goes: 1 done (the room is open, or joined), 0 still going, -1 failed; `retry` when the next
+        // relay may do better (no answer, the relay full or busy, and for a code: no such room there).
+        static int AttemptState(bool &retry, std::string &why)
+        {
+            if (g.pending == Pending::Host && Net::GetPhase() == Net::Phase::Hosting && !Net::RelayCode().empty()) return 1;
+            if (g.pending == Pending::Join && Net::IsConnected()) return 1;
+            if (Net::GetPhase() != Net::Phase::Idle) return 0;
+            std::string text;
+            int error = Net::LastRelayError(&text);
+            why = text.empty() ? "the connection failed" : text;
+            retry = error == Relay::Event::NO_ANSWER || error == 4 || error == 6 || (g.pending == Pending::Join && error == 2);
+            return -1;
+        }
+
+        static void Finish(bool ok, const std::string &why)
+        {
+            bool host = g.pending == Pending::Host;
+            std::string relay = g.attemptIndex < g.attemptRelays.size() ? g.attemptRelays[g.attemptIndex].name : std::string("-");
+            g.pending = Pending::None;
+            g.attempting = false;
+            if (ok)
+            {
+                std::string text = host ? "Room " + Net::RelayCode() + " is open at " + relay + ": waiting for a guest"
+                                        : "Joined " + Net::PeerName() + "'s room at " + relay;
+                Log("Lobby: %s", text.c_str());
+                Console::Feed(text);
+            }
+            else
+            {
+                Log("Lobby: %s: %s", host ? "no room opened" : "not joined", why.c_str());
+                Console::Feed((host ? "No room opened: " : "Not joined: ") + why);
+            }
+            ::Duels::Window::Open();   // the room's code, the opponent, or why not
+        }
+
         void OnFrame()
         {
             CApp *app = G_->GetCApp();
@@ -479,19 +754,36 @@ namespace Duels
                 else if (g.sawHangar && !app->menu.shipBuilder.bDone)
                 {
                     g.pending = Pending::None;
+                    g.attempting = false;
                     Log("Lobby: back from the hangar: no room");
                 }
                 return;
             }
             if (!inRun) return;
-            Pending pending = g.pending;
-            g.pending = Pending::None;
-            std::string message;
-            bool ok = pending == Pending::Host ? HostRoom(g.roomName, g.roomPassword, g.roomListed, message)
-                                               : JoinRoom(g.roomCode, g.roomPassword, message);
-            Log("Lobby: the run began: %s%s", ok ? "" : "FAILED: ", message.c_str());
-            Console::Feed(ok ? message : (pending == Pending::Host ? "No room opened: " : "Not joined: ") + message);
-            if (ok) ::Duels::Window::Open();   // the room's code, or the joining
+            if (!g.attempting)
+            {
+                g.attempting = true;
+                g.attemptIndex = 0;
+                if (!StartAttempt()) Finish(false, "no relay of the list can be reached");
+                return;
+            }
+            bool retry = false;
+            std::string why;
+            int state = AttemptState(retry, why);
+            if (state == 0) return;
+            if (state > 0)
+            {
+                Finish(true, "");
+                return;
+            }
+            if (retry && g.attemptIndex + 1 < g.attemptRelays.size())
+            {
+                Log("Lobby: %s: %s; the next relay", g.attemptRelays[g.attemptIndex].name.c_str(), why.c_str());
+                ++g.attemptIndex;
+                if (!StartAttempt()) Finish(false, why);
+                return;
+            }
+            Finish(false, why);
         }
 
         // A click on the hangar's START, through the menu's input as a player's click goes.
@@ -532,6 +824,38 @@ namespace Duels
             else if (what == "choose" && g.open == Window::Join) ChooseJoin();
             else if (what == "cancel" && IsOpen()) Close();
             else if (what == "start") return ClickStart(message);
+            else if (what == "refresh" && g.open == Window::Join) Refresh();
+            else if (what == "pick" && args.size() > 2 && g.open == Window::Join)
+            {
+                // pick <code|@file>: a click on that room's row in the list (on its page).
+                std::string code = args[2];
+                if (!code.empty() && code[0] == '@')
+                {
+                    std::ifstream file(code.substr(1).c_str());
+                    if (!(file >> code))
+                    {
+                        message = "no room code in " + args[2].substr(1);
+                        return false;
+                    }
+                }
+                std::vector<Net::FoundRoom> shown = Shown();
+                for (size_t i = 0; i < shown.size(); ++i)
+                {
+                    if (shown[i].code != Upper(code)) continue;
+                    // Its page, then a click on its row there (the rows are laid out as the next frame draws them).
+                    g.page = (int)i / ROWS;
+                    Style::Box box = RowBox((int)i % ROWS);
+                    g.rows.assign(1, box);
+                    g.rowKeys.assign(1, Key(shown[i]));
+                    int x = (int)(box.x + box.w / 2.f), y = (int)(box.y + box.h / 2.f);
+                    MouseClick(x, y);
+                    message = "picked the room " + shown[i].code + " at " + shown[i].relay.name + " (clicked at " + std::to_string(x) +
+                              "," + std::to_string(y) + ")";
+                    return true;
+                }
+                message = "no room " + code + " in the list (" + std::to_string(shown.size()) + " shown)";
+                return false;
+            }
             else if (what == "code" && args.size() > 2)
             {
                 // "@file": the code is in that file of the game folder (the test runner copies the host's code there).

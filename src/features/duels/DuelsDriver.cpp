@@ -129,6 +129,7 @@ namespace Duels
 
     // The relay server for "host relay" and "join relay" ("relay <server>[:port]").
     static std::string g_relayServer;
+    static bool g_relayChosen = false;   // the relay command picked it (it comes first for the menu's rooms)
     static int g_relayPort = Relay::DEFAULT_PORT;
 
     // The options of a relay room after "host relay [server]": name <room name...>, password <password>, unlisted.
@@ -254,26 +255,33 @@ namespace Duels
         }
     }
 
-    bool HostRoom(const std::string &roomName, const std::string &password, bool listed, std::string &message)
+    // The relays the menu's HOST DUEL and JOIN DUEL use (roadmap 3.5, part 4), in order: one the relay command chose
+    // (tests: the relay on this computer), then duels.cfg's and the project's public relay; each once.
+    std::vector<Net::RelayAddress> Net::RelayList()
     {
-        UseConfiguredRelay();
-        if (g_relayServer.empty())
+        std::vector<Net::RelayAddress> list;
+        auto add = [&](const std::string &text)
         {
-            message = "no relay server (a relay line in duels.cfg, or the relay command)";
-            return false;
-        }
-        return Match::HostRelay(g_relayServer, (uint16_t)g_relayPort, roomName, password, listed, message);
-    }
-
-    bool JoinRoom(const std::string &code, const std::string &password, std::string &message)
-    {
-        UseConfiguredRelay();
-        if (g_relayServer.empty())
+            std::string server;
+            int port;
+            if (!ParseServer(text, server, port)) return;
+            for (const Net::RelayAddress &known : list)
+            {
+                if (known.server == server && known.port == port) return;
+            }
+            Net::RelayAddress address;
+            address.server = server;
+            address.port = (uint16_t)port;
+            address.name = Config::IsPublicRelay(server) && port == Relay::DEFAULT_PORT ? "public relay" : text;
+            list.push_back(address);
+        };
+        if (g_relayChosen && !g_relayServer.empty())
         {
-            message = "no relay server (a relay line in duels.cfg, or the relay command)";
-            return false;
+            bool v6 = g_relayServer.find(':') != std::string::npos;
+            add((v6 ? "[" + g_relayServer + "]" : g_relayServer) + ":" + std::to_string(g_relayPort));
         }
-        return Match::JoinRelay(g_relayServer, (uint16_t)g_relayPort, code, password, message);
+        for (const std::string &relay : Config::Relays()) add(relay);
+        return list;
     }
 
     bool Execute(const Command &cmd, std::string &message)
@@ -457,6 +465,7 @@ namespace Duels
                 }
                 g_relayServer = server;
                 g_relayPort = port;
+                g_relayChosen = true;
             }
             message = g_relayServer.empty() ? "no relay server set (relay <server>[:port])"
                                             : "relay server " + g_relayServer + " port " + std::to_string(g_relayPort);
