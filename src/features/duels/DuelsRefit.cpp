@@ -82,8 +82,9 @@ namespace Duels
         // The shop's stock (the host picks it)
         // ---------------------------------------------------------------------------------------------------------
 
-        // Augments that do nothing in a duel (rules, section 7): no jumps, no star map, no events, no scrap collected.
-        static const char *const USELESS_AUGMENTS[] = {"FTL_JAMMER", "FTL_BOOSTER", "FTL_JUMPER", "FLEET_DISTRACTION",
+        // Augments that do nothing in a duel (rules, section 7): no star map, no events, no scrap collected. (The FTL
+        // Recharge Booster charges the drive for running away, roadmap AD: it is sold again.)
+        static const char *const USELESS_AUGMENTS[] = {"FTL_JAMMER", "FTL_JUMPER", "FLEET_DISTRACTION",
                                                         "ADV_SCANNERS", "STASIS_POD", "SCRAP_COLLECTOR", "REPAIR_ARM",
                                                         "DRONE_RECOVERY"};
         // Systems every player ship has from the start: a shop section of them would sell nothing.

@@ -181,6 +181,8 @@ namespace Duels
 
             bool loadoutSent = false;
             std::string sentArmament;      // our weapons and drones, in slot order, as the last loadout had them
+            double driveChargingSince = -1.0;   // the fight our FTL drive charges in began (roadmap AD)
+            bool driveReadyLogged = false;
             bool replicaReady = false;     // we built the opponent's ship
             bool peerReady = false;        // they built ours
             std::string opponentShip;
@@ -2378,8 +2380,20 @@ namespace Duels
                     Boarding::OnFrame();
                 }
                 ShipManager *ship = G_->GetShipManager(0);
-                // No escaping a duel: the FTL drive never finishes charging.
-                if (ship) ship->jump_timer.first = 0.f;
+                // The FTL drive charges in a match's fight only, from empty at its start (running away, roadmap AD).
+                if (ship && !Rounds::EscapeAllowed())
+                {
+                    ship->jump_timer.first = 0.f;
+                    m.driveChargingSince = -1.0;
+                    m.driveReadyLogged = false;
+                }
+                else if (ship)
+                {
+                    if (m.driveChargingSince < 0.0) m.driveChargingSince = now;
+                    bool ready = ship->jump_timer.first >= ship->jump_timer.second;
+                    if (ready && !m.driveReadyLogged) Log("Match: the FTL drive is ready after %.1f s of the fight (%.1f)", (now - m.driveChargingSince) / 1000.0, ship->jump_timer.second);
+                    m.driveReadyLogged = ready;
+                }
                 TraceSync(now);
             }
             Rounds::OnFrame(now);

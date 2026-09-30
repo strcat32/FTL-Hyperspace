@@ -65,6 +65,15 @@ namespace Duels
         // A match runs and is in a round's preparation (ShoppingAllowed is also true outside a match).
         bool InPreparation();
 
+        // Running away (roadmap AD; rules, section 3): in a match's fight the FTL drive charges as in FTL, and its jump
+        // ends the round, half a point for the other player and none for the runner. InMatch: a match runs (FTL's
+        // star map stays shut); EscapeAllowed: this is its fight and our ship isn't down; DriveReady: FTL's own terms
+        // for a jump (the drive charged, the engines and piloting working); Escape: the jump, as the JUMP button's.
+        bool InMatch();
+        bool EscapeAllowed();
+        bool DriveReady();
+        bool Escape(std::string &message);
+
         // Player verbs: match [rounds <n>|prep <seconds>|permadeath on|off|free|rounds], ready, forfeit, concede,
         // draw round|match|yes|no.
         bool IsVerb(const std::string &verb);

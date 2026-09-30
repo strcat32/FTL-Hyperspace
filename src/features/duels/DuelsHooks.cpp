@@ -242,6 +242,30 @@ HOOK_METHOD_PRIORITY(TutorialManager, AllowUpgrades, -2000, () -> bool)
     return super();
 }
 
+// Running away (roadmap AD): in a match FTL's JUMP button (and the jump key) ends the round as an escape, when FTL
+// would jump (the drive charged, the engines and piloting working); the star map stays shut.
+HOOK_METHOD_PRIORITY(FTLButton, MouseClick, -2000, (int mX, int mY) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> FTLButton::MouseClick -> Begin (DuelsHooks.cpp)\n")
+    bool jump = super(mX, mY);
+    if (!jump || !Duels::Rounds::InMatch()) return jump;
+    std::string message;
+    Duels::Rounds::Escape(message);
+    return false;
+}
+
+// FTL fills the FTL drive whenever the ship is safe (WorldManager::OnLoop: no hostile ship, as in the fight's first
+// frames before the opponent's replica turns hostile). In a match the drive charges at FTL's own pace in the fight,
+// from empty (roadmap AD); what else SetSafe readies stays.
+HOOK_METHOD_PRIORITY(ShipManager, SetSafe, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::SetSafe -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Rounds::InMatch()) return super();
+    float charge = jump_timer.first;
+    super();
+    jump_timer.first = charge;
+}
+
 // The shop buys back (roadmap V): in a match's preparation a right-click in the upgrade screen with nothing waiting
 // to be taken back takes a level back, and sells an extra system at its lowest level (DuelsRefit.cpp).
 HOOK_METHOD_PRIORITY(UpgradeBox, MouseRightClick, -2000, (int mX, int mY) -> void)
@@ -1306,6 +1330,13 @@ HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) ->
     if (Duels::Window::KeyDown((int)key)) return;
     if (Duels::Rounds::NetPaused() && !menuBox.bOpen && key != SDLK_ESCAPE) return;
     Duels::Refit::SwitchScreensKey((int)key);   // the preparation: the store and the ship's screens switch
+    if (Duels::Rounds::InMatch() && key == Settings::GetHotkey("jump") && (int)key > 0)
+    {
+        // The jump key as the JUMP button: running away when FTL would jump, never the star map (roadmap AD).
+        std::string message;
+        if (Duels::Rounds::EscapeAllowed() && Duels::Rounds::DriveReady()) Duels::Rounds::Escape(message);
+        return;
+    }
     super(key, shiftHeld);
 }
 

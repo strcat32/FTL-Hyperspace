@@ -79,8 +79,9 @@ namespace Duels
             "A round won is 1 point, a drawn round half a point for each player. Win more points than the opponent can "
             "still reach; with points equal at the end, the higher damage score wins. A round is won by destroying the "
             "other ship or its whole crew; if both go down at once, the round's "
-            "damage score decides. Each round begins with a timed preparation: repairs, the round's scrap, the shop and "
-            "upgrades (only then). If neither ship's hull or crew reaches a new low for a while, the lows decide the round.";
+            "damage score decides. A player who jumps away (the FTL drive charged) gives the other half a point. Each "
+            "round begins with a timed preparation: repairs, the round's scrap, the shop and upgrades (only then). If "
+            "neither ship's hull or crew reaches a new low for a while, the lows decide the round.";
 
         static bool InGame()
         {

@@ -668,6 +668,15 @@ namespace Duels
             message = "mouse at " + std::to_string(x) + "," + std::to_string(y);
             return true;
         }
+        if (verb == "ftlcharge")
+        {
+            // ftlcharge: our FTL drive charged at once (tests of running away, roadmap AD).
+            ShipManager *own = G_->GetShipManager(0);
+            if (!own) { message = "no ship"; return false; }
+            own->jump_timer.first = own->jump_timer.second;
+            message = "the FTL drive is charged";
+            return true;
+        }
         if (verb == "shake")
         {
             // shake: FTL's screen shake at its strongest (as a hard hit starts it), for tests of what moves with it.

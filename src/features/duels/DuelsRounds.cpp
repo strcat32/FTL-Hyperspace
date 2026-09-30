@@ -46,7 +46,8 @@ namespace Duels
             EV_CONCEDE = 4,      // we give up this round
             EV_DRAW_OFFER = 5,   // arg: DRAW_ROUND or DRAW_MATCH
             EV_DRAW_ANSWER = 6,  // arg: 1 accepted, 0 declined
-            EV_UNREADY = 7       // Ready taken back (the preparation goes on to its end)
+            EV_UNREADY = 7,      // Ready taken back (the preparation goes on to its end)
+            EV_ESCAPE = 8        // we jumped away with a charged FTL drive (roadmap AD)
         };
 
         enum Reason : uint8_t
@@ -61,7 +62,8 @@ namespace Duels
             REASON_LEFT = 7,        // the other player left
             REASON_FORFEIT = 8,
             REASON_ROUNDS = 9,      // the match: more rounds won
-            REASON_SCORE = 10       // the match: rounds won equal, the damage score decided
+            REASON_SCORE = 10,      // the match: rounds won equal, the damage score decided
+            REASON_ESCAPED = 11     // the loser jumped away: half a point for the winner (roadmap AD)
         };
 
         enum DrawScope : uint8_t
@@ -103,6 +105,7 @@ namespace Duels
             double stallEnd = -1.0;         // on the host's clock: the anti-stall timer runs out (Fight)
             uint8_t wins[2] = {0, 0};
             uint8_t draws = 0;              // rounds drawn: half a point for each player (rules, section 1)
+            uint8_t halfWins[2] = {0, 0};   // rounds the other player ran away from: half a point each (roadmap AD)
             float score[2] = {0.f, 0.f};    // damage dealt over the rounds played
             std::vector<Result> results;
             bool ready[2] = {false, false};
@@ -210,6 +213,7 @@ namespace Duels
             case REASON_FORFEIT: return "forfeit";
             case REASON_ROUNDS: return "more points";
             case REASON_SCORE: return "points equal, the damage score decided";
+            case REASON_ESCAPED: return "ran away: half a point";
             default: return "-";
             }
         }
@@ -276,6 +280,8 @@ namespace Duels
             w.U8(d.wins[HOST]);
             w.U8(d.wins[GUEST]);
             w.U8(d.draws);
+            w.U8(d.halfWins[HOST]);
+            w.U8(d.halfWins[GUEST]);
             w.F32(d.score[HOST]);
             w.F32(d.score[GUEST]);
             w.U8((uint8_t)std::min<size_t>(d.results.size(), 255));
@@ -325,6 +331,8 @@ namespace Duels
             d.wins[HOST] = r.U8();
             d.wins[GUEST] = r.U8();
             d.draws = r.U8();
+            d.halfWins[HOST] = r.U8();
+            d.halfWins[GUEST] = r.U8();
             d.score[HOST] = r.F32();
             d.score[GUEST] = r.F32();
             d.results.resize(r.U8());
@@ -571,10 +579,11 @@ namespace Duels
             MatchUi::Splash("FIGHT!", MatchUi::GOLD, 1300.0, "surgeWarning");
         }
 
-        // A player's points in halves: 2 for a round won, 1 for a round drawn (rules, section 1: as in chess).
+        // A player's points in halves: 2 for a round won, 1 for a round drawn (rules, section 1: as in chess), 1 for a
+        // round the other player ran away from (roadmap AD).
         static int Halves(const Data &d, uint8_t player)
         {
-            return 2 * d.wins[player] + d.draws;
+            return 2 * d.wins[player] + d.draws + d.halfWins[player];
         }
 
         // "2", "1.5".
@@ -609,7 +618,15 @@ namespace Duels
                 result.dealt[HOST], result.dealt[GUEST], Points(d, HOST).c_str(), Points(d, GUEST).c_str());
             std::string text = "Round " + std::to_string(d.results.size()) + ": ";
             text += result.winner == NOBODY ? "a draw" : result.winner == g.me ? "you win it" : Who(them) + " wins it";
-            if (result.winner == NOBODY) MatchUi::Splash("DRAW", MatchUi::WHITE, 2500.0, "jumpReady");
+            if (result.reason == REASON_ESCAPED)
+            {
+                // Running away (roadmap AD): the runner is gone, the other takes half a point.
+                if (result.winner == g.me) MatchUi::Splash("ENEMY ESCAPED", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "jumpLeave");
+                else MatchUi::Splash("ESCAPED", MatchUi::WHITE, 2500.0, "jumpLeave");
+                text = "Round " + std::to_string(d.results.size()) + ": " +
+                       (result.winner == g.me ? Who(them) + " ran away, half a point for you" : std::string("you ran away, half a point for ") + Who(them));
+            }
+            else if (result.winner == NOBODY) MatchUi::Splash("DRAW", MatchUi::WHITE, 2500.0, "jumpReady");
             else if (result.winner == g.me) MatchUi::Splash("YOU WIN", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "achievement");
             else MatchUi::Splash("YOU LOSE", g.me == HOST ? MatchUi::BLUE : MatchUi::RED, 2500.0, "powerUpFail");
             Announce(text + " (" + ReasonText(result.reason) + "). Points " + PointsLine(d, g.me, them));
@@ -716,7 +733,8 @@ namespace Duels
             result.reason = reason;
             DealtThisRound(result.dealt);
             d.results.push_back(result);
-            if (winner != NOBODY) ++d.wins[winner];
+            if (winner != NOBODY && reason == REASON_ESCAPED) ++d.halfWins[winner];
+            else if (winner != NOBODY) ++d.wins[winner];
             else ++d.draws;
             d.score[HOST] += result.dealt[HOST];
             d.score[GUEST] += result.dealt[GUEST];
@@ -801,6 +819,10 @@ namespace Duels
                 break;
             case EV_CONCEDE:
                 if (d.phase == Phase::Starting || d.phase == Phase::Fight) FinishRound(Other(player), REASON_CONCEDED);
+                break;
+            case EV_ESCAPE:
+                // Only in the fight itself: once a ship is down (Ending) the round is decided already.
+                if (d.phase == Phase::Fight && g.defeatAt[player] < 0.0) FinishRound(Other(player), REASON_ESCAPED);
                 break;
             case EV_DRAW_OFFER:
             {
@@ -1223,13 +1245,44 @@ namespace Duels
             return g.active && g.data.phase == Phase::Prep;
         }
 
+        bool InMatch()
+        {
+            return g.active;
+        }
+
+        bool EscapeAllowed()
+        {
+            return g.active && g.data.phase == Phase::Fight && g.defeatAt[g.me] < 0.0;
+        }
+
+        bool DriveReady()
+        {
+            ShipManager *own = G_->GetShipManager(0);
+            return own && own->jump_timer.first >= own->jump_timer.second && own->SystemFunctions(SYS_ENGINES) &&
+                   own->SystemFunctions(SYS_PILOT);
+        }
+
+        bool Escape(std::string &message)
+        {
+            if (!EscapeAllowed())
+            {
+                message = "running away is for a match's fight";
+                return false;
+            }
+            OwnEvent(EV_ESCAPE, 0);
+            message = "you jump away";
+            ShipManager *own = G_->GetShipManager(0);
+            Log("Rounds: we jump away (the FTL drive at %.1f of %.1f)", own ? own->jump_timer.first : -1.f, own ? own->jump_timer.second : -1.f);
+            return true;
+        }
+
         // ---------------------------------------------------------------------------------------------------------
         // Verbs
         // ---------------------------------------------------------------------------------------------------------
 
         bool IsVerb(const std::string &verb)
         {
-            return verb == "match" || verb == "ready" || verb == "forfeit" || verb == "concede" || verb == "draw";
+            return verb == "match" || verb == "ready" || verb == "forfeit" || verb == "concede" || verb == "draw" || verb == "escape";
         }
 
         static bool SettingsVerb(const Command &cmd, std::string &message)
@@ -1319,6 +1372,13 @@ namespace Duels
                 OwnEvent(EV_FORFEIT, 0);
                 message = "you forfeit the match";
                 return true;
+            }
+            if (verb == "escape")
+            {
+                // As FTL's JUMP button in a fight (roadmap AD): the drive charged, the engines and piloting working.
+                if (!EscapeAllowed()) { message = "running away is for a match's fight"; return false; }
+                if (!DriveReady()) { message = "the FTL drive isn't ready (charged, with engines and piloting working)"; return false; }
+                return Escape(message);
             }
             if (verb == "concede")
             {
