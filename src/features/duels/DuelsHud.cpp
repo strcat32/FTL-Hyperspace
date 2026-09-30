@@ -160,8 +160,23 @@ namespace Duels
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
+        // Debug mode in sight (roadmap T): a red "DEBUG MODE!" at the top middle, above the jump and ship buttons, in
+        // both players' games (either one's debug mode gives both the test commands; such a match is unranked).
+        static void RenderDebugMode()
+        {
+            const int font = 12;
+            const std::string text = "DEBUG MODE!";
+            float width = (float)freetype::easy_measureWidth(font, text);
+            const float x = 640.f, y = 1.f;
+            CSurface::GL_DrawRect(x - width / 2.f - 6.f, y, width + 12.f, 15.f, GL_Color(0.f, 0.f, 0.f, 0.7f));
+            CSurface::GL_SetColor(GL_Color(1.f, 0.2f, 0.15f, 1.f));
+            freetype::easy_printCenter(font, x, y, text);
+            CSurface::GL_SetColor(COLOR_WHITE);
+        }
+
         void Render()
         {
+            if (GetState().debug && InGame()) RenderDebugMode();
             if (g_net.on && InGame()) RenderNetStats();
             if (WallMs() < g_fontTestUntil) RenderFontTest();
         }

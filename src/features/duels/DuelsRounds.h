@@ -35,6 +35,10 @@ namespace Duels
 
         void Reset();
         void OnConnected();
+        // A lost connection pauses the match (roadmap AA; rules, section 3): FTL's world stands still and the ships take
+        // no orders until both players are back; the phase, stall and draw timers and the environment wait too.
+        void OnConnectionLost();
+        bool NetPaused();
         void OnDisconnected(bool opponentGone);
         void OnMessage(uint8_t type, Reader &r);
         void OnFrame(double now);

@@ -66,4 +66,7 @@ namespace Duels
     // Autotest harness (DuelsAutotest.cpp): runs a scenario from duels_autotest.txt without a human.
     void AutotestOnFrame();
     bool AutotestActive();
+    // The host's settings come from duels.cfg and go back into it (roadmap U): in a player's game, and in a test
+    // scenario with @config; other scenarios start from the defaults and leave the file as it is.
+    bool SettingsFromConfig();
 }

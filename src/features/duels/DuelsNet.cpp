@@ -422,6 +422,7 @@ namespace Duels
 
         void SetDebugFlag(bool debug) { g_session.debug = debug; }
         bool PeerDebug() { return g_session.peerDebug; }
+        void SetPeerDebug() { g_session.peerDebug = true; }
 
         // A try to come back to a match (UpdateLost) goes through Join and JoinRelay: the match's role and the way
         // back stay as they were.

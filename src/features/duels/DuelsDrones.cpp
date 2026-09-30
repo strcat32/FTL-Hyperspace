@@ -93,6 +93,7 @@ namespace Duels
             uint32_t hitsSent = 0, hitsReceived = 0, shotCopies = 0;
             double updateAgeMs = -1.0;             // how old the owner's updates are when they arrive (smoothed)
             CsvFile trace;                         // duels_drones.csv with "trace on": where each puppet is drawn
+            CsvFile ownTrace;                      // duels_owndrones.csv with "trace on": our defense drones' aim
         };
 
         static DroneState g_drones;
@@ -445,10 +446,38 @@ namespace Duels
             }), shots.end());
         }
 
+        // duels_owndrones.csv (with "trace on"): each of our defense drones every frame: where it is, where it aims and
+        // wants to aim, its target (FTL's id and type, where it is and how fast it goes), and its weapon's cooldown.
+        // To see what it does against the opponent's shots in our space (roadmap P).
+        static void TraceOwnDefenseDrones()
+        {
+            ShipManager *own = G_->GetShipManager(0);
+            if (!GetState().trace || !own || !own->droneSystem) return;
+            std::vector<Drone*> &drones = own->droneSystem->drones;
+            for (size_t slot = 0; slot < drones.size(); ++slot)
+            {
+                if (!drones[slot] || drones[slot]->type != 0) continue;   // DRONE_DEFENSE (Drones.h)
+                DefenseDrone *drone = static_cast<DefenseDrone*>(drones[slot]);
+                if (!drone->deployed || drone->bDead) continue;
+                if (!g_drones.ownTrace.IsOpen())
+                {
+                    g_drones.ownTrace.Open("duels_owndrones.csv", "wall_ms,slot,x,y,aim,desired_aim,cooldown,target_id,target_type,"
+                                                                  "target_x,target_y,target_vx,target_vy,shot_at");
+                }
+                Row row;
+                row << WallMs() << slot << drone->currentLocation.x << drone->currentLocation.y << drone->aimingAngle
+                    << drone->desiredAimingAngle << drone->weaponCooldown << drone->currentTargetId << drone->currentTargetType
+                    << drone->targetLocation.x << drone->targetLocation.y << drone->targetSpeed.x << drone->targetSpeed.y
+                    << drone->shotAtTargetId;
+                g_drones.ownTrace.WriteRow(row.str());
+            }
+        }
+
         void AfterSpaceLoop()
         {
             WorldManager *world = G_->GetWorld();
             if (!world) return;
+            TraceOwnDefenseDrones();
             if (!g_drones.visual.empty() || !g_drones.own.empty())
             {
                 std::set<Projectile*> live(world->space.projectiles.begin(), world->space.projectiles.end());

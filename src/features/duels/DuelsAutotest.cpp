@@ -13,6 +13,8 @@
 // Scenario files are ordinary duel scripts plus optional directives:
 //   @timeout <seconds>     hard limit for the whole run (default 180)
 //   @nodebug               don't switch debug mode on (it is on for every other scenario: test commands need it)
+//   @config                the host's settings in duels.cfg are read and written as in a player's game (other
+//                          scenarios start from the defaults and leave the file as it is)
 //   @ship <BLUEPRINT>      the ship to start with (a player ship, e.g. PLAYER_SHIP_FED), instead of the hangar's
 namespace Duels
 {
@@ -39,6 +41,7 @@ namespace Duels
         double timeoutS = 180.0;
         double startMs = 0.0;
         std::string ship;        // @ship, empty for the hangar's own choice
+        bool config = false;     // @config: the host's settings read from and written to duels.cfg
         std::vector<Command> script;
     };
 
@@ -81,6 +84,7 @@ namespace Duels
             if (key == "@timeout" && (words >> value)) g_auto.timeoutS = value;
             else if (key == "@nodebug") noDebug = true;
             else if (key == "@ship" && (words >> name)) g_auto.ship = name;
+            else if (key == "@config") g_auto.config = true;
             else Log("Autotest: unknown directive '%s'", directive.c_str());
         }
 
@@ -92,6 +96,11 @@ namespace Duels
     bool AutotestActive()
     {
         return g_auto.phase != Phase::Off;
+    }
+
+    bool SettingsFromConfig()
+    {
+        return !AutotestActive() || g_auto.config;
     }
 
     // @ship: the hangar switches to that ship (FTL keeps them as ships[type * 3 + variant]).

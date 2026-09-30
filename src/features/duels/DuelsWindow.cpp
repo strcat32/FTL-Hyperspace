@@ -66,8 +66,9 @@ namespace Duels
                                         {"drone_battle", "Anti-personnel"}, {"drone_boarder", "Boarding"}};
 
         static const char *const HOW_TO_WIN =
-            "Win more rounds than the opponent can still reach; with round wins equal at the end, the higher damage score "
-            "wins. A round is won by destroying the other ship or its whole crew; if both go down at once, the round's "
+            "A round won is 1 point, a drawn round half a point for each player. Win more points than the opponent can "
+            "still reach; with points equal at the end, the higher damage score wins. A round is won by destroying the "
+            "other ship or its whole crew; if both go down at once, the round's "
             "damage score decides. Each round begins with a timed preparation: repairs, the round's scrap, the shop and "
             "upgrades (only then). If neither ship's hull or crew reaches a new low for a while, the lows decide the round.";
 

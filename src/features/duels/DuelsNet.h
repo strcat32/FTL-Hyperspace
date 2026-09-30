@@ -13,7 +13,7 @@ namespace Duels
     namespace Net
     {
         static const uint16_t DEFAULT_PORT = 47620;
-        static const uint16_t PROTOCOL_VERSION = 5;   // bump whenever a message changes
+        static const uint16_t PROTOCOL_VERSION = 6;   // bump whenever a message changes
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;
@@ -59,6 +59,8 @@ namespace Duels
         // Debug mode (Duels.h) goes with the handshake, so the other player knows.
         void SetDebugFlag(bool debug);
         bool PeerDebug();
+        // The other player's game switched debug mode on during the duel (MSG_DEBUG, DuelsMatch.cpp).
+        void SetPeerDebug();
 
         // Hosting on loopback only (both games on this computer) avoids the Windows Firewall prompt.
         // Joining a loopback address uses a loopback socket for the same reason.

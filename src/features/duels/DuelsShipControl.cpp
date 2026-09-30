@@ -577,6 +577,13 @@ namespace Duels
             message = "no opponent to fire at";
             return false;
         }
+        // As a player can't: aim at a ship that isn't hostile (a round that is decided or hasn't begun; roadmap O).
+        // ProjectileFactory::Fire would take the aim without FTL's own check.
+        if (target->iShipId == 1 && !target->_targetable.hostile)
+        {
+            message = "the opponent's ship is no target now";
+            return false;
+        }
         if (!ArgIs(cmd, 3, "room") || !ArgInt(cmd, 4, room))
         {
             message = "usage: fire <ship> <slot> room <room>";

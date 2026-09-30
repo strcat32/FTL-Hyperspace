@@ -115,7 +115,8 @@ HOOK_METHOD_PRIORITY(CommandGui, RunCommand, -100, (std::string& command) -> voi
 HOOK_METHOD_PRIORITY(CommandGui, IsPaused, -1000, () -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::IsPaused -> Begin (DuelsHooks.cpp)\n")
-    if (Duels::GetState().noPause) return false;
+    // A duel pauses only while its connection is lost (roadmap AA): FTL's world stands still for both players.
+    if (Duels::GetState().noPause) return Duels::Rounds::NetPaused();
     return super();
 }
 
@@ -193,9 +194,10 @@ HOOK_METHOD_PRIORITY(CompleteShip, DeadCrew, -2000, () -> bool)
 }
 
 // FTL saves the run (continue.sav, and the score profile with it) when its window loses focus, on quitting and after
-// a jump. A duel is no run to continue, and a save that fails (two test games on one computer share the file) shows
-// FTL's "unable to save progress" box, which waits for a click in the middle of a fight. No saving while a duel runs;
-// the next save after it catches up.
+// a jump. A duel is no run to continue: no saving while one runs; the next save after it catches up. A save that fails
+// (two test games on one computer share the file) would show FTL's "unable to save progress" box, which waits for a
+// click, often just as a duel begins: in FTL: Duels a failed save is only logged, never shown (the user saw the box
+// before a duel too).
 static bool DuelRunning()
 {
     return Duels::Net::IsConnected() || Duels::Rounds::GetPhase() != Duels::Rounds::Phase::None;
@@ -218,12 +220,7 @@ HOOK_METHOD_PRIORITY(WorldManager, SaveGame, -2000, () -> void)
 HOOK_METHOD_PRIORITY(CommandGui, ShowWriteError, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::ShowWriteError -> Begin (DuelsHooks.cpp)\n")
-    if (DuelRunning())
-    {
-        Duels::Log("Save: FTL couldn't save the run; its message box stays closed during a duel");
-        return;
-    }
-    super();
+    Duels::Log("Save: FTL couldn't save the run (its message box stays closed)");
 }
 
 // A duel never pauses (no-pause): FTL's "PAUSED" banner, drawn while the store or a menu is open, would say it does.
@@ -879,6 +876,15 @@ HOOK_METHOD_PRIORITY(AsteroidGenerator, OnLoop, -2000, () -> void)
     super();
 }
 
+// Our defense drones take the opponent's shots in our space as FTL's own once they fly as FTL's shots do (roadmap P):
+// not while one waits at its entry point or makes up the network's delay.
+HOOK_METHOD_PRIORITY(DefenseDrone, ValidTargetObject, -2000, (Targetable *target) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> DefenseDrone::ValidTargetObject -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Match::HiddenFromDefense(target)) return false;
+    return super(target);
+}
+
 // A projectile runs into a drone: we report hits on the opponent's drones in our space.
 HOOK_METHOD_PRIORITY(SpaceDrone, CollisionMoving, -2000, (Pointf start, Pointf finish, Damage damage, bool raytrace) -> CollisionResponse)
 {
@@ -1235,11 +1241,21 @@ HOOK_METHOD_PRIORITY(CommandGui, GetWorldCoordinates, -2000, (Point point, bool 
 // is "\", which German and many other layouts only produce with AltGr). While it is open it has the keyboard.
 // ---------------------------------------------------------------------------------------------
 
+// While a duel is paused (a lost connection, roadmap AA) the ships take no orders: only the menu, the options button,
+// the console, the chat and the Duels window answer. FTL itself would take orders in a pause.
+static bool OrdersHeld(CommandGui *gui, int mX, int mY)
+{
+    if (!Duels::Rounds::NetPaused() || gui->menuBox.bOpen) return false;
+    const Globals::Rect &options = gui->optionsButton.hitbox;
+    return !(mX >= options.x && mX < options.x + options.w && mY >= options.y && mY < options.y + options.h);
+}
+
 HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::KeyDown -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Console::KeyDown(this, key)) return;
     if (Duels::Window::KeyDown((int)key)) return;
+    if (Duels::Rounds::NetPaused() && !menuBox.bOpen && key != SDLK_ESCAPE) return;
     super(key, shiftHeld);
 }
 
@@ -1248,7 +1264,29 @@ HOOK_METHOD_PRIORITY(CommandGui, LButtonDown, -2000, (int mX, int mY, bool shift
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::LButtonDown -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Window::LButtonDown(mX, mY)) return;
+    if (OrdersHeld(this, mX, mY)) return;
     super(mX, mY, shiftHeld);
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, LButtonUp, -2000, (int mX, int mY, bool shiftHeld) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::LButtonUp -> Begin (DuelsHooks.cpp)\n")
+    if (OrdersHeld(this, mX, mY)) return;
+    super(mX, mY, shiftHeld);
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, RButtonDown, -2000, (int mX, int mY, bool shift) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::RButtonDown -> Begin (DuelsHooks.cpp)\n")
+    if (OrdersHeld(this, mX, mY)) return;
+    super(mX, mY, shift);
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, RButtonUp, -2000, (int mX, int mY, bool shift) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::RButtonUp -> Begin (DuelsHooks.cpp)\n")
+    if (OrdersHeld(this, mX, mY)) return;
+    super(mX, mY, shift);
 }
 
 HOOK_METHOD_PRIORITY(CommandGui, OnTextInput, -2000, (int ch) -> void)

@@ -12,6 +12,7 @@ struct CollisionResponse;
 struct Damage;
 struct Pointf;
 struct Projectile;
+struct Targetable;
 struct ProjectileFactory;
 struct Ship;
 struct ShipManager;
@@ -91,6 +92,10 @@ namespace Duels
         // SpaceDrone::GetNextProjectile released a projectile of one of our drones: a combat drone's shot at the replica
         // goes like a weapon's; a defense drone's shot in our space is shown to the opponent (DuelsDrones.cpp).
         void OnOwnDroneProjectile(SpaceDrone *drone, Projectile *projectile);
+        // The opponent's shot in our space while it waits at its entry point or makes up the network's delay: it
+        // doesn't move as its speed says then, so our defense drones leave it until it flies as FTL's shots do
+        // (roadmap P: they aimed ahead of it, missed, and FTL's defense drone never shoots at the same shot twice).
+        bool HiddenFromDefense(const Targetable *target);
 
         // SpaceManager::UpdateProjectile: returns how many times to run the update this frame (0 = hold, 1 = normal,
         // more = catch up).

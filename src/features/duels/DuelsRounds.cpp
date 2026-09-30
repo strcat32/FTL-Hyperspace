@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsConfig.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsEnvironment.h"
@@ -12,6 +13,7 @@
 #include "DuelsWire.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -100,6 +102,7 @@ namespace Duels
             double fightStart = -1.0;       // on the host's clock: the moment the fight begins
             double stallEnd = -1.0;         // on the host's clock: the anti-stall timer runs out (Fight)
             uint8_t wins[2] = {0, 0};
+            uint8_t draws = 0;              // rounds drawn: half a point for each player (rules, section 1)
             float score[2] = {0.f, 0.f};    // damage dealt over the rounds played
             std::vector<Result> results;
             bool ready[2] = {false, false};
@@ -156,6 +159,7 @@ namespace Duels
             double lastOffer[2] = {-1.0e12, -1.0e12};
             bool defeatSent = false;        // ours reported this round
 
+            double pausedSince = -1.0;      // the connection was lost then (our clock): the match is paused
             uint32_t eventsSent = 0, eventsReceived = 0, statesSent = 0, statesReceived = 0;
             double lastSecondsShown = -1.0;
             std::mt19937 random;            // host: the shops' stock
@@ -204,8 +208,8 @@ namespace Duels
             case REASON_STALL: return "stalemate, the anti-stall score decided";
             case REASON_LEFT: return "the other player left";
             case REASON_FORFEIT: return "forfeit";
-            case REASON_ROUNDS: return "rounds won";
-            case REASON_SCORE: return "rounds won equal, the damage score decided";
+            case REASON_ROUNDS: return "more points";
+            case REASON_SCORE: return "points equal, the damage score decided";
             default: return "-";
             }
         }
@@ -271,6 +275,7 @@ namespace Duels
             w.F64(d.stallEnd);
             w.U8(d.wins[HOST]);
             w.U8(d.wins[GUEST]);
+            w.U8(d.draws);
             w.F32(d.score[HOST]);
             w.F32(d.score[GUEST]);
             w.U8((uint8_t)std::min<size_t>(d.results.size(), 255));
@@ -319,6 +324,7 @@ namespace Duels
             d.stallEnd = r.F64();
             d.wins[HOST] = r.U8();
             d.wins[GUEST] = r.U8();
+            d.draws = r.U8();
             d.score[HOST] = r.F32();
             d.score[GUEST] = r.F32();
             d.results.resize(r.U8());
@@ -470,14 +476,23 @@ namespace Duels
         // What each game does when the match moves on (both sides alike)
         // ---------------------------------------------------------------------------------------------------------
 
+        // The round is decided (roadmap O): the opponent's ship is no target any more, so our weapons and drones fire
+        // no new shots (FTL lets go of a target that isn't hostile); shots already in the air still land.
+        static void HoldFire()
+        {
+            ShipManager *replica = G_->GetShipManager(1);
+            if (!replica || !replica->_targetable.hostile) return;
+            replica->_targetable.hostile = false;
+            Log("Rounds: the round is decided: no new shots");
+        }
+
         static void RoundCleanup()
         {
             if (g.roundCleaned) return;
             g.roundCleaned = true;
             g.taken.counting = false;
             Environment::End();
-            // The round is over: the opponent's ship is no target any more (shots in the air still land).
-            if (ShipManager *replica = G_->GetShipManager(1)) replica->_targetable.hostile = false;
+            HoldFire();
             bool ownDown = G_->GetShipManager(0) && G_->GetShipManager(0)->ship.hullIntegrity.first <= 0;
             bool theirsDown = G_->GetShipManager(1) && G_->GetShipManager(1)->ship.hullIntegrity.first <= 0;
             Refit::EndOfRound(ownDown, theirsDown);
@@ -551,12 +566,29 @@ namespace Duels
             if (!g.data.settings.free) Announce("Round " + std::to_string(g.data.round) + ": fight!");
         }
 
+        // A player's points in halves: 2 for a round won, 1 for a round drawn (rules, section 1: as in chess).
+        static int Halves(const Data &d, uint8_t player)
+        {
+            return 2 * d.wins[player] + d.draws;
+        }
+
+        // "2", "1.5".
+        static std::string Points(const Data &d, uint8_t player)
+        {
+            int halves = Halves(d, player);
+            return std::to_string(halves / 2) + (halves % 2 ? ".5" : "");
+        }
+
+        static std::string PointsLine(const Data &d, uint8_t first, uint8_t second)
+        {
+            return Points(d, first) + " : " + Points(d, second);
+        }
+
         static std::string ScoreLine()
         {
             const Data &d = g.data;
             uint8_t them = Other(g.me);
-            return "rounds won " + std::to_string(d.wins[g.me]) + " : " + std::to_string(d.wins[them]) + ", damage score " +
-                   Number(d.score[g.me]) + " : " + Number(d.score[them]);
+            return "points " + PointsLine(d, g.me, them) + ", damage score " + Number(d.score[g.me]) + " : " + Number(d.score[them]);
         }
 
         static void EnterRoundOver()
@@ -567,13 +599,12 @@ namespace Duels
             const Result &result = d.results.back();
             uint8_t them = Other(g.me);
             // The same words in both games (tools/analyze-duel.py compares them).
-            Log("Rounds: result round %u winner %s reason %u dealt %.1f %.1f wins %u %u", (unsigned)d.results.size(),
+            Log("Rounds: result round %u winner %s reason %u dealt %.1f %.1f points %s %s", (unsigned)d.results.size(),
                 result.winner == NOBODY ? "nobody" : result.winner == HOST ? "host" : "guest", (unsigned)result.reason,
-                result.dealt[HOST], result.dealt[GUEST], (unsigned)d.wins[HOST], (unsigned)d.wins[GUEST]);
+                result.dealt[HOST], result.dealt[GUEST], Points(d, HOST).c_str(), Points(d, GUEST).c_str());
             std::string text = "Round " + std::to_string(d.results.size()) + ": ";
             text += result.winner == NOBODY ? "a draw" : result.winner == g.me ? "you win it" : Who(them) + " wins it";
-            Announce(text + " (" + ReasonText(result.reason) + "). Rounds " + std::to_string(d.wins[g.me]) + " : " +
-                     std::to_string(d.wins[them]));
+            Announce(text + " (" + ReasonText(result.reason) + "). Points " + PointsLine(d, g.me, them));
             Note("round " + std::to_string(d.results.size()) + ": damage dealt " + Number(result.dealt[g.me]) + " : " +
                  Number(result.dealt[them]) + ", " + ScoreLine());
         }
@@ -582,13 +613,13 @@ namespace Duels
         {
             RoundCleanup();
             const Data &d = g.data;
-            Log("Rounds: match winner %s reason %u wins %u %u score %.1f %.1f rounds %u",
+            Log("Rounds: match winner %s reason %u points %s %s score %.1f %.1f rounds %u",
                 d.matchWinner == NOBODY ? "nobody" : d.matchWinner == HOST ? "host" : "guest", (unsigned)d.matchReason,
-                (unsigned)d.wins[HOST], (unsigned)d.wins[GUEST], d.score[HOST], d.score[GUEST], (unsigned)d.results.size());
+                Points(d, HOST).c_str(), Points(d, GUEST).c_str(), d.score[HOST], d.score[GUEST], (unsigned)d.results.size());
             uint8_t them = Other(g.me);
             std::string text = "Match over: ";
             text += d.matchWinner == NOBODY ? "a draw" : d.matchWinner == g.me ? "you win" : Who(d.matchWinner) + " wins";
-            Announce(text + ", " + std::to_string(d.wins[g.me]) + " : " + std::to_string(d.wins[them]) + " (" + ReasonText(d.matchReason) + ")");
+            Announce(text + ", " + PointsLine(d, g.me, them) + " (" + ReasonText(d.matchReason) + ")");
             Note("match over: " + ScoreLine());
         }
 
@@ -603,7 +634,10 @@ namespace Duels
             {
             case Phase::Prep: EnterPrep(); break;
             case Phase::Starting: EnterStarting(); break;
-            case Phase::Ending: Environment::End(); break;   // a ship is down: no more flares or rocks
+            case Phase::Ending:   // a ship is down: no more flares or rocks, and no new shots
+                Environment::End();
+                HoldFire();
+                break;
             case Phase::RoundOver: EnterRoundOver(); break;
             case Phase::MatchOver: EnterMatchOver(); break;
             default: break;
@@ -672,20 +706,23 @@ namespace Duels
             DealtThisRound(result.dealt);
             d.results.push_back(result);
             if (winner != NOBODY) ++d.wins[winner];
+            else ++d.draws;
             d.score[HOST] += result.dealt[HOST];
             d.score[GUEST] += result.dealt[GUEST];
             ClearDraw();
             SetPhase(Phase::RoundOver, Now() + RESULT_MS);
         }
 
-        // One player has more round wins than the other can still reach, or the rounds are used up.
+        // One player has more points than the other can still reach (each round left is worth a point), or the rounds
+        // are used up.
         static bool MatchDecided(uint8_t &winner, uint8_t &reason)
         {
             const Data &d = g.data;
             int left = std::max(0, (int)d.settings.rounds - (int)d.results.size());
-            if (d.wins[HOST] > d.wins[GUEST] + left || d.wins[GUEST] > d.wins[HOST] + left || (left == 0 && d.wins[HOST] != d.wins[GUEST]))
+            int host = Halves(d, HOST), guest = Halves(d, GUEST);
+            if (host > guest + 2 * left || guest > host + 2 * left || (left == 0 && host != guest))
             {
-                winner = d.wins[HOST] > d.wins[GUEST] ? HOST : GUEST;
+                winner = host > guest ? HOST : GUEST;
                 reason = REASON_ROUNDS;
                 return true;
             }
@@ -869,8 +906,47 @@ namespace Duels
         // Entry points
         // ---------------------------------------------------------------------------------------------------------
 
+        // The host's settings as last set, from duels.cfg (roadmap U): read once, before the first use.
+        static bool g_settingsLoaded = false;
+
+        static void LoadSettings()
+        {
+            if (g_settingsLoaded) return;
+            g_settingsLoaded = true;
+            if (!SettingsFromConfig()) return;   // a test scenario starts from the defaults
+            Settings &s = g.settings;
+            int value = std::atoi(Config::Value("match_rounds").c_str());
+            if (value >= 1 && value <= 99) s.rounds = (uint8_t)value;
+            std::string text = Config::Value("match_prep");
+            value = std::atoi(text.c_str());
+            if (!text.empty() && value >= 0 && value <= 3600) s.prepSeconds = (uint16_t)value;
+            text = Config::Value("match_stall");
+            value = std::atoi(text.c_str());
+            if (!text.empty() && value >= 0 && value <= 3600) s.stallSeconds = (uint16_t)value;
+            text = Config::Value("match_permadeath");
+            if (text == "on" || text == "off") s.permadeath = text == "on";
+            text = Config::Value("match_free");
+            if (text == "on" || text == "off") s.free = text == "on";
+            uint8_t mode;
+            if (Environment::ParseMode(Config::Value("match_env"), mode)) s.env = mode;
+        }
+
+        // Kept for the next start; a test scenario leaves duels.cfg as it is (the next test starts from its own).
+        static void SaveSettings()
+        {
+            if (!SettingsFromConfig()) return;
+            const Settings &s = g.settings;
+            Config::SaveValue("match_rounds", std::to_string(s.rounds));
+            Config::SaveValue("match_prep", std::to_string(s.prepSeconds));
+            Config::SaveValue("match_stall", std::to_string(s.stallSeconds));
+            Config::SaveValue("match_permadeath", s.permadeath ? "on" : "off");
+            Config::SaveValue("match_free", s.free ? "on" : "off");
+            Config::SaveValue("match_env", Environment::ModeName(s.env));
+        }
+
         void Reset()
         {
+            LoadSettings();
             Settings settings = g.settings;
             g = Local();
             g.settings = settings;
@@ -880,10 +956,24 @@ namespace Duels
         {
             if (Net::Resumed() && g.data.phase != Phase::None && g.data.phase != Phase::MatchOver)
             {
-                // Back after a lost connection: the same match goes on (the host sends its state again).
+                // Back after a lost connection: the same match goes on (the host sends its state again). Its timers
+                // waited while it was paused: the host moves them on by the pause (the guest follows the host's, and
+                // moves its environment's schedule when the new fight start arrives).
                 g.active = true;
-                if (g.me == HOST) g.dirty = true;
-                Log("Rounds: the match goes on after the lost connection (%s, round %u)", PhaseName(g.data.phase), (unsigned)g.data.round);
+                double paused = g.pausedSince >= 0.0 ? Now() - g.pausedSince : 0.0;
+                g.pausedSince = -1.0;
+                if (g.me == HOST)
+                {
+                    Data &d = g.data;
+                    for (double *time : {&d.phaseEnd, &d.fightStart, &d.stallEnd, &d.drawEnd})
+                    {
+                        if (*time >= 0.0) *time += paused;
+                    }
+                    Environment::Shift(paused);
+                    g.dirty = true;
+                }
+                Log("Rounds: the match goes on after the lost connection (%s, round %u, paused %.1f s)", PhaseName(g.data.phase),
+                    (unsigned)g.data.round, paused / 1000.0);
                 return;
             }
             Reset();
@@ -906,10 +996,25 @@ namespace Duels
             StartRound(1);
         }
 
+        void OnConnectionLost()
+        {
+            if (!g.active || g.pausedSince >= 0.0) return;
+            Phase phase = g.data.phase;
+            if (phase == Phase::None || phase == Phase::MatchOver) return;
+            g.pausedSince = Now();
+            Log("Rounds: the match is paused while the connection is lost");
+        }
+
+        bool NetPaused()
+        {
+            return g.active && g.pausedSince >= 0.0;
+        }
+
         void OnDisconnected(bool opponentGone)
         {
             Net::SetMatchToken(0);
             Environment::End();
+            g.pausedSince = -1.0;
             if (!g.active) return;
             g.active = false;
             Data &d = g.data;
@@ -949,6 +1054,12 @@ namespace Duels
                 }
                 uint8_t drawBefore = g.data.drawBy;
                 bool readyBefore = g.data.ready[HOST];
+                // The host moved the fight's start on by a pause (a lost connection): the environment's schedule too.
+                if (g.fightBegun && data.round == g.data.round && data.fightStart >= 0.0 && g.data.fightStart >= 0.0 &&
+                    data.fightStart != g.data.fightStart)
+                {
+                    Environment::Shift(data.fightStart - g.data.fightStart);
+                }
                 g.data = data;
                 Net::SetMatchToken(data.phase == Phase::MatchOver ? 0 : data.token);
                 if (data.drawBy == HOST && drawBefore != HOST)
@@ -985,14 +1096,6 @@ namespace Duels
             if (!g.active || !Net::IsConnected()) return;
             Data &d = g.data;
 
-            // FTL's "unable to save progress" box, from a save that failed before the duel began (during one, nothing
-            // is saved and the box stays shut: DuelsHooks.cpp). It would wait for a click in the middle of the fight.
-            WorldManager *world = G_->GetWorld();
-            if (world && world->commandGui && world->commandGui->writeErrorDialog.bOpen)
-            {
-                world->commandGui->writeErrorDialog.Close();
-                Log("Rounds: FTL's box about a failed save is closed (a duel runs)");
-            }
 
             if (d.phase == Phase::Fight && !g.fightBegun && d.fightStart >= 0.0 && now >= FromHost(d.fightStart)) BeginFight();
             if (g.fightBegun && (d.phase == Phase::Fight || d.phase == Phase::Ending)) CountDamage();
@@ -1102,6 +1205,7 @@ namespace Duels
 
         static bool SettingsVerb(const Command &cmd, std::string &message)
         {
+            LoadSettings();
             Settings &s = g.settings;
             if (cmd.args.size() >= 2 && g.active)
             {
@@ -1152,6 +1256,7 @@ namespace Duels
             }
             if (cmd.args.size() >= 2)
             {
+                SaveSettings();
                 message = s.free ? std::string("next duel: a free fight (no rounds)")
                                  : "next duel: best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
                                        " s preparation, permanent death " + (s.permadeath ? "on" : "off") + ", environment " +
@@ -1235,7 +1340,7 @@ namespace Duels
             bool cutOff;
             if (Net::Reconnecting(waitMs, cutOff))
             {
-                lines.push_back("Connection lost " + Clock(waitMs));
+                lines.push_back("Connection lost: paused " + Clock(waitMs));
                 lines.push_back(cutOff ? "Getting back into the match" : "Waiting for " + Who(them) + " to come back");
             }
             std::string head = d.settings.free ? std::string("Free fight")
@@ -1286,7 +1391,7 @@ namespace Duels
                                 (d.drawBy == g.me ? "you" : "the opponent"));
             }
             // The damage score of the rounds played, shown once a round is over (roadmap N: in the fight it distracted).
-            std::string rounds = "Rounds " + std::to_string(d.wins[g.me]) + " : " + std::to_string(d.wins[them]);
+            std::string rounds = "Points " + PointsLine(d, g.me, them);
             bool fighting = d.phase == Phase::Starting || d.phase == Phase::Fight || d.phase == Phase::Ending;
             if (!fighting && !d.results.empty()) rounds += "   Damage " + Number(d.score[g.me]) + " : " + Number(d.score[them]);
             lines.push_back(rounds);
@@ -1326,6 +1431,7 @@ namespace Duels
 
         std::string Status()
         {
+            LoadSettings();
             const Data &d = g.data;
             std::ostringstream out;
             if (!g.active && d.phase == Phase::None)
@@ -1364,17 +1470,19 @@ namespace Duels
 
         static std::string SettingsText(const Settings &s)
         {
-            if (s.free) return "a free fight (no rounds)";
+            const char *unranked = GetState().debug ? "; unranked: debug mode is on" : "";
+            if (s.free) return std::string("a free fight (no rounds)") + unranked;
             std::string text = "best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
                                " s preparation, permanent death " + (s.permadeath ? "on" : "off");
             if (s.stallSeconds > 0) text += ", no progress for " + std::to_string(s.stallSeconds / 60) + " min ends a round";
             if (s.env == Environment::MODE_OFF) text += ", no hazards";
             else if (s.env != Environment::MODE_AUTO) text += std::string(", every fight near ") + Environment::KindName(s.env - 1);
-            return text;
+            return text + unranked;
         }
 
         Summary GetSummary()
         {
+            LoadSettings();
             Summary s;
             const Data &d = g.data;
             s.inMatch = d.phase != Phase::None && (g.active || d.phase == Phase::MatchOver);

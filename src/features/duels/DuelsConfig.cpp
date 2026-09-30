@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <map>
 #include <sstream>
 
 namespace Duels
@@ -20,6 +21,7 @@ namespace Duels
             std::vector<std::string> lines;   // the file as it was, to write it back with one line changed
             std::string playerName;
             std::vector<std::string> relays;
+            std::map<std::string, std::string> values;   // the last line of each one-value setting
         };
 
         static Settings g_settings;
@@ -58,6 +60,7 @@ namespace Duels
                 if (!Split(line, key, value) || value.empty()) continue;
                 if (key == "name") s.playerName = value;
                 else if (key == "relay") s.relays.push_back(value);
+                else s.values[key] = value;
             }
             size_t own = s.relays.size();
             for (const char *relay : PUBLIC_RELAYS)
@@ -80,28 +83,52 @@ namespace Duels
             return g_settings.playerName;
         }
 
-        void SavePlayerName(const std::string &name)
+        // The setting's line replaced (older duplicates go), or added; then the file written back.
+        static void WriteSetting(const std::string &name, const std::string &newValue)
         {
-            Load();
             Settings &s = g_settings;
-            s.playerName = name;
             bool replaced = false;
             for (std::string &line : s.lines)
             {
                 std::string key, value;
-                if (!Split(line, key, value) || key != "name") continue;
-                if (!replaced) line = "name " + name;
-                else line.clear();   // an older duplicate goes
+                if (!Split(line, key, value) || key != name) continue;
+                if (!replaced) line = name + " " + newValue;
+                else line.clear();
                 replaced = true;
             }
             if (!replaced)
             {
-                if (s.lines.empty()) s.lines.push_back("# FTL: Duels settings: name <player name>, relay <server>[:port] (any number)");
-                s.lines.push_back("name " + name);
+                if (s.lines.empty())
+                {
+                    s.lines.push_back("# FTL: Duels settings: name <player name>, relay <server>[:port] (any number), and the host's match settings");
+                }
+                s.lines.push_back(name + " " + newValue);
             }
             std::ofstream file(FILE_NAME, std::ios::trunc);
             for (const std::string &line : s.lines) file << line << "\n";
             if (!file) Log("Config: cannot write %s", FILE_NAME);
+        }
+
+        void SavePlayerName(const std::string &name)
+        {
+            Load();
+            g_settings.playerName = name;
+            WriteSetting("name", name);
+        }
+
+        std::string Value(const std::string &key)
+        {
+            Load();
+            std::map<std::string, std::string>::const_iterator it = g_settings.values.find(key);
+            return it == g_settings.values.end() ? std::string() : it->second;
+        }
+
+        void SaveValue(const std::string &key, const std::string &value)
+        {
+            Load();
+            if (Value(key) == value) return;
+            g_settings.values[key] = value;
+            WriteSetting(key, value);
         }
 
         const std::vector<std::string> &Relays()

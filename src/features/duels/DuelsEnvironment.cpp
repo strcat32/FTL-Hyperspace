@@ -320,6 +320,13 @@ namespace Duels
             Log("Environment: over (%d flares or pulses, %d rocks, %d of them at our ship)", g.flares, g.rocks, g.rocksMade);
         }
 
+        void Shift(double ms)
+        {
+            if (!g.active || ms <= 0.0) return;
+            g.startMs += ms;
+            Log("Environment: the schedule moves on by %.0f ms (the match was paused)", ms);
+        }
+
         void ClearBeacon()
         {
             End();

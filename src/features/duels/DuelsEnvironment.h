@@ -53,6 +53,8 @@ namespace Duels
         // The fight begins (startMs: that moment on our clock), and ends. Begin with NONE only ends.
         void Begin(const Plan &plan, int round, double startMs);
         void End();
+        // The match was paused (a lost connection) for this long: the schedule moves on with it.
+        void Shift(double ms);
         // A new match: the beacon's own hazards (FTL's, from the location) are switched off.
         void ClearBeacon();
 

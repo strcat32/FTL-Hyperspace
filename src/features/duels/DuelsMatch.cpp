@@ -23,6 +23,7 @@
 #include "DuelsWire.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <cmath>
 #include <deque>
@@ -44,7 +45,8 @@ namespace Duels
             MSG_SHOT = 20,       // reliable: a projectile left one of our weapons
             MSG_RESULT = 21,     // reliable: the defender's verdict on a shot
             MSG_SHOT_DOWNED = 23, // reliable: our shot ran into something in our own space before it left
-            MSG_SETTINGS = 27    // reliable, host to guest: the duel's settings (crew experience)
+            MSG_SETTINGS = 27,   // reliable, host to guest: the duel's settings (crew experience)
+            MSG_DEBUG = 40       // reliable, either way: this game's debug mode is on (roadmap T)
             // 22 (our hull reached 0) is gone: defeats go to the match flow (DuelsRounds.h, 38 and 39).
             // 24, 25: DuelsDrones.h
         };
@@ -154,6 +156,7 @@ namespace Duels
             uint32_t netId = 0;
             int type = WEAPON_LASER;
             bool beamTouched = false;      // a beam reached our shields
+            bool shieldTouched = false;    // it met our shields this frame: blocked if it stops there, else it goes on
             bool beamHit = false;          // a beam reached a room
             uint8_t source = SOURCE_WEAPON;
             bool drone = false;            // fired by one of the opponent's drones, in our space
@@ -1149,6 +1152,19 @@ namespace Duels
             SendShot(projectile, drone->weaponBlueprint, SOURCE_DRONE, slot, drone);
         }
 
+        bool HiddenFromDefense(const Targetable *target)
+        {
+            if (!target) return false;
+            for (const InShot &shot : g_match.in)
+            {
+                const Projectile *projectile = shot.projectile;
+                if (!projectile || &projectile->_targetable != target) continue;
+                if (projectile->selfId != shot.selfId || projectile->currentSpace != 0) return false;
+                return !shot.released || shot.catchUpMs > 0.0;
+            }
+            return false;
+        }
+
         static void SendResult(InShot &shot, uint8_t outcome, int damage, Pointf point = Pointf(0.f, 0.f))
         {
             double now = WallMs();
@@ -1779,7 +1795,9 @@ namespace Duels
                 return;
             }
             if (response.collision_type == 3) SendResult(*shot, OUTCOME_MISS, 0);
-            else if (response.collision_type == 2) SendResult(*shot, OUTCOME_SHIELD, 0);
+            // FTL answers "shield" for a shot that pierces the shields too (a missile goes through them, roadmap P: the
+            // early verdict made our defense drone's later hit too late). Decided in TrackShots: blocked if it stops.
+            else if (response.collision_type == 2) shot->shieldTouched = true;
         }
 
         void ObserveDamageArea(ShipManager *ship, bool hit, int hullBefore)
@@ -1903,9 +1921,15 @@ namespace Duels
                 bool alive = live.count(shot.projectile) && shot.projectile->selfId == shot.selfId;
                 if (alive)
                 {
+                    Projectile *projectile = shot.projectile;
+                    // It met our shields: stopped there, the shields took it; going on, it pierced them (a missile).
+                    if (shot.outcome == PENDING && shot.shieldTouched)
+                    {
+                        if (projectile->startedDeath) SendResult(shot, OUTCOME_SHIELD, 0);
+                        else shot.shieldTouched = false;
+                    }
                     // It exploded in our space before our shields: one of our defense drones shot it down, or it ran
                     // into a drone. (Hits on our ship decide it first; beams and bombs can't be shot down.)
-                    Projectile *projectile = shot.projectile;
                     if (shot.outcome == PENDING && projectile->startedDeath && projectile->currentSpace == 0 &&
                         shot.type != WEAPON_BEAM && shot.type != WEAPON_BOMB)
                     {
@@ -1922,7 +1946,7 @@ namespace Duels
                 }
                 else if (shot.outcome == PENDING)
                 {
-                    SendResult(shot, OUTCOME_GONE, 0);
+                    SendResult(shot, shot.shieldTouched ? OUTCOME_SHIELD : OUTCOME_GONE, 0);
                 }
                 LogShot("in", shot.netId, shot.weapon, shot.spawnMs, shot.receivedMs, shot.transferMs, shot.releasedMs, -1.0,
                         shot.decisionMs, -1.0, shot.outcome, shot.damage, shot.speedUp);
@@ -2001,6 +2025,18 @@ namespace Duels
             return text;
         }
 
+        // The host's crew experience setting as last set, from duels.cfg (roadmap U): read once, before the first use;
+        // a test scenario starts from the default.
+        static void LoadXpSetting()
+        {
+            static bool loaded = false;
+            if (loaded) return;
+            loaded = true;
+            if (!SettingsFromConfig()) return;
+            float xp = (float)std::atof(Config::Value("xp").c_str());
+            if (xp >= XP_MIN && xp <= XP_MAX) g_xpSetting = xp;
+        }
+
         static void SendSettings()
         {
             Writer w;
@@ -2028,8 +2064,10 @@ namespace Duels
                 message = "the host decides the crew experience: " + XpText(g_xpMatch);
                 return false;
             }
+            LoadXpSetting();
             g_xpSetting = factor;
             g_xpMatch = factor;
+            if (SettingsFromConfig()) Config::SaveValue("xp", XpText(factor).substr(1));   // kept for the next start (roadmap U)
             if (Net::IsConnected()) SendSettings();
             message = "crew experience " + XpText(factor) + (Net::IsConnected() ? " for this duel" : " when you host");
             return true;
@@ -2037,6 +2075,7 @@ namespace Duels
 
         std::string CrewXpStatus()
         {
+            LoadXpSetting();
             std::string text = "crew experience " + XpText(Net::IsConnected() ? g_xpMatch : g_xpSetting);
             if (Net::IsConnected() && !Net::IsHost()) text += " (the host's setting)";
             return text;
@@ -2149,6 +2188,7 @@ namespace Duels
                 GetState().noPause = true;
                 Headline(Net::IsHost() ? Net::PeerName() + " joined your duel" : "You joined " + Net::PeerName() + "'s duel");
                 // The host's settings count for both; the guest has the default until they come.
+                LoadXpSetting();
                 g_xpMatch = Net::IsHost() ? g_xpSetting : XP_DEFAULT;
                 g_xpCarry = 0.f;
                 if (Net::IsHost())
@@ -2156,12 +2196,14 @@ namespace Duels
                     SendSettings();
                     Announce("crew experience " + XpText(g_xpMatch) + " (your setting, as the host)");
                 }
-                // Test commands can change ships, so both players see a debug duel for what it is.
+                // Test commands can change ships, so both players see a debug duel for what it is. Either player's
+                // debug mode gives both the test commands, and such a match is never ranked (roadmap T).
                 bool ours = GetState().debug, theirs = Net::PeerDebug();
                 if (ours || theirs)
                 {
                     Headline(std::string("DEBUG DUEL: test commands are on (") + (ours ? "yours on" : "yours off") + ", " +
-                             Net::PeerName() + "'s " + (theirs ? "on" : "off") + ")");
+                             Net::PeerName() + "'s " + (theirs ? "on" : "off") + "); the match is unranked");
+                    if (theirs) EnableDebug("the other player's game has debug mode on");
                 }
                 // The match: the host's game starts it (round 1's preparation, or at once a free fight).
                 Rounds::OnConnected();
@@ -2174,6 +2216,7 @@ namespace Duels
 
             void OnConnectionLost(const std::string &reason, bool cutOff) override
             {
+                Rounds::OnConnectionLost();
                 Headline(reason + (cutOff ? ": trying to get back into the match" : ": the match waits for them to come back") +
                          " (" + std::to_string((int)(Net::REJOIN_GRACE_MS / 1000.0)) + " s)");
             }
@@ -2197,6 +2240,15 @@ namespace Duels
                     break;
                 case MSG_SETTINGS:
                     if (!Net::IsHost()) ApplySettings(reader);
+                    break;
+                case MSG_DEBUG:
+                    // The other player switched debug mode on: this game gets the test commands too (roadmap T).
+                    if (!Net::PeerDebug())
+                    {
+                        Net::SetPeerDebug();
+                        Headline("DEBUG DUEL: " + Net::PeerName() + " switched debug mode on; test commands work for both, and the match is unranked");
+                    }
+                    EnableDebug("the other player's game has debug mode on");
                     break;
                 case MSG_LOADOUT:
                     ApplyLoadout(reader);
@@ -2380,6 +2432,12 @@ namespace Duels
         void SetDebug(bool debug)
         {
             Net::SetDebugFlag(debug);
+            // Switched on during a duel: the other game learns it (the handshake told it only at the start).
+            if (debug && Net::IsConnected())
+            {
+                Writer w;
+                Net::Send(MSG_DEBUG, w, true);
+            }
         }
 
         int ChatFlood(int count)
