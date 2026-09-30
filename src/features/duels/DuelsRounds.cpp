@@ -2,6 +2,7 @@
 #include "Duels.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
+#include "DuelsEnvironment.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsRounds.h"
@@ -78,6 +79,7 @@ namespace Duels
             bool permadeath = true;
             bool free = false;
             uint16_t stallSeconds = 300;    // anti-stall: a round without a new low for this long ends (0: never)
+            uint8_t env = Environment::MODE_AUTO;   // the fights' environments (rules, section 5)
         };
 
         struct Result
@@ -106,6 +108,7 @@ namespace Duels
             double drawEnd = -1.0;          // on the host's clock
             uint16_t scrap = 0;             // this round's scrap
             std::vector<Refit::ShopItem> shop;   // this round's stock
+            Environment::Plan env;          // this round's fight: its environment and the seed of its schedule
             uint8_t matchWinner = NOBODY;
             uint8_t matchReason = REASON_NONE;
         };
@@ -262,6 +265,7 @@ namespace Duels
             w.Bool(d.settings.permadeath);
             w.Bool(d.settings.free);
             w.U16(d.settings.stallSeconds);
+            w.U8(d.settings.env);
             w.F64(d.phaseEnd);
             w.F64(d.fightStart);
             w.F64(d.stallEnd);
@@ -291,6 +295,8 @@ namespace Duels
                 w.U16(d.shop[i].price);
                 w.U8(d.shop[i].count);
             }
+            w.U8(d.env.kind);
+            w.U32(d.env.seed);
             w.U8(d.matchWinner);
             w.U8(d.matchReason);
         }
@@ -307,6 +313,7 @@ namespace Duels
             d.settings.permadeath = r.Bool();
             d.settings.free = r.Bool();
             d.settings.stallSeconds = r.U16();
+            d.settings.env = r.U8();
             d.phaseEnd = r.F64();
             d.fightStart = r.F64();
             d.stallEnd = r.F64();
@@ -336,9 +343,12 @@ namespace Duels
                 item.price = r.U16();
                 item.count = r.U8();
             }
+            d.env.kind = r.U8();
+            d.env.seed = r.U32();
             d.matchWinner = r.U8();
             d.matchReason = r.U8();
-            return r.Ok() && (uint8_t)d.phase <= (uint8_t)Phase::MatchOver;
+            return r.Ok() && (uint8_t)d.phase <= (uint8_t)Phase::MatchOver && d.env.kind < Environment::KIND_COUNT &&
+                   d.settings.env < Environment::MODE_COUNT;
         }
 
         static void SendData()
@@ -465,6 +475,7 @@ namespace Duels
             if (g.roundCleaned) return;
             g.roundCleaned = true;
             g.taken.counting = false;
+            Environment::End();
             // The round is over: the opponent's ship is no target any more (shots in the air still land).
             if (ShipManager *replica = G_->GetShipManager(1)) replica->_targetable.hostile = false;
             bool ownDown = G_->GetShipManager(0) && G_->GetShipManager(0)->ship.hullIntegrity.first <= 0;
@@ -475,6 +486,7 @@ namespace Duels
         static void EnterPrep()
         {
             const Data &d = g.data;
+            Environment::End();
             Match::NewFight();
             Refit::Restore(d.settings.permadeath);
             if (g.scrapRound != d.round)
@@ -491,6 +503,13 @@ namespace Duels
             Refit::OpenShop(d.round, d.shop);
             Announce("Round " + std::to_string(d.round) + " of " + std::to_string(d.settings.rounds) + ": preparation, " +
                      std::to_string(d.settings.prepSeconds) + " s (" + std::to_string(d.scrap) + " scrap, shop and upgrades)");
+            // Revealed now, so that the players can prepare for it (rules, section 5).
+            if (d.env.kind != Environment::NONE)
+            {
+                Announce(std::string("The fight is near ") + Environment::KindName(d.env.kind) + ": " +
+                         Environment::KindShort(d.env.kind));
+            }
+            Log("Rounds: environment round %u kind %u seed %08x", (unsigned)d.round, (unsigned)d.env.kind, d.env.seed);
         }
 
         static void EnterStarting()
@@ -528,6 +547,7 @@ namespace Duels
             if (!g.data.settings.free) Refit::ResetWeaponCharge();
             Refit::OnFightStart();
             StartCounting();
+            if (!g.data.settings.free) Environment::Begin(g.data.env, g.data.round, FromHost(g.data.fightStart));
             if (!g.data.settings.free) Announce("Round " + std::to_string(g.data.round) + ": fight!");
         }
 
@@ -583,6 +603,7 @@ namespace Duels
             {
             case Phase::Prep: EnterPrep(); break;
             case Phase::Starting: EnterStarting(); break;
+            case Phase::Ending: Environment::End(); break;   // a ship is down: no more flares or rocks
             case Phase::RoundOver: EnterRoundOver(); break;
             case Phase::MatchOver: EnterMatchOver(); break;
             default: break;
@@ -616,6 +637,7 @@ namespace Duels
             d.fightStart = -1.0;
             d.scrap = d.settings.free ? 0 : ScrapFor(round);
             d.shop = d.settings.free ? std::vector<Refit::ShopItem>() : Refit::MakeStock(round, g.random);
+            d.env = d.settings.free ? Environment::Plan() : Environment::Roll(d.settings.env, round, g.random);
             g.defeatAt[HOST] = g.defeatAt[GUEST] = -1.0;
             g.defeatReason[HOST] = g.defeatReason[GUEST] = REASON_NONE;
             ClearDraw();
@@ -865,6 +887,7 @@ namespace Duels
                 return;
             }
             Reset();
+            Environment::ClearBeacon();
             g.active = true;
             g.me = Net::IsHost() ? HOST : GUEST;
             g.random.seed((uint32_t)WallMs() ^ (uint32_t)(Net::MatchSeed() & 0xffffffffu));
@@ -886,6 +909,7 @@ namespace Duels
         void OnDisconnected(bool opponentGone)
         {
             Net::SetMatchToken(0);
+            Environment::End();
             if (!g.active) return;
             g.active = false;
             Data &d = g.data;
@@ -960,6 +984,15 @@ namespace Duels
         {
             if (!g.active || !Net::IsConnected()) return;
             Data &d = g.data;
+
+            // FTL's "unable to save progress" box, from a save that failed before the duel began (during one, nothing
+            // is saved and the box stays shut: DuelsHooks.cpp). It would wait for a click in the middle of the fight.
+            WorldManager *world = G_->GetWorld();
+            if (world && world->commandGui && world->commandGui->writeErrorDialog.bOpen)
+            {
+                world->commandGui->writeErrorDialog.Close();
+                Log("Rounds: FTL's box about a failed save is closed (a duel runs)");
+            }
 
             if (d.phase == Phase::Fight && !g.fightBegun && d.fightStart >= 0.0 && now >= FromHost(d.fightStart)) BeginFight();
             if (g.fightBegun && (d.phase == Phase::Fight || d.phase == Phase::Ending)) CountDamage();
@@ -1102,16 +1135,27 @@ namespace Duels
                 else if (ArgIs(cmd, 2, "off")) s.permadeath = false;
                 else { message = "usage: match permadeath on|off"; return false; }
             }
+            else if (ArgIs(cmd, 1, "env"))
+            {
+                uint8_t mode;
+                if (cmd.args.size() < 3 || !Environment::ParseMode(cmd.args[2], mode))
+                {
+                    message = "usage: match env auto|off|sun|pulsar|asteroids";
+                    return false;
+                }
+                s.env = mode;
+            }
             else if (cmd.args.size() >= 2)
             {
-                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | free]";
+                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids | free]";
                 return false;
             }
             if (cmd.args.size() >= 2)
             {
                 message = s.free ? std::string("next duel: a free fight (no rounds)")
                                  : "next duel: best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
-                                       " s preparation, permanent death " + (s.permadeath ? "on" : "off");
+                                       " s preparation, permanent death " + (s.permadeath ? "on" : "off") + ", environment " +
+                                       Environment::ModeName(s.env);
                 return true;
             }
             message = Status();
@@ -1196,7 +1240,7 @@ namespace Duels
             }
             std::string head = d.settings.free ? std::string("Free fight")
                                                : "Round " + std::to_string(d.round) + " of " + std::to_string(d.settings.rounds);
-            std::string state;
+            std::string state, env;
             switch (d.phase)
             {
             case Phase::Prep:
@@ -1229,17 +1273,23 @@ namespace Duels
             }
             lines.push_back(head);
             if (!state.empty()) lines.push_back(state);
+            // The round's environment, named while the players prepare for it (roadmap N: in the fight it is plain
+            // to see).
+            if (!d.settings.free && d.env.kind != Environment::NONE && (d.phase == Phase::Prep || d.phase == Phase::Starting))
+            {
+                env = std::string("The fight: near ") + Environment::KindName(d.env.kind);
+                lines.push_back(env);
+            }
             if (d.drawBy != NOBODY)
             {
                 lines.push_back(std::string("Draw offered (") + (d.drawScope == DRAW_MATCH ? "match" : "round") + ") by " +
                                 (d.drawBy == g.me ? "you" : "the opponent"));
             }
-            // Damage dealt: the rounds before, and this round's so far.
-            bool counting = d.phase == Phase::Fight || d.phase == Phase::Ending;
-            float mine = d.score[g.me] + (counting ? g.peerTaken : 0.f);
-            float theirs = d.score[them] + (counting ? g.taken.Taken() : 0.f);
-            lines.push_back("Rounds " + std::to_string(d.wins[g.me]) + " : " + std::to_string(d.wins[them]) + "   Damage " +
-                            Number(mine) + " : " + Number(theirs));
+            // The damage score of the rounds played, shown once a round is over (roadmap N: in the fight it distracted).
+            std::string rounds = "Rounds " + std::to_string(d.wins[g.me]) + " : " + std::to_string(d.wins[them]);
+            bool fighting = d.phase == Phase::Starting || d.phase == Phase::Fight || d.phase == Phase::Ending;
+            if (!fighting && !d.results.empty()) rounds += "   Damage " + Number(d.score[g.me]) + " : " + Number(d.score[them]);
+            lines.push_back(rounds);
         }
 
         void Render()
@@ -1284,7 +1334,8 @@ namespace Duels
                 out << "no match; the next duel you host: "
                     << (s.free ? std::string("a free fight") : "best of " + std::to_string(s.rounds) + " rounds, " +
                                                                    std::to_string(s.prepSeconds) + " s preparation, permanent death " +
-                                                                   (s.permadeath ? "on" : "off"));
+                                                                   (s.permadeath ? "on" : "off") + ", environment " +
+                                                                   Environment::ModeName(s.env));
                 return out.str();
             }
             out << "match: round " << (int)d.round << "/" << (int)d.settings.rounds << (d.settings.free ? " (free fight)" : "")
@@ -1294,6 +1345,8 @@ namespace Duels
                 out << " [" << (result.winner == NOBODY ? "draw" : result.winner == HOST ? "host" : "guest") << " "
                     << ReasonText(result.reason) << " " << Number(result.dealt[HOST]) << ":" << Number(result.dealt[GUEST]) << "]";
             }
+            out << ", environment " << Environment::KindName(d.env.kind) << " (setting " << Environment::ModeName(d.settings.env) << ")";
+            if (Environment::Active()) out << ", " << Environment::Status();
             out << ", our damage taken " << Number(g.taken.Taken()) << " (hull " << g.taken.hullLost << "/" << g.taken.hullPool
                 << ", crew " << Number(g.taken.crewLost) << "/" << Number(g.taken.crewPool) << "), theirs " << Number(g.peerTaken)
                 << ", events sent " << g.eventsSent << " received " << g.eventsReceived;
@@ -1315,6 +1368,8 @@ namespace Duels
             std::string text = "best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
                                " s preparation, permanent death " + (s.permadeath ? "on" : "off");
             if (s.stallSeconds > 0) text += ", no progress for " + std::to_string(s.stallSeconds / 60) + " min ends a round";
+            if (s.env == Environment::MODE_OFF) text += ", no hazards";
+            else if (s.env != Environment::MODE_AUTO) text += std::string(", every fight near ") + Environment::KindName(s.env - 1);
             return text;
         }
 
@@ -1339,6 +1394,13 @@ namespace Duels
                 s.state += std::string(" (") + ReasonText(d.matchReason) + ")";
             }
             s.score = ScoreLine();
+            if (!d.settings.free && d.phase != Phase::MatchOver)
+            {
+                s.environment = d.env.kind == Environment::NONE
+                                    ? std::string("This round's fight: open space, no hazard")
+                                    : std::string("This round's fight: near ") + Environment::KindName(d.env.kind) + " (" +
+                                          Environment::KindShort(d.env.kind) + ")";
+            }
             for (size_t i = 0; i < d.results.size(); ++i)
             {
                 const Result &result = d.results[i];

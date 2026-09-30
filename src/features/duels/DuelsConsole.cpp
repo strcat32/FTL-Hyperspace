@@ -326,9 +326,11 @@ namespace Duels
         static void RenderFeed()
         {
             const int font = 10;
-            const float x = 16.f, bottom = 588.f, lineHeight = 14.f, width = 440.f;
+            const float x = 16.f, bottom = 588.f, lineHeight = 14.f, maxWidth = 440.f;
             double now = WallMs();
             bool typing = g_console.open && g_console.chat && g_console.input;
+            // The Duels window shows the match itself, and the feed would run over its left side.
+            if (!typing && Window::IsOpen()) return;
             std::vector<const Timed*> shown;
             for (auto it = g_console.feed.rbegin(); it != g_console.feed.rend(); ++it)
             {
@@ -342,7 +344,10 @@ namespace Duels
             // Fading with its newest line.
             float alpha = 1.f;
             if (!typing && !shown.empty()) alpha = (float)std::min(1.0, std::max(0.0, (FEED_MS - (now - shown.front()->at)) / 2000.0));
-            Backdrop(x, top, width, lines * lineHeight, typing ? 1.f : alpha);
+            // As wide as its longest line (the chat's input line gets the whole width).
+            float width = typing ? maxWidth : 0.f;
+            for (const Timed *line : shown) width = std::max(width, (float)freetype::easy_measureWidth(font, line->text));
+            Backdrop(x, top, std::min(width, maxWidth), lines * lineHeight, typing ? 1.f : alpha);
             float y = top;
             for (auto it = shown.rbegin(); it != shown.rend(); ++it)
             {

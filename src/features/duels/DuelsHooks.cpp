@@ -8,8 +8,10 @@
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
+#include "DuelsEnvironment.h"
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
+#include "DuelsNet.h"
 #include "DuelsRooms.h"
 #include "DuelsRounds.h"
 #include "DuelsScreen.h"
@@ -188,6 +190,40 @@ HOOK_METHOD_PRIORITY(CompleteShip, DeadCrew, -2000, () -> bool)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CompleteShip::DeadCrew -> Begin (DuelsHooks.cpp)\n")
     if (!bPlayerShip && Duels::GetState().aiOff[1] && shipManager && shipManager == G_->GetShipManager(1)) return false;
     return super();
+}
+
+// FTL saves the run (continue.sav, and the score profile with it) when its window loses focus, on quitting and after
+// a jump. A duel is no run to continue, and a save that fails (two test games on one computer share the file) shows
+// FTL's "unable to save progress" box, which waits for a click in the middle of a fight. No saving while a duel runs;
+// the next save after it catches up.
+static bool DuelRunning()
+{
+    return Duels::Net::IsConnected() || Duels::Rounds::GetPhase() != Duels::Rounds::Phase::None;
+}
+
+HOOK_METHOD_PRIORITY(WorldManager, SaveGame, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> WorldManager::SaveGame -> Begin (DuelsHooks.cpp)\n")
+    static bool skipLogged = false;
+    if (DuelRunning())
+    {
+        if (!skipLogged) Duels::Log("Save: FTL doesn't save the run while a duel runs");
+        skipLogged = true;
+        return;
+    }
+    skipLogged = false;
+    super();
+}
+
+HOOK_METHOD_PRIORITY(CommandGui, ShowWriteError, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::ShowWriteError -> Begin (DuelsHooks.cpp)\n")
+    if (DuelRunning())
+    {
+        Duels::Log("Save: FTL couldn't save the run; its message box stays closed during a duel");
+        return;
+    }
+    super();
 }
 
 // A duel never pauses (no-pause): FTL's "PAUSED" banner, drawn while the store or a menu is open, would say it does.
@@ -806,8 +842,41 @@ HOOK_METHOD_PRIORITY(SpaceDrone, GetNextProjectile, -2000, () -> Projectile*)
 HOOK_METHOD_PRIORITY(SpaceManager, OnLoop, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> SpaceManager::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    Duels::Environment::BeforeSpaceLoop();
     super();
+    Duels::Environment::AfterSpaceLoop();
     Duels::Drones::AfterSpaceLoop();
+}
+
+// The fight's environment (DuelsEnvironment.cpp): a solar flare or an ion pulse acts in the game whose ship it is.
+HOOK_METHOD_PRIORITY(ShipManager, SunDamage, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::SunDamage -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Environment::AllowsHazardDamage(this)) return;
+    super();
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, PulsarDamage, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::PulsarDamage -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Environment::AllowsHazardDamage(this)) return;
+    super();
+}
+
+// FTL's warning before a flare or pulse: its sound plays, its text stays off in a duel (the display is calm, roadmap N).
+HOOK_METHOD_PRIORITY(WarningMessage, OnRender, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> WarningMessage::OnRender -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Environment::HidesWarning(this)) return;
+    super();
+}
+
+// A duel's asteroid field makes its rocks on the shared schedule; FTL's generator (its own random rocks) waits.
+HOOK_METHOD_PRIORITY(AsteroidGenerator, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> AsteroidGenerator::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Environment::ReplacesAsteroidGenerator()) return;
+    super();
 }
 
 // A projectile runs into a drone: we report hits on the opponent's drones in our space.

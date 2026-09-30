@@ -75,6 +75,7 @@ namespace Duels
             std::string settings;           // "best of 5 rounds, 60 s preparation, permanent death on"
             std::string state;              // "round 2 of 5: fight"
             std::string score;              // "rounds won 1 : 0, damage score 34.0 : 12.0"
+            std::string environment;        // "This round's fight: near a sun (solar flares every 28-34 s)"
             std::vector<std::string> results;
             bool canReady = false, ready = false;
             bool canConcede = false, canOfferRoundDraw = false, canOfferMatchDraw = false, canForfeit = false;

@@ -46,7 +46,7 @@ namespace Duels
 
         static WindowState g_win;
 
-        static const float WIDTH = 620.f, HEIGHT = 540.f, PAD = 14.f;
+        static const float WIDTH = 620.f, HEIGHT = 636.f, PAD = 14.f;   // five results, the environment and a draw offer fit
         static const int FONT = 10, HEADING = 13, TITLE = 24;
 
         // The icons Duels draws in the weapon and drone bays (tools/make-bay-icons.py), and what they stand for.
@@ -173,7 +173,7 @@ namespace Duels
             w.w = WIDTH;
             w.h = HEIGHT;
             w.x = (1280.f - WIDTH) / 2.f;
-            w.y = 88.f;
+            w.y = 72.f;
             Frame(w, Rgb(20, 22, 26), Rgb(235, 235, 235));   // opaque: the match display sits behind it
 
             GL_Color white = Rgb(255, 255, 255), soft = Rgb(200, 205, 210), gold = Rgb(255, 235, 170), heading = Rgb(150, 210, 255);
@@ -207,6 +207,11 @@ namespace Duels
                 y += 16.f;
                 Text(FONT, x, y, s.score.empty() ? "" : std::string(1, (char)toupper(s.score[0])) + s.score.substr(1), white);
                 y += 16.f;
+                if (!s.environment.empty())
+                {
+                    Text(FONT, x, y, s.environment, white);
+                    y += 16.f;
+                }
                 size_t first = s.results.size() > 5 ? s.results.size() - 5 : 0;
                 for (size_t i = first; i < s.results.size(); ++i)
                 {
