@@ -3,6 +3,7 @@
 #include "Duels.h"
 #include "DuelsBays.h"
 #include "DuelsView.h"
+#include "DuelsWindow.h"
 #include "EnemyShipIcons.h"
 #include "HullNumbers.h"
 
@@ -26,10 +27,10 @@ namespace Duels
         static const float HULL_PADDING = 4.f;
         // Between our ship's hull and the enemy window.
         static const float GAP = 25.f;
-        // The jump, ship and upgrade buttons at the top of the screen end here. An enemy window that grows further
-        // left moves its top down by BUTTONS_CLEARANCE to pass below them; its bottom stays where it is, above our
-        // subsystem panel.
-        static const float BUTTONS_RIGHT = 760.f;
+        // The jump, ship and upgrade buttons at the top of the screen end here, or the DUELS button after them
+        // (DuelsWindow.cpp) with a small gap. An enemy window that grows further left moves its top down by
+        // BUTTONS_CLEARANCE to pass below them; its bottom stays where it is, above our subsystem panel.
+        static const float BUTTONS_RIGHT = 760.f, BUTTONS_GAP = 4.f;
         static const int BUTTONS_CLEARANCE = 35;
 
         struct Layout
@@ -137,6 +138,7 @@ namespace Duels
         {
             CombatControl *combat = &gui->combatControl;
             if (g_mode == Mode::Off || combat->boss_visual || !combat->currentTarget) return false;
+            const float buttonsRight = std::max(BUTTONS_RIGHT, ::Duels::Window::ButtonsRight() + BUTTONS_GAP);
             ShipManager *target = combat->currentTarget->shipManager;
             ShipManager *own = gui->shipComplete ? gui->shipComplete->shipManager : nullptr;
             if (!target || target->iShipId != 1 || !own || own->iShipId != 0) return false;
@@ -167,14 +169,14 @@ namespace Duels
                 float sideBySide = (fitRight - MARGIN_LEFT - GAP - ownLeft) / (ours.w + theirs.w);
                 float ownRoom = (boxLeft - GAP - ownLeft) / ours.w;
                 float common = std::min(1.f, std::min(sideBySide, ownRoom));
-                keepTop = std::min(common, std::min(heightFit(0), widthFit(BUTTONS_RIGHT)));
+                keepTop = std::min(common, std::min(heightFit(0), widthFit(buttonsRight)));
                 lowerTop = std::min(common, heightFit(BUTTONS_CLEARANCE));
             }
             else
             {
                 // Our ship as FTL draws it: the window grows up to a gap after its hull (never narrower than FTL's).
                 float edge = std::min(boxLeft, ownLeft + ours.w + GAP);
-                keepTop = std::min(1.f, std::min(heightFit(0), widthFit(std::max(edge, BUTTONS_RIGHT))));
+                keepTop = std::min(1.f, std::min(heightFit(0), widthFit(std::max(edge, buttonsRight))));
                 lowerTop = std::min(1.f, std::min(heightFit(BUTTONS_CLEARANCE), widthFit(edge)));
             }
             int lower = lowerTop > keepTop + 0.01f ? BUTTONS_CLEARANCE : 0;
@@ -183,7 +185,7 @@ namespace Duels
 
             // The window grows only as far as the opponent needs (never narrower than FTL's).
             float left = std::min(boxLeft, std::floor(fitRight - MARGIN_LEFT - theirs.w * scale));
-            if (left >= BUTTONS_RIGHT) lower = 0;
+            if (left >= buttonsRight) lower = 0;
             int grow = (int)(boxLeft - left);
 
             // One center line for both ships: ours where FTL has it, as far as the opponent fits in its window there.

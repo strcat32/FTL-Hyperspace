@@ -1,12 +1,15 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsHud.h"
 #include "DuelsNet.h"
 #include "DuelsRounds.h"
+#include "DuelsStyle.h"
 #include "DuelsTrace.h"
 #include "DuelsWindow.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -33,7 +36,9 @@ namespace Duels
         struct WindowState
         {
             bool open = false;
-            Box button;              // the Duels button
+            Box button;              // the DUELS button: its frame's visible part (clicks)
+            float frameX = 0.f, frameY = 0.f, frameW = 0.f;   // its frame image
+            int labelFont = 62;
             Box window;
             Box close;
             int mouseX = -1, mouseY = -1;
@@ -42,12 +47,17 @@ namespace Duels
             double armedUntil = 0.0;
             std::string message;     // what the last action said
             double messageUntil = 0.0;
+            bool loggedButton = false, loggedWindow = false;   // the layout's numbers, once (tests)
         };
 
         static WindowState g_win;
 
-        static const float WIDTH = 620.f, HEIGHT = 636.f, PAD = 14.f;   // five results, the environment and a draw offer fit
-        static const int FONT = 10, HEADING = 13, TITLE = 24;
+        // The window (roadmap S): FTL's window outline and title tab, over FTL: Duels' red and blue, in the middle of the
+        // screen below the top bar. Two columns under the scoreboard: the match and how to win; the bay icons.
+        static const float WIDTH = 760.f, HEIGHT = 600.f, TOP = 100.f, PAD = 20.f;
+        static const float BAND_H = 58.f, ACTION_H = 34.f;
+        static const int FONT = 10, TEXT = 12, BIG = 24;
+        static const std::string TITLE = "FTL: DUELS";
 
         // The icons Duels draws in the weapon and drone bays (tools/make-bay-icons.py), and what they stand for.
         struct Legend
@@ -84,10 +94,30 @@ namespace Duels
             return GL_Color(r / 255.f, g / 255.f, b / 255.f, a);
         }
 
+        static float Width(int font, const std::string &text)
+        {
+            return (float)freetype::easy_measureWidth(font, text);
+        }
+
+        // The text cut to fit a width ("Captain_Kaz..").
+        static std::string Fit(int font, const std::string &text, float width)
+        {
+            if (Width(font, text) <= width) return text;
+            std::string cut = text;
+            while (!cut.empty() && Width(font, cut + "..") > width) cut.pop_back();
+            return cut + "..";
+        }
+
         static void Text(int font, float x, float y, const std::string &text, GL_Color color)
         {
             CSurface::GL_SetColor(color);
             freetype::easy_print(font, x, y, text);
+        }
+
+        static void TextCentre(int font, float x, float y, const std::string &text, GL_Color color)
+        {
+            CSurface::GL_SetColor(color);
+            freetype::easy_printCenter(font, x, y, text);
         }
 
         // Wrapped text; returns its height.
@@ -96,21 +126,6 @@ namespace Duels
             CSurface::GL_SetColor(color);
             Pointf end = freetype::easy_printAutoNewlines(font, x, y, (int)width, text);
             return end.y - y;
-        }
-
-        static void Frame(const Box &box, GL_Color fill, GL_Color edge)
-        {
-            CSurface::GL_DrawRect(box.x, box.y, box.w, box.h, fill);
-            CSurface::GL_DrawRectOutline((int)box.x, (int)box.y, (int)box.w, (int)box.h, edge, 2.f);
-        }
-
-        static void DrawButton(const Box &box, const std::string &label, bool enabled, bool hover, bool alarm)
-        {
-            GL_Color fill = !enabled ? Rgb(30, 30, 30) : alarm ? Rgb(150, 40, 40) : hover ? Rgb(90, 90, 90) : Rgb(50, 50, 50);
-            GL_Color edge = enabled ? Rgb(220, 220, 220) : Rgb(90, 90, 90);
-            Frame(box, fill, edge);
-            CSurface::GL_SetColor(enabled ? Rgb(255, 255, 255) : Rgb(110, 110, 110));
-            freetype::easy_printCenter(FONT, box.x + box.w / 2.f, box.y + (box.h - 12.f) / 2.f, label);
         }
 
         // The bay icons are FTL-style 64 px system icons with the glyph (26 px) in the middle: drawn at their own size,
@@ -136,38 +151,202 @@ namespace Duels
                 action.confirm = confirm;
                 actions.push_back(action);
             };
-            add(s.ready ? "Ready: waiting" : "Ready", "ready", s.canReady, false);
-            add("Concede round", "concede", s.canConcede, true);
+            bool unready = s.ready && s.canUnready;   // ready in the preparation: a click takes it back
+            add(unready ? "NOT READY" : "READY", unready ? "ready off" : "ready", unready || s.canReady, false);
+            add("CONCEDE", "concede", s.canConcede, true);
             if (s.drawToAnswer)
             {
-                add("Accept draw", "draw yes", true, false);
-                add("Decline draw", "draw no", true, false);
+                add("ACCEPT DRAW", "draw yes", true, false);
+                add("DECLINE", "draw no", true, false);
             }
             else
             {
-                add("Draw: round", "draw round", s.canOfferRoundDraw, false);
-                add("Draw: match", "draw match", s.canOfferMatchDraw, false);
+                add("DRAW ROUND", "draw round", s.canOfferRoundDraw, false);
+                add("DRAW MATCH", "draw match", s.canOfferMatchDraw, false);
             }
-            add("Forfeit", "forfeit", s.canForfeit, true);
+            add("FORFEIT", "forfeit", s.canForfeit, true);
             g_win.actions.swap(actions);
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // The DUELS button: FTL's STORE button frame, right of the options button, its body in Duels' red and blue
+        // ---------------------------------------------------------------------------------------------------------
+
+        // Where the button goes: after the options button as the next of FTL's top buttons would (Hyperspace places
+        // them 3 px apart by their hit boxes; FTL draws the STORE frame 5 px left of its hit box, and 12 px above and
+        // left of the button's own place). Its field is as wide as its label needs (FTL's STORE: 78 px).
+        static void PlaceButton()
+        {
+            CommandGui *gui = G_->GetWorld()->commandGui;
+            const Globals::Rect &options = gui->optionsButton.hitbox;
+            const std::string label = "DUELS";
+            g_win.labelFont = 62;
+            float field = std::max(40.f, Width(g_win.labelFont, label) + 10.f);
+            g_win.frameW = field + 2.f * Style::TOP_FIELD_INSET;
+            g_win.frameX = (float)(options.x + options.w + 3 - 5);
+            g_win.frameY = (float)gui->storeButton.position.y - Style::TOP_FIELD_INSET;
+            Box &b = g_win.button;
+            b.x = g_win.frameX + Style::TOP_FRAME_GLOW;
+            b.y = g_win.frameY + Style::TOP_FRAME_GLOW;
+            b.w = g_win.frameW - 2.f * Style::TOP_FRAME_GLOW;
+            b.h = Style::TOP_FRAME_HEIGHT - 2.f * Style::TOP_FRAME_GLOW;
+            if (!g_win.loggedButton)
+            {
+                g_win.loggedButton = true;
+                const Globals::Rect &store = gui->storeButton.hitbox;
+                Log("Window: the DUELS button's frame at %.0f,%.0f, %.0f wide (visible %.0f-%.0f x %.0f-%.0f); 'DUELS' in font 62 "
+                    "is %.0f px wide, a line %.0f high; the options button's hit box %d,%d %dx%d, the store button at %d,%d "
+                    "(hit box %d,%d %dx%d)",
+                    g_win.frameX, g_win.frameY, g_win.frameW, b.x, b.x + b.w, b.y, b.y + b.h, Width(62, label),
+                    Style::LineHeight(62), options.x, options.y, options.w, options.h, gui->storeButton.position.x,
+                    gui->storeButton.position.y, store.x, store.y, store.w, store.h);
+                const char *samples[] = {"STORE", "CONCEDE", "DRAW ROUND", "ACCEPT DRAW", "NOT READY", "FORFEIT", "THE MATCH"};
+                for (const char *sample : samples)
+                    Log("Window: '%s' in font 62 %.0f px, font 63 %.0f px, font 12 %.0f px", sample, Width(62, sample),
+                        Width(63, sample), Width(12, sample));
+                Log("Window: line heights: font 10 %.0f, 12 %.0f, 13 %.0f, 24 %.0f, 62 %.0f, 63 %.0f", Style::LineHeight(10),
+                    Style::LineHeight(12), Style::LineHeight(13), Style::LineHeight(24), Style::LineHeight(62), Style::LineHeight(63));
+            }
         }
 
         static void RenderButton()
         {
-            CommandGui *gui = G_->GetWorld()->commandGui;
-            // Right of the options button, wherever it is (it moves right when the store button shows).
-            const Globals::Rect &options = gui->optionsButton.hitbox;
-            Box &b = g_win.button;
-            b.x = (float)(options.x + options.w + 6);
-            b.y = (float)(options.y + 4);
-            b.w = 62.f;   // clear of the enemy window (it starts at x 822 in a duel)
-            b.h = (float)std::max(28, options.h - 8);
-            bool hover = b.Contains(g_win.mouseX, g_win.mouseY);
-            bool attention = Rounds::GetSummary().drawToAnswer && ((int)(WallMs() / 500.0) % 2 == 0);
-            GL_Color fill = attention ? Rgb(150, 110, 30) : hover || g_win.open ? Rgb(90, 90, 90) : Rgb(35, 35, 35);
-            Frame(b, fill, Rgb(235, 235, 235));
+            PlaceButton();
+            bool hover = g_win.button.Contains(g_win.mouseX, g_win.mouseY);
+            bool attention = Rounds::GetSummary().drawToAnswer && ((long long)(WallMs() / 500.0) % 2 == 0);
+            float x = g_win.frameX, y = g_win.frameY, w = g_win.frameW;
+            Style::TopFrame(x, y, w, COLOR_WHITE);
+            // The body in FTL's field: FTL's yellow under the mouse and while the window is open, gold while the
+            // opponent offers a draw; otherwise Duels' own shade of FTL's light body, red to blue.
+            float fx = x + Style::TOP_FIELD_INSET, fy = y + Style::TOP_FIELD_INSET;
+            float fw = w - 2.f * Style::TOP_FIELD_INSET, fh = Style::TOP_FIELD_HEIGHT;
+            if (hover || g_win.open) Style::CutRect(fx, fy, fw, fh, 2.f, Style::ButtonBody(Style::Look::Hover));
+            else if (attention) Style::CutRect(fx, fy, fw, fh, 2.f, Rgb(255, 196, 70));
+            else Style::Blend(fx, fy, fw, fh, Rgb(240, 182, 172), Rgb(172, 198, 240), 2.f);
+            CSurface::GL_SetColor(Style::ButtonText());
+            freetype::easy_printCenter(g_win.labelFont, fx + fw / 2.f, fy + std::floor((fh - Style::LineHeight(g_win.labelFont)) / 2.f) + 1.f, "DUELS");
             CSurface::GL_SetColor(COLOR_WHITE);
-            freetype::easy_printCenter(HEADING, b.x + b.w / 2.f, b.y + (b.h - 16.f) / 2.f, "DUELS");
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // The window
+        // ---------------------------------------------------------------------------------------------------------
+
+        // The round and its phase, as the score panel on the screen shows them (DuelsMatchUi.cpp).
+        static std::string PhaseLine(const Rounds::Summary &s, GL_Color &colour)
+        {
+            std::string phase;
+            colour = Rgb(255, 255, 255);
+            switch (s.phase)
+            {
+            case Rounds::Phase::Prep: phase = "PREPARATION"; colour = GL_Color(0.55f, 1.f, 0.5f, 1.f); break;
+            case Rounds::Phase::Starting:
+            case Rounds::Phase::Fight: phase = "FIGHT"; colour = GL_Color(1.f, 0.5f, 0.42f, 1.f); break;
+            case Rounds::Phase::Ending:
+            case Rounds::Phase::RoundOver: phase = "END"; colour = GL_Color(0.7f, 0.8f, 0.95f, 1.f); break;
+            case Rounds::Phase::MatchOver: phase = "MATCH OVER"; colour = GL_Color(1.f, 0.84f, 0.3f, 1.f); break;
+            default: break;
+            }
+            if (s.paused)
+            {
+                phase = "PAUSED";
+                colour = GL_Color(1.f, 0.9f, 0.35f, 1.f);
+            }
+            if (s.free || s.phase == Rounds::Phase::MatchOver || s.rounds <= 0) return phase;
+            return "ROUND " + std::to_string(s.round) + " OF " + std::to_string(s.rounds) + "     " + phase;
+        }
+
+        // The scoreboard across the top: FTL: Duels' red and blue, the host's name on the red side, the guest's on the
+        // blue side, the points between them, and the round and its phase. (Font 24 draws its letters 15 px below the
+        // y it is given, font 12 about 1 px: the big line's letters take the band's rows 8 to 29, the small line's
+        // rows 37 to 48.)
+        static void RenderScoreboard(const Rounds::Summary &s, float x, float y, float w)
+        {
+            Style::Blend(x, y, w, BAND_H, Rgb(122, 28, 32), Rgb(26, 50, 124), 4.f);
+            float middle = x + w / 2.f, bigY = y - 7.f, smallY = y + 36.f;
+            if (s.inMatch)
+            {
+                std::string points = s.points[0] + " : " + s.points[1];
+                float side = (w - Width(BIG, points)) / 2.f - 34.f;
+                TextCentre(BIG, middle, bigY, points, Rgb(255, 255, 255));
+                Text(BIG, x + 16.f, bigY, Fit(BIG, s.names[0], side), Rgb(255, 196, 188));
+                CSurface::GL_SetColor(Rgb(196, 218, 255));
+                freetype::easy_printRightAlign(BIG, x + w - 16.f, bigY, Fit(BIG, s.names[1], side));
+                GL_Color colour;
+                std::string phase = PhaseLine(s, colour);
+                TextCentre(TEXT, middle, smallY, phase, colour);
+            }
+            else
+            {
+                std::string opponent = Net::IsConnected() ? Net::PeerName() : "";
+                TextCentre(BIG, middle, bigY, opponent.empty() ? "NOT IN A DUEL" : "VS  " + opponent, Rgb(255, 255, 255));
+                TextCentre(TEXT, middle, smallY, opponent.empty() ? "Host or join one from the console (Tab)" : "Waiting for the match", Rgb(220, 224, 230));
+            }
+        }
+
+        // The left column: the match (who, where, the settings, its state and results) and how to win; returns its end.
+        static float RenderMatchColumn(const Rounds::Summary &s, float x, float y, float w)
+        {
+            const GL_Color white = Rgb(255, 255, 255), soft = Rgb(206, 210, 216), gold = Rgb(255, 235, 170);
+            y += Style::Label(x, y, "THE MATCH") + 8.f;
+            std::string opponent = Net::IsConnected() ? Net::PeerName() : "";
+            if (opponent.empty())
+            {
+                y += Paragraph(FONT, x, y, w, "Not in a duel. Host or join one from the console (Tab): host relay, lobby, join <code>.", soft) + 6.f;
+            }
+            else
+            {
+                Text(FONT, x, y, "Opponent: " + opponent, gold);
+                y += 15.f;
+                Text(FONT, x, y, Net::UsesRelay() ? "Room: " + Net::RelayCode() : "Direct connection", soft);
+                y += 17.f;
+            }
+            y += Paragraph(FONT, x, y, w, "Settings: " + s.settings, soft) + 5.f;
+            if (s.inMatch)
+            {
+                Text(FONT, x, y, "Now: " + s.state, white);
+                y += 15.f;
+                if (!s.score.empty())
+                {
+                    Text(FONT, x, y, std::string(1, (char)toupper(s.score[0])) + s.score.substr(1), white);
+                    y += 15.f;
+                }
+                if (!s.environment.empty()) y += Paragraph(FONT, x, y, w, s.environment, white) + 2.f;
+                size_t first = s.results.size() > 5 ? s.results.size() - 5 : 0;
+                for (size_t i = first; i < s.results.size(); ++i) y += Paragraph(FONT, x + 10.f, y, w - 10.f, s.results[i], soft) + 1.f;
+                if (!s.drawText.empty()) y += Paragraph(FONT, x, y, w, s.drawText, gold) + 2.f;
+            }
+            y += 12.f;
+            y += Style::Label(x, y, "HOW TO WIN") + 8.f;
+            y += Paragraph(FONT, x, y, w, HOW_TO_WIN, soft);
+            return y;
+        }
+
+        // The right column: the icons Duels draws in the weapon and drone bays; returns its end.
+        static float RenderBaysColumn(float x, float y, float w)
+        {
+            const GL_Color white = Rgb(255, 255, 255), soft = Rgb(206, 210, 216), cream = Style::ButtonBody(Style::Look::Idle);
+            y += Style::Label(x, y, "WEAPON AND DRONE BAYS") + 8.f;
+            y += Paragraph(FONT, x, y, w, "Each weapon and each drone has a room of its own; its icon shows the kind.", soft) + 8.f;
+            const float cell = w / 2.f, row = ICON_GLYPH + 6.f;
+            auto grid = [&](const Legend *items, size_t count)
+            {
+                for (size_t i = 0; i < count; ++i)
+                {
+                    float cx = x + 4.f + cell * (i % 2), cy = y + row * (i / 2);
+                    Icon(items[i].icon, cx, cy);
+                    Text(FONT, cx + ICON_GLYPH + 10.f, cy + 7.f, items[i].label, white);
+                }
+                y += row * ((count + 1) / 2);
+            };
+            Text(TEXT, x, y, "Weapons", cream);
+            y += 20.f;
+            grid(WEAPONS, sizeof(WEAPONS) / sizeof(WEAPONS[0]));
+            y += 8.f;
+            Text(TEXT, x, y, "Drones", cream);
+            y += 20.f;
+            grid(DRONES, sizeof(DRONES) / sizeof(DRONES[0]));
+            return y;
         }
 
         static void RenderWindow()
@@ -177,111 +356,82 @@ namespace Duels
             Box &w = g_win.window;
             w.w = WIDTH;
             w.h = HEIGHT;
-            w.x = (1280.f - WIDTH) / 2.f;
-            w.y = 72.f;
-            Frame(w, Rgb(20, 22, 26), Rgb(235, 235, 235));   // opaque: the match display sits behind it
+            w.x = std::floor((1280.f - WIDTH) / 2.f);
+            w.y = TOP;
 
-            GL_Color white = Rgb(255, 255, 255), soft = Rgb(200, 205, 210), gold = Rgb(255, 235, 170), heading = Rgb(150, 210, 255);
-            float x = w.x + PAD, y = w.y + 10.f, inner = w.w - 2.f * PAD;
-            Text(TITLE, x, y, "FTL: DUELS", white);
+            // Opaque, dark red on the left to dark blue on the right (FTL: Duels' red and blue), inside FTL's window
+            // outline, with FTL's title tab.
+            Style::Blend(w.x + 2.f, w.y + 2.f, w.w - 4.f, w.h - 4.f, Rgb(40, 13, 17), Rgb(12, 20, 44), 9.f);
+            Style::WindowOutline((int)w.x, (int)w.y, (int)w.w, (int)w.h);
+            Style::TitleTab(w.x, w.y, TITLE);
+
+            float x = w.x + PAD, inner = w.w - 2.f * PAD;
             Box &close = g_win.close;
-            close.w = 26.f;
-            close.h = 22.f;
-            close.x = w.x + w.w - close.w - 10.f;
-            close.y = w.y + 10.f;
-            DrawButton(close, "X", true, close.Contains(g_win.mouseX, g_win.mouseY), false);
-            y += 36.f;
+            close.w = 30.f;
+            close.h = 30.f;
+            close.x = w.x + w.w - PAD - close.w;
+            close.y = w.y + 16.f;
+            Style::Button(close.x, close.y, close.w, close.h, "X", TEXT,
+                          close.Contains(g_win.mouseX, g_win.mouseY) ? Style::Look::Hover : Style::Look::Idle);
+            RenderScoreboard(s, x, w.y + 16.f, inner - close.w - 10.f);
 
-            // Who and where.
-            std::string opponent = Net::IsConnected() ? Net::PeerName() : "";
-            if (opponent.empty())
-            {
-                y += Paragraph(FONT, x, y, inner, "Not in a duel. Host or join one from the console (Tab): host relay, lobby, join <code>.", soft) + 6.f;
-            }
-            else
-            {
-                Text(FONT, x, y, "Opponent: " + opponent + "      " + (Net::UsesRelay() ? "Room: " + Net::RelayCode() : "Direct connection"), gold);
-                y += 18.f;
-            }
+            float top = w.y + 16.f + BAND_H + 16.f, column = (inner - PAD) / 2.f;
+            float leftEnd = RenderMatchColumn(s, x, top, column);
+            float rightEnd = RenderBaysColumn(x + column + PAD, top, column);
 
-            // The match.
-            y += Paragraph(FONT, x, y, inner, "Match: " + s.settings, soft) + 4.f;
-            if (s.inMatch)
-            {
-                Text(FONT, x, y, "Now: " + s.state, white);
-                y += 16.f;
-                Text(FONT, x, y, s.score.empty() ? "" : std::string(1, (char)toupper(s.score[0])) + s.score.substr(1), white);
-                y += 16.f;
-                if (!s.environment.empty())
-                {
-                    Text(FONT, x, y, s.environment, white);
-                    y += 16.f;
-                }
-                size_t first = s.results.size() > 5 ? s.results.size() - 5 : 0;
-                for (size_t i = first; i < s.results.size(); ++i)
-                {
-                    Text(FONT, x + 10.f, y, s.results[i], soft);
-                    y += 15.f;
-                }
-                if (!s.drawText.empty())
-                {
-                    Text(FONT, x, y, s.drawText, gold);
-                    y += 16.f;
-                }
-            }
-            y += 6.f;
-
-            Text(HEADING, x, y, "How to win", heading);
-            y += 20.f;
-            y += Paragraph(FONT, x, y, inner, HOW_TO_WIN, soft) + 8.f;
-
-            // The icons of the weapon and drone bays.
-            Text(HEADING, x, y, "The weapon and drone bays", heading);
-            y += 20.f;
-            y += Paragraph(FONT, x, y, inner, "Each weapon and each drone has a room of its own; its icon shows the kind. "
-                                              "Weapons:", soft) + 4.f;
-            const float cell = inner / 4.f, row = ICON_GLYPH + 6.f;
-            for (size_t i = 0; i < sizeof(WEAPONS) / sizeof(WEAPONS[0]); ++i)
-            {
-                float cx = x + cell * (i % 4), cy = y + row * (i / 4);
-                Icon(WEAPONS[i].icon, cx, cy);
-                Text(FONT, cx + ICON_GLYPH + 8.f, cy + 7.f, WEAPONS[i].label, white);
-            }
-            y += row * 2.f + 2.f;
-            Text(FONT, x, y, "Drones:", soft);
-            y += 16.f;
-            for (size_t i = 0; i < sizeof(DRONES) / sizeof(DRONES[0]); ++i)
-            {
-                float cx = x + cell * (i % 4), cy = y + row * (i / 4);
-                Icon(DRONES[i].icon, cx, cy);
-                Text(FONT, cx + ICON_GLYPH + 8.f, cy + 7.f, DRONES[i].label, white);
-            }
-
-            // The actions, along the bottom.
+            // The actions, along the bottom, in FTL's buttons (FTL's broad button letters don't fit "DRAW ROUND").
             double now = WallMs();
             if (!g_win.armed.empty() && now > g_win.armedUntil) g_win.armed.clear();
-            float gap = 8.f, bw = (inner - gap * (g_win.actions.size() - 1)) / (float)g_win.actions.size(), by = w.y + w.h - 46.f;
+            float gap = 10.f, bw = std::floor((inner - gap * (g_win.actions.size() - 1)) / (float)g_win.actions.size());
+            float by = w.y + w.h - 22.f - ACTION_H;
+            const int font = TEXT;
             for (size_t i = 0; i < g_win.actions.size(); ++i)
             {
                 Action &action = g_win.actions[i];
                 action.box.x = x + (bw + gap) * i;
                 action.box.y = by;
                 action.box.w = bw;
-                action.box.h = 28.f;
+                action.box.h = ACTION_H;
                 bool armed = g_win.armed == action.command;
-                DrawButton(action.box, armed ? "Sure? Click again" : action.label, action.enabled,
-                           action.box.Contains(g_win.mouseX, g_win.mouseY), armed);
+                bool hover = action.enabled && action.box.Contains(g_win.mouseX, g_win.mouseY);
+                Style::Look look = !action.enabled ? Style::Look::Off : hover ? Style::Look::Hover : Style::Look::Idle;
+                GL_Color alarm = Rgb(255, 128, 110), gold = Rgb(255, 214, 90), green = Rgb(150, 236, 136);
+                const GL_Color *body = !action.enabled ? nullptr
+                                     : armed ? &alarm
+                                     : action.command == "draw yes" && !hover && (long long)(now / 400.0) % 2 == 0 ? &gold
+                                     : action.command == "ready off" && !hover ? &green : nullptr;
+                Style::Button(action.box.x, action.box.y, action.box.w, action.box.h, armed ? "SURE?" : action.label, font, look, body);
             }
-            if (!g_win.message.empty() && now < g_win.messageUntil) Text(FONT, x, w.y + w.h - 14.f, g_win.message, gold);
+            if (!g_win.message.empty() && now < g_win.messageUntil) TextCentre(FONT, w.x + w.w / 2.f, by + ACTION_H + 5.f, g_win.message, Rgb(255, 235, 170));
+
+            if (!g_win.loggedWindow)
+            {
+                g_win.loggedWindow = true;
+                Log("Window: %.0f x %.0f at %.0f,%.0f; the columns end at y %.0f and %.0f, the actions start at y %.0f (%s); "
+                    "the first action at %.0f,%.0f %.0f x %.0f, one every %.0f px",
+                    w.w, w.h, w.x, w.y, leftEnd, rightEnd, by, leftEnd > by - 8.f || rightEnd > by - 8.f ? "overlap" : "clear",
+                    x, by, bw, ACTION_H, bw + gap);
+            }
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
         void Render()
         {
             if (!InGame()) return;
+            // The button is part of FTL's top bar: it shakes with it.
+            CSurface::GL_PushMatrix();
+            CSurface::GL_Translate(Hud::ShakeX(), Hud::ShakeY(), 0.f);
             RenderButton();
+            CSurface::GL_PopMatrix();
             if (g_win.open) RenderWindow();
             CSurface::GL_SetColor(COLOR_WHITE);
+        }
+
+        float ButtonsRight()
+        {
+            if (!InGame()) return 0.f;
+            PlaceButton();
+            return g_win.button.x + g_win.button.w;
         }
 
         bool MouseMove(int x, int y)
@@ -343,6 +493,15 @@ namespace Duels
             return g_win.open;
         }
 
+        static bool Click(int x, int y, std::string &message)
+        {
+            MouseMove(x, y);
+            bool taken = LButtonDown(x, y);
+            message = "click at " + std::to_string(x) + "," + std::to_string(y) + (taken ? ": the Duels button or window took it" : ": passed to the game") +
+                      (g_win.message.empty() ? "" : " (" + g_win.message + ")");
+            return true;
+        }
+
         bool RunVerb(const std::vector<std::string> &args, std::string &message)
         {
             if (args.size() >= 2 && (args[1] == "open" || args[1] == "close"))
@@ -351,16 +510,20 @@ namespace Duels
                 message = std::string("Duels window ") + (g_win.open ? "open" : "closed");
                 return true;
             }
-            if (args.size() >= 4 && args[1] == "click")
+            if (args.size() >= 4 && args[1] == "click") return Click(std::atoi(args[2].c_str()), std::atoi(args[3].c_str()), message);
+            if (args.size() >= 3 && args[1] == "press")
             {
-                int x = std::atoi(args[2].c_str()), y = std::atoi(args[3].c_str());
-                MouseMove(x, y);
-                bool taken = LButtonDown(x, y);
-                message = "click at " + args[2] + "," + args[3] + (taken ? ": the Duels button or window took it" : ": passed to the game") +
-                          (g_win.message.empty() ? "" : " (" + g_win.message + ")");
-                return true;
+                // duels press <action>: a click in the middle of the window's button for that action (its verb, as
+                // "ready", "draw match", "draw yes"), wherever the layout puts it; the window must have been drawn open.
+                std::string command = args[2];
+                for (size_t i = 3; i < args.size(); ++i) command += " " + args[i];
+                for (const Action &action : g_win.actions)
+                    if (action.command == command && g_win.open)
+                        return Click((int)(action.box.x + action.box.w / 2.f), (int)(action.box.y + action.box.h / 2.f), message);
+                message = "no button for '" + command + "' in the open window";
+                return false;
             }
-            message = "usage: duels open|close | duels click <x> <y>";
+            message = "usage: duels open|close | duels click <x> <y> | duels press <action>";
             return false;
         }
     }

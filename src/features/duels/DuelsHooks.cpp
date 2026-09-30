@@ -1040,6 +1040,15 @@ HOOK_STATIC_PRIORITY(CSurface, GL_RenderPrimitive, -2000, (GL_Primitive *primiti
     Duels::View::EndUnmirrored();
 }
 
+// FTL's screen shake (a hard hit): the offset it moves its interface by this frame, for what Duels draws on it.
+HOOK_METHOD_PRIORITY(CommandGui, UpdateShake, -2000, () -> Pointf)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::UpdateShake -> Begin (DuelsHooks.cpp)\n")
+    Pointf shake = super();
+    Duels::Hud::SetShake(shake.x, shake.y);
+    return shake;
+}
+
 HOOK_METHOD_PRIORITY(CommandGui, RenderPlayerShip, -2000, (Point &shipCenter, float jumpScale) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::RenderPlayerShip -> Begin (DuelsHooks.cpp)\n")
@@ -1315,6 +1324,7 @@ HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
     Duels::MatchUi::Render();
     Duels::Window::Render();
     Duels::MatchUi::RenderSplash();
+    Duels::Hud::EndFrame();
     if (!Duels::Console::Render()) return super();
     PrintHelper *printer = PrintHelper::GetInstance();
     int x = printer->x;

@@ -624,6 +624,15 @@ namespace Duels
             message = "mouse at " + std::to_string(x) + "," + std::to_string(y);
             return true;
         }
+        if (verb == "shake")
+        {
+            // shake: FTL's screen shake at its strongest (as a hard hit starts it), for tests of what moves with it.
+            CommandGui *gui = G_->GetWorld() ? G_->GetWorld()->commandGui : nullptr;
+            if (!gui) { message = "not in the game"; return false; }
+            gui->fShakeTimer = 1.f;
+            message = "the screen shakes";
+            return true;
+        }
         if (verb == "fonttest")
         {
             // fonttest [seconds]: the match display's text in each of FTL's fonts, for a screenshot.

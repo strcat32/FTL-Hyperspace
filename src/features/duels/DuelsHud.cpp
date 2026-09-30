@@ -174,6 +174,29 @@ namespace Duels
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
+        static float g_shakeX = 0.f, g_shakeY = 0.f;
+
+        void SetShake(float x, float y)
+        {
+            g_shakeX = x;
+            g_shakeY = y;
+        }
+
+        float ShakeX()
+        {
+            return g_shakeX;
+        }
+
+        float ShakeY()
+        {
+            return g_shakeY;
+        }
+
+        void EndFrame()
+        {
+            g_shakeX = g_shakeY = 0.f;
+        }
+
         void Render()
         {
             if (GetState().debug && InGame()) RenderDebugMode();
