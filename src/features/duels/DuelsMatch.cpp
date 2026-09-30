@@ -466,6 +466,17 @@ namespace Duels
             replica->ship.hullIntegrity.first = hull;
             PowerManager::GetPowerManager(1)->currentPower.second = reactor;
 
+            // Systems the owner sold in a preparation (roadmap V) leave the replica too.
+            for (int id = 0; id < SYS_ALL; ++id)
+            {
+                if (!replica->HasSystem(id)) continue;
+                bool kept = false;
+                for (const SystemLevel &level : systems) kept = kept || level.id == id;
+                if (kept) continue;
+                replica->RemoveSystem(id);
+                Log("Match: replica %s removed (the owner sold it)", SystemName(id));
+            }
+
             for (const SystemLevel &level : systems)
             {
                 if (!replica->HasSystem(level.id))
@@ -480,10 +491,19 @@ namespace Duels
                 ShipSystem *system = replica->GetSystem(level.id);
                 int difference = level.level - system->powerState.second;
                 if (difference > 0) replica->UpgradeSystem(level.id, difference);
+                else if (difference < 0 && level.level >= 1 && level.id < SYS_ALL)
+                {
+                    // A level taken back in the owner's preparation (roadmap V): the power first, then the level. (The
+                    // bays follow their weapons and drones by themselves, DuelsBays.cpp.)
+                    if (system->powerState.first > level.level) system->ForceDecreasePower(system->powerState.first - level.level);
+                    system->UpgradeSystem(difference);
+                    Log("Match: replica %s down to level %d", SystemName(level.id), level.level);
+                }
                 if (system->powerState.second != level.level)
                 {
-                    Log("Match: replica %s is level %d, the owner's is %d", SystemName(level.id), system->powerState.second,
-                        level.level);
+                    // (A bay's level follows its weapon or drone a frame later, DuelsBays.cpp.)
+                    Log("Match: replica %s is level %d, the owner's is %d", ShipSystem::SystemIdToName(level.id).c_str(),
+                        system->powerState.second, level.level);
                 }
             }
 

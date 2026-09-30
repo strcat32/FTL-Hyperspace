@@ -1,11 +1,15 @@
 #include "Global.h"
+#include "CustomShipSelect.h"
 #include "CustomStore.h"
 #include "Duels.h"
+#include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsRefit.h"
 #include "DuelsRounds.h"
+#include "DuelsTrace.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <vector>
 
@@ -29,6 +33,13 @@ namespace Duels
             std::vector<Member> crew;       // everyone as the last fight began (Permanent Death off: all return)
             std::vector<bool> weaponsPowered;   // by slot, as the last fight began (powered again in the preparation)
             uint32_t revived = 0, shops = 0;
+            // Levels as the match began: a level taken back stops there (roadmap V).
+            std::map<int, int> startLevels;
+            int startReactor = 0;
+            int saleArmed = -1;             // the system whose sale waits for a second right-click
+            double saleArmedUntil = 0.0;
+            int saleDue = -1, saleDuePrice = 0;   // sold at the second right-click, made at the screen's next loop
+            bool tipShown = false;
         };
 
         static RefitState g_refit;
@@ -197,7 +208,17 @@ namespace Duels
         void OnMatchStart()
         {
             g_refit = RefitState();
-            std::vector<CrewMember*> crew = CrewAboard(G_->GetShipManager(0));
+            ShipManager *own = G_->GetShipManager(0);
+            if (own)
+            {
+                for (ShipSystem *system : own->vSystemList)
+                {
+                    if (system && system->iSystemType >= 0 && system->iSystemType < SYS_ALL)
+                        g_refit.startLevels[system->iSystemType] = system->powerState.second;
+                }
+                g_refit.startReactor = PowerManager::GetPowerManager(0)->currentPower.second;
+            }
+            std::vector<CrewMember*> crew = CrewAboard(own);
             for (CrewMember *member : crew) g_refit.crew.push_back(Remember(member));
             if (!crew.empty())
             {
@@ -583,6 +604,193 @@ namespace Duels
                 gui->shipScreens.Close();
                 Log("Refit: the ship's screens close for the store (key %d)", key);
             }
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // The shop buys back: levels taken back, systems sold (roadmap V)
+        // ---------------------------------------------------------------------------------------------------------
+
+        static bool Sellable(int id)
+        {
+            return id == SYS_CLOAKING || id == SYS_HACKING || id == SYS_MIND || id == SYS_TELEPORTER || id == SYS_DRONES ||
+                   id == SYS_ARTILLERY || id == SYS_BATTERY;
+        }
+
+        static std::string SystemTitle(int id)
+        {
+            switch (id)
+            {
+            case SYS_SHIELDS: return "Shields";
+            case SYS_ENGINES: return "Engines";
+            case SYS_OXYGEN: return "Oxygen";
+            case SYS_WEAPONS: return "Weapons";
+            case SYS_DRONES: return "Drone control";
+            case SYS_MEDBAY: return "Medbay";
+            case SYS_PILOT: return "Piloting";
+            case SYS_SENSORS: return "Sensors";
+            case SYS_DOORS: return "Doors";
+            case SYS_TELEPORTER: return "Teleporter";
+            case SYS_CLOAKING: return "Cloaking";
+            case SYS_ARTILLERY: return "Artillery";
+            case SYS_BATTERY: return "Backup battery";
+            case SYS_CLONEBAY: return "Clone bay";
+            case SYS_MIND: return "Mind control";
+            case SYS_HACKING: return "Hacking";
+            default: return ShipSystem::SystemIdToName(id);
+            }
+        }
+
+        static void Sound(const char *name)
+        {
+            if (G_->GetSoundControl()) G_->GetSoundControl()->PlaySoundMix(name, -1.f, false);
+        }
+
+        static void Say(const std::string &text)
+        {
+            Log("Refit: %s", text.c_str());
+            Console::Feed(text);
+        }
+
+        static int LowestLevel(int id)
+        {
+            auto start = g_refit.startLevels.find(id);
+            return start != g_refit.startLevels.end() ? std::max(1, start->second) : 1;
+        }
+
+        // What a level cost (FTL's upgrade screen charges upgradeCosts[level - 2] for it).
+        static int LevelPrice(const SystemBlueprint *blueprint, int level)
+        {
+            if (!blueprint || level < 2 || level - 2 >= (int)blueprint->upgradeCosts.size()) return 0;
+            return blueprint->upgradeCosts[level - 2];
+        }
+
+        // Half of what the system and its levels up to `level` cost.
+        static int SalePrice(const SystemBlueprint *blueprint, int level)
+        {
+            if (!blueprint) return 0;
+            int paid = blueprint->desc.cost;
+            for (int l = 2; l <= level; ++l) paid += LevelPrice(blueprint, l);
+            return paid / 2;
+        }
+
+        bool TakeBackLevel(UpgradeBox *box)
+        {
+            if (!box || !box->system || !box->ship || box->tempUpgrade != 0 || !Rounds::InPreparation()) return false;
+            // The box under the mouse, as FTL's own right-click asks.
+            Button *button = box->currentButton;
+            if (!button || !button->bActive || !button->bHover) return false;
+            ShipSystem *system = box->system;
+            ShipManager *ship = box->ship;
+            int id = system->iSystemType;
+            if (id < 0 || id >= SYS_ALL || ship->iShipId != 0) return false;   // FTL's own systems (not the bays)
+            int level = system->powerState.second, lowest = LowestLevel(id);
+            if (level > lowest)
+            {
+                int refund = LevelPrice(box->blueprint, level) / 2;
+                // Its power first: a system holds no more power than its level (FTL takes it as damage does).
+                if (system->powerState.first > level - 1) system->ForceDecreasePower(system->powerState.first - (level - 1));
+                system->UpgradeSystem(-1);
+                ship->ModifyScrapCount(refund, false);
+                g_refit.saleArmed = -1;
+                Sound("downgradeSystem");
+                Say(SystemTitle(id) + " down to level " + std::to_string(level - 1) + ": +" + std::to_string(refund) + " scrap");
+                return true;
+            }
+            if (!Sellable(id))
+            {
+                Sound("powerUpFail");
+                Say(SystemTitle(id) + " stays at level " + std::to_string(level) + (g_refit.startLevels.count(id) ? ", as the match began" : "") +
+                    ": a ship can't do without it");
+                return true;
+            }
+            int price = SalePrice(box->blueprint, level);
+            double now = WallMs();
+            if (g_refit.saleArmed != id || now > g_refit.saleArmedUntil)
+            {
+                g_refit.saleArmed = id;
+                g_refit.saleArmedUntil = now + 3000.0;
+                Sound("powerUpFail");
+                Say("Right-click again to sell " + SystemTitle(id) + " for " + std::to_string(price) + " scrap");
+                return true;
+            }
+            g_refit.saleArmed = -1;
+            g_refit.saleDue = id;
+            g_refit.saleDuePrice = price;
+            return true;
+        }
+
+        void OnUpgradesLoop()
+        {
+            int id = g_refit.saleDue, price = g_refit.saleDuePrice;
+            if (id < 0) return;
+            g_refit.saleDue = -1;
+            ShipManager *ship = G_->GetShipManager(0);
+            CommandGui *gui = Gui();
+            if (!ship || !gui || !ship->HasSystem(id) || !Rounds::InPreparation()) return;
+            // Upgrades waiting in the other boxes are made first (FTL's ACCEPT): the screen is built anew without the
+            // sold system, and its boxes (with what they wait for) go.
+            gui->upgradeScreen.ConfirmUpgrades();
+            ship->RemoveSystem(id);
+            ship->ModifyScrapCount(price, false);
+            gui->upgradeScreen.OnInit(ship);
+            Sound("downgradeSystem");
+            Say(SystemTitle(id) + " sold: +" + std::to_string(price) + " scrap");
+        }
+
+        // What the reactor's bar `level` cost (Hyperspace's reactor prices, ReactorButton::OnRightClick).
+        static int ReactorPrice(ShipManager *ship, int level)
+        {
+            const CustomShipDefinition &def = CustomShipSelect::GetInstance()->GetDefinition(ship->myBlueprint.blueprintName);
+            const std::vector<int> &costs = def.reactorPrices;
+            int column = (int)std::floor((level - 1) / 5) + 1;
+            if (column >= 0 && column < (int)costs.size() && costs[column] >= 0) return costs[column];
+            return costs.empty() ? 0 : costs[0] + (column - 1) * def.reactorPriceIncrement;
+        }
+
+        bool TakeBackReactor(ReactorButton *button)
+        {
+            if (!button || !button->ship || button->tempUpgrade != 0 || !button->bHover || !Rounds::InPreparation()) return false;
+            ShipManager *ship = button->ship;
+            PowerManager *power = PowerManager::GetPowerManager(0);
+            if (!power || ship->iShipId != 0) return false;
+            int level = power->currentPower.second;
+            if (level <= g_refit.startReactor)
+            {
+                Sound("powerUpFail");
+                Say("The reactor stays at " + std::to_string(level) + " bars, as the match began");
+                return true;
+            }
+            if (power->GetAvailablePower() < 1)
+            {
+                Sound("powerUpFail");
+                Say("Every reactor bar is in use: take power off a system first");
+                return true;
+            }
+            int refund = ReactorPrice(ship, level) / 2;
+            power->currentPower.second -= 1;
+            ship->ModifyScrapCount(refund, false);
+            Sound("downgradeSystem");
+            Say("Reactor down to " + std::to_string(level - 1) + " bars: +" + std::to_string(refund) + " scrap");
+            return true;
+        }
+
+        void RenderSaleMark(UpgradeBox *box)
+        {
+            if (!box || !box->system || g_refit.saleArmed != box->system->iSystemType || WallMs() > g_refit.saleArmedUntil) return;
+            if (!Rounds::InPreparation() || !box->currentButton) return;
+            const Globals::Rect &r = box->currentButton->hitbox;
+            CSurface::GL_DrawRect((float)r.x, (float)r.y, (float)r.w, (float)r.h, GL_Color(0.75f, 0.12f, 0.1f, 0.72f));
+            CSurface::GL_SetColor(GL_Color(1.f, 1.f, 1.f, 1.f));
+            freetype::easy_printCenter(12, r.x + r.w / 2.f, r.y + r.h / 2.f - 18.f, "SELL?");
+            freetype::easy_printCenter(12, r.x + r.w / 2.f, r.y + r.h / 2.f + 2.f, "+" + std::to_string(SalePrice(box->blueprint, box->system->powerState.second)));
+        }
+
+        void OnUpgradesOpen()
+        {
+            if (g_refit.tipShown || !Rounds::InPreparation()) return;
+            g_refit.tipShown = true;
+            Console::Feed("Upgrades: a right-click takes a level back for half its price; an extra system at its lowest "
+                          "level sells for half at a second right-click");
         }
 
         void ResetWeaponCharge()

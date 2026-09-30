@@ -242,6 +242,43 @@ HOOK_METHOD_PRIORITY(TutorialManager, AllowUpgrades, -2000, () -> bool)
     return super();
 }
 
+// The shop buys back (roadmap V): in a match's preparation a right-click in the upgrade screen with nothing waiting
+// to be taken back takes a level back, and sells an extra system at its lowest level (DuelsRefit.cpp).
+HOOK_METHOD_PRIORITY(UpgradeBox, MouseRightClick, -2000, (int mX, int mY) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> UpgradeBox::MouseRightClick -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Refit::TakeBackLevel(this)) return;
+    super(mX, mY);
+}
+
+HOOK_METHOD_PRIORITY(ReactorButton, OnRightClick, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ReactorButton::OnRightClick -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Refit::TakeBackReactor(this)) return;
+    super();
+}
+
+HOOK_METHOD_PRIORITY(UpgradeBox, OnRender, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> UpgradeBox::OnRender -> Begin (DuelsHooks.cpp)\n")
+    super();
+    Duels::Refit::RenderSaleMark(this);
+}
+
+HOOK_METHOD_PRIORITY(Upgrades, OnLoop, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Upgrades::OnLoop -> Begin (DuelsHooks.cpp)\n")
+    Duels::Refit::OnUpgradesLoop();   // a sale builds the boxes anew before FTL goes through them
+    super();
+}
+
+HOOK_METHOD_PRIORITY(Upgrades, Open, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Upgrades::Open -> Begin (DuelsHooks.cpp)\n")
+    super();
+    Duels::Refit::OnUpgradesOpen();
+}
+
 // Game speed must stay at normal: under split authority a faster client would charge weapons faster.
 HOOK_METHOD_PRIORITY(CFPS, OnLoop, -1000, () -> void)
 {

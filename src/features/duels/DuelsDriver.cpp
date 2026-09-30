@@ -610,6 +610,20 @@ namespace Duels
             message = "clicked at " + std::to_string(x) + "," + std::to_string(y);
             return true;
         }
+        if (verb == "rclick")
+        {
+            // rclick <x> <y>: a right click there through the game's whole input (FTL's upgrade screen takes a level
+            // back with it).
+            int x, y;
+            if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y)) { message = "usage: rclick <x> <y>"; return false; }
+            CApp *app = G_->GetCApp();
+            if (!app || !app->gui) { message = "not in the game"; return false; }
+            app->gui->MouseMove(x, y);
+            app->gui->RButtonDown(x, y, false);
+            app->gui->RButtonUp(x, y, false);
+            message = "right-clicked at " + std::to_string(x) + "," + std::to_string(y);
+            return true;
+        }
         if (verb == "drag")
         {
             // drag <x1> <y1> <x2> <y2>: press the left button at the first point, move to the second (in steps) and

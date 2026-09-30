@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
+struct ReactorButton;
 struct ShipManager;
+struct UpgradeBox;
 
 namespace Duels
 {
@@ -76,5 +78,20 @@ namespace Duels
         // screens), and FTL then opens what the key asks for.
         bool SwitchScreensClick(int x, int y);
         void SwitchScreensKey(int key);
+
+        // The shop buys back (roadmap V; rules, section 7), in a match's preparation, in FTL's upgrade screen. A
+        // right-click on a system or the reactor with no upgrade waiting (FTL's own right-click takes one of those
+        // back) takes a level back for half its price, down to the level the ship began the match with (a system
+        // bought since: level 1). At its lowest a system the ship can do without (cloaking, hacking, mind control, the
+        // teleporter, drones, artillery, the backup battery) is sold at a second right-click within 3 s, for half of
+        // what it and its levels cost; its weapons or drones go to the cargo (Hyperspace's RemoveSystem). True when
+        // the right-click was taken. RenderSaleMark marks a box whose sale waits for the second click; OnUpgradesOpen
+        // shows the tip once a match. The sale itself happens in OnUpgradesLoop (Upgrades::OnLoop, before FTL's own):
+        // it builds the screen's boxes anew, which a right-click can't do while FTL goes through them.
+        bool TakeBackLevel(UpgradeBox *box);
+        bool TakeBackReactor(ReactorButton *button);
+        void RenderSaleMark(UpgradeBox *box);
+        void OnUpgradesOpen();
+        void OnUpgradesLoop();
     }
 }
