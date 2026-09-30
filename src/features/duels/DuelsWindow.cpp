@@ -113,10 +113,14 @@ namespace Duels
             freetype::easy_printCenter(FONT, box.x + box.w / 2.f, box.y + (box.h - 12.f) / 2.f, label);
         }
 
-        static void Icon(const std::string &kind, float x, float y, float size)
+        // The bay icons are FTL-style 64 px system icons with the glyph (26 px) in the middle: drawn at their own size,
+        // crisp and as large as in the game's panels (the user: too small to make out at 22 px).
+        static const float ICON_IMAGE = 64.f, ICON_GLYPH = 26.f, ICON_INSET = 19.f;
+
+        static void Icon(const std::string &kind, float glyphX, float glyphY)
         {
             GL_Texture *texture = G_->GetResources()->GetImageId("icons/s_bay_" + kind + "_green1.png");
-            if (texture) CSurface::GL_BlitImage(texture, x, y, size, size, 0.f, COLOR_WHITE, false);
+            if (texture) CSurface::GL_BlitImage(texture, glyphX - ICON_INSET, glyphY - ICON_INSET, ICON_IMAGE, ICON_IMAGE, 0.f, COLOR_WHITE, false);
         }
 
         // The actions the window offers now, and whether each can be used.
@@ -236,21 +240,21 @@ namespace Duels
             y += 20.f;
             y += Paragraph(FONT, x, y, inner, "Each weapon and each drone has a room of its own; its icon shows the kind. "
                                               "Weapons:", soft) + 4.f;
-            const float cell = inner / 4.f, size = 22.f, row = 26.f;
+            const float cell = inner / 4.f, row = ICON_GLYPH + 6.f;
             for (size_t i = 0; i < sizeof(WEAPONS) / sizeof(WEAPONS[0]); ++i)
             {
                 float cx = x + cell * (i % 4), cy = y + row * (i / 4);
-                Icon(WEAPONS[i].icon, cx, cy, size);
-                Text(FONT, cx + size + 6.f, cy + 5.f, WEAPONS[i].label, white);
+                Icon(WEAPONS[i].icon, cx, cy);
+                Text(FONT, cx + ICON_GLYPH + 8.f, cy + 7.f, WEAPONS[i].label, white);
             }
-            y += row * 2.f + 4.f;
+            y += row * 2.f + 2.f;
             Text(FONT, x, y, "Drones:", soft);
             y += 16.f;
             for (size_t i = 0; i < sizeof(DRONES) / sizeof(DRONES[0]); ++i)
             {
                 float cx = x + cell * (i % 4), cy = y + row * (i / 4);
-                Icon(DRONES[i].icon, cx, cy, size);
-                Text(FONT, cx + size + 6.f, cy + 5.f, DRONES[i].label, white);
+                Icon(DRONES[i].icon, cx, cy);
+                Text(FONT, cx + ICON_GLYPH + 8.f, cy + 7.f, DRONES[i].label, white);
             }
 
             // The actions, along the bottom.
