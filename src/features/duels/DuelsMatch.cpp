@@ -15,6 +15,7 @@
 #include "DuelsMatch.h"
 #include "DuelsMind.h"
 #include "DuelsRooms.h"
+#include "DuelsRounds.h"
 #include "DuelsNet.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cmath>
+#include <deque>
 #include <map>
 #include <set>
 #include <sstream>
@@ -41,9 +43,9 @@ namespace Duels
             MSG_STATE = 19,      // unreliable, 10 Hz: hull, shields, systems, weapons
             MSG_SHOT = 20,       // reliable: a projectile left one of our weapons
             MSG_RESULT = 21,     // reliable: the defender's verdict on a shot
-            MSG_DEFEAT = 22,     // reliable: our hull reached 0
             MSG_SHOT_DOWNED = 23, // reliable: our shot ran into something in our own space before it left
             MSG_SETTINGS = 27    // reliable, host to guest: the duel's settings (crew experience)
+            // 22 (our hull reached 0) is gone: defeats go to the match flow (DuelsRounds.h, 38 and 39).
             // 24, 25: DuelsDrones.h
         };
 
@@ -178,7 +180,6 @@ namespace Duels
             std::string sentArmament;      // our weapons and drones, in slot order, as the last loadout had them
             bool replicaReady = false;     // we built the opponent's ship
             bool peerReady = false;        // they built ours
-            bool defeatSent = false;
             std::string opponentShip;
 
             uint16_t stateSeq = 0;
@@ -228,7 +229,6 @@ namespace Duels
             m.loadoutSent = false;
             m.replicaReady = false;
             m.peerReady = false;
-            m.defeatSent = false;
             m.opponentShip.clear();
             m.havePeerState = false;
             m.stateDirty = false;
@@ -259,6 +259,13 @@ namespace Duels
         {
             Log("Match: %s", text.c_str());
             Console::Print("DUEL: " + text);
+        }
+
+        // What matters goes to the feed at the bottom left too (roadmap L).
+        static void Headline(const std::string &text)
+        {
+            Log("Match: %s", text.c_str());
+            Console::Feed(text);
         }
 
         static bool InGame()
@@ -527,6 +534,7 @@ namespace Duels
             }
             g_match.opponentShip = blueprint;
             g_match.replicaReady = true;
+            Rounds::OnReplicaBuilt(replica);
             Net::Send(MSG_READY, Writer(), true);
             Announce("opponent's ship " + blueprint + " is here");
         }
@@ -792,6 +800,8 @@ namespace Duels
             // Hacking: how far our pulse has run (DuelsHacking.cpp); mind control: our control's timer (DuelsMind.cpp).
             Hacking::WriteState(w);
             Mind::WriteState(w);
+            // The match: the damage our ship took this round (DuelsRounds.cpp).
+            Rounds::WriteState(w);
 
             Net::Send(MSG_STATE, w, false);
             g_match.lastStateSent = now;
@@ -843,7 +853,7 @@ namespace Duels
             std::vector<float> artilleryCharge(r.U8());
             for (float &charge : artilleryCharge) charge = r.F32();
             if (!Drones::ReadState(r) || !Crew::ReadState(r) || !Rooms::ReadState(r) || !Hacking::ReadState(r) || !Mind::ReadState(r) ||
-                !r.Ok()) return;
+                !Rounds::ReadState(r) || !r.Ok()) return;
 
             // Snapshots may arrive out of order; only newer ones count.
             if (g_match.havePeerState && (uint16_t)(seq - g_match.peerStateSeq) >= 32768) return;
@@ -2043,13 +2053,101 @@ namespace Duels
             return whole;
         }
 
+        // ---------------------------------------------------------------------------------------------------------
+        // Chat (rules, section 8): no flooding. A line is cleaned of control characters and cut to a length; a player
+        // may send a few lines per 10 s. The receiving game applies the same limits itself (it never trusts the
+        // sender): a flooding opponent's chat is muted for a while.
+        // ---------------------------------------------------------------------------------------------------------
+
+        static const size_t CHAT_MAX_CHARS = 120;
+        static const size_t CHAT_LINES = 5;
+        static const double CHAT_WINDOW_MS = 10000.0;
+        static const double CHAT_MUTE_MS = 30000.0;
+
+        struct ChatLimits
+        {
+            std::deque<double> sent, received;
+            double mutedUntil = 0.0;
+            uint32_t dropped = 0;
+        };
+
+        static ChatLimits g_chat;
+
+        // Printable text only (UTF-8 kept), trimmed, at most CHAT_MAX_CHARS bytes (not cutting a character).
+        static std::string CleanChat(const std::string &text)
+        {
+            std::string clean;
+            for (unsigned char c : text)
+            {
+                if (c < 0x20 || c == 0x7f) c = ' ';
+                clean += (char)c;
+            }
+            size_t start = clean.find_first_not_of(' ');
+            if (start == std::string::npos) return "";
+            clean = clean.substr(start, clean.find_last_not_of(' ') - start + 1);
+            if (clean.size() > CHAT_MAX_CHARS)
+            {
+                size_t cut = CHAT_MAX_CHARS;
+                while (cut > 0 && ((unsigned char)clean[cut] & 0xC0) == 0x80) --cut;   // not inside a character
+                clean = clean.substr(0, cut);
+            }
+            return clean;
+        }
+
+        // Whether one more line fits into the last CHAT_WINDOW_MS (and counts it if it does).
+        static bool ChatAllowed(std::deque<double> &times, double now)
+        {
+            while (!times.empty() && now - times.front() > CHAT_WINDOW_MS) times.pop_front();
+            if (times.size() >= CHAT_LINES) return false;
+            times.push_back(now);
+            return true;
+        }
+
+        static void ReceiveChat(const std::string &raw)
+        {
+            double now = WallMs();
+            std::string text = CleanChat(raw);
+            if (text.empty()) return;
+            if (now < g_chat.mutedUntil)
+            {
+                ++g_chat.dropped;
+                return;
+            }
+            if (!ChatAllowed(g_chat.received, now))
+            {
+                g_chat.mutedUntil = now + CHAT_MUTE_MS;
+                ++g_chat.dropped;
+                Console::Feed(Net::PeerName() + "'s chat is muted for " + std::to_string((int)(CHAT_MUTE_MS / 1000.0)) +
+                              " s (too many lines)");
+                Log("Match: the opponent's chat is muted (more than %u lines in %.0f s)", (unsigned)CHAT_LINES, CHAT_WINDOW_MS / 1000.0);
+                return;
+            }
+            Log("Match: chat from %s: %s", Net::PeerName().c_str(), text.c_str());
+            Console::Chat(Net::PeerName(), text);
+        }
+
         class Listener : public Net::Listener
         {
         public:
             void OnConnected() override
             {
+                if (Net::Resumed())
+                {
+                    // Back after a lost connection, in the same match: both ships stay; the loadouts, the crew
+                    // rosters and the match state go again, and the fight goes on.
+                    g_match.loadoutSent = false;
+                    g_match.peerReady = false;
+                    g_match.stateDirty = true;
+                    Crew::SendRosterAgain();
+                    Headline(Net::PeerName() + " is back: the match goes on");
+                    Rounds::OnConnected();
+                    return;
+                }
                 ResetMatch();
-                Announce("connected to " + Net::PeerName() + (Net::IsHost() ? " (you host)" : ""));
+                // No pause in a duel, from the first preparation on (rules, section 1): the store and the menus
+                // would pause this game.
+                GetState().noPause = true;
+                Headline(Net::IsHost() ? Net::PeerName() + " joined your duel" : "You joined " + Net::PeerName() + "'s duel");
                 // The host's settings count for both; the guest has the default until they come.
                 g_xpMatch = Net::IsHost() ? g_xpSetting : XP_DEFAULT;
                 g_xpCarry = 0.f;
@@ -2062,9 +2160,11 @@ namespace Duels
                 bool ours = GetState().debug, theirs = Net::PeerDebug();
                 if (ours || theirs)
                 {
-                    Announce(std::string("DEBUG DUEL: test commands are on (") + (ours ? "yours on" : "yours off") + ", " +
+                    Headline(std::string("DEBUG DUEL: test commands are on (") + (ours ? "yours on" : "yours off") + ", " +
                              Net::PeerName() + "'s " + (theirs ? "on" : "off") + ")");
                 }
+                // The match: the host's game starts it (round 1's preparation, or at once a free fight).
+                Rounds::OnConnected();
             }
 
             void OnNotice(const std::string &text) override
@@ -2072,24 +2172,19 @@ namespace Duels
                 Announce(text);
             }
 
+            void OnConnectionLost(const std::string &reason, bool cutOff) override
+            {
+                Headline(reason + (cutOff ? ": trying to get back into the match" : ": the match waits for them to come back") +
+                         " (" + std::to_string((int)(Net::REJOIN_GRACE_MS / 1000.0)) + " s)");
+            }
+
             void OnDisconnected(const std::string &reason, bool opponentGone) override
             {
-                // A fight still going on when the other player is gone is won by the player still here (rules,
-                // section 3). Rejoining a running match comes with the match flow.
-                ShipManager *own = G_->GetShipManager(0);
-                ShipManager *replica = G_->GetShipManager(1);
-                bool fighting = g_match.replicaReady && own && replica && own->ship.hullIntegrity.first > 0 &&
-                                replica->ship.hullIntegrity.first > 0;
-                if (fighting && opponentGone)
-                {
-                    Log("Match: fight won, the opponent is gone (%s)", reason.c_str());
-                    Announce(reason + " - you win this fight");
-                }
-                else
-                {
-                    Announce("disconnected: " + reason);
-                }
+                // The player still here wins when the other is gone (rules, section 3); the match flow says so. The
+                // opponent's ship leaves (it used to stay as an FTL enemy, and its artillery went on firing).
+                Headline("Disconnected: " + reason);
                 FlushShotLog();
+                Rounds::OnDisconnected(opponentGone);
                 ResetMatch();
             }
 
@@ -2098,7 +2193,7 @@ namespace Duels
                 switch (type)
                 {
                 case MSG_CHAT:
-                    Announce(Net::PeerName() + ": " + reader.Str());
+                    ReceiveChat(reader.Str());
                     break;
                 case MSG_SETTINGS:
                     if (!Net::IsHost()) ApplySettings(reader);
@@ -2145,8 +2240,9 @@ namespace Duels
                 case Boarding::MSG_CREW_POWER:
                     Boarding::OnMessage(type, reader);
                     break;
-                case MSG_DEFEAT:
-                    Announce("the opponent's ship is destroyed - you win this round");
+                case Rounds::MSG_MATCH:
+                case Rounds::MSG_MATCH_EVENT:
+                    Rounds::OnMessage(type, reader);
                     break;
                 default:
                     Log("Match: unknown message %u", (unsigned)type);
@@ -2192,30 +2288,49 @@ namespace Duels
             MatchState &m = g_match;
             if (InGame())
             {
-                if (!m.loadoutSent) SendLoadout();
-                else if (Armament(G_->GetShipManager(0)) != m.sentArmament)
+                // The loadout and the state go while the ships meet (the match flow); between rounds each player
+                // refits. The loadout first: the other game builds our ship from it before our crew roster comes.
+                if (Rounds::ShipsMeet())
                 {
-                    Log("Match: our weapons or drones changed their slots; the loadout goes again");
-                    SendLoadout();
+                    if (!m.loadoutSent) SendLoadout();
+                    else if (Armament(G_->GetShipManager(0)) != m.sentArmament)
+                    {
+                        Log("Match: our weapons or drones changed their slots; the loadout goes again");
+                        SendLoadout();
+                    }
+                    if (m.stateDirty || now - m.lastStateSent >= STATE_INTERVAL_MS) SendState(now);
                 }
-                if (m.stateDirty || now - m.lastStateSent >= STATE_INTERVAL_MS) SendState(now);
                 if (m.replicaReady)
                 {
                     Hacking::OnFrame();
                     Boarding::OnFrame();
                 }
                 ShipManager *ship = G_->GetShipManager(0);
-                // No escaping a duel: the FTL drive never finishes charging while the opponent is here.
-                if (ship && m.replicaReady) ship->jump_timer.first = 0.f;
-                if (ship && ship->ship.hullIntegrity.first <= 0 && !m.defeatSent)
-                {
-                    m.defeatSent = true;
-                    Net::Send(MSG_DEFEAT, Writer(), true);
-                    Announce("your ship is destroyed - the opponent wins this round");
-                }
+                // No escaping a duel: the FTL drive never finishes charging.
+                if (ship) ship->jump_timer.first = 0.f;
                 TraceSync(now);
             }
+            Rounds::OnFrame(now);
             TrackShots(now);
+        }
+
+        const std::string &PlayerName()
+        {
+            return g_match.playerName;
+        }
+
+        bool ShipsStand()
+        {
+            return g_match.replicaReady && g_match.peerReady;
+        }
+
+        void NewFight()
+        {
+            // Our crew aboard the opponent's ship came home first (DuelsRefit.cpp): only theirs go with it.
+            FlushShotLog();
+            ResetMatch();
+            RemoveEnemy();
+            View::UsePlayerShieldPosition(nullptr);
         }
 
         void SetPlayerName(const std::string &name)
@@ -2267,11 +2382,49 @@ namespace Duels
             Net::SetDebugFlag(debug);
         }
 
-        bool Say(const std::string &text)
+        int ChatFlood(int count)
         {
+            // Test: lines without the sender's limits (the receiving game must hold them back itself).
+            int sent = 0;
+            for (int i = 0; i < count; ++i)
+            {
+                Writer w;
+                w.Str("flood line " + std::to_string(i + 1));
+                if (Net::Send(MSG_CHAT, w, true)) ++sent;
+            }
+            return sent;
+        }
+
+        bool Say(const std::string &raw, std::string &message)
+        {
+            std::string text = CleanChat(raw);
+            if (text.empty())
+            {
+                message = "nothing to say";
+                return false;
+            }
+            if (!Net::IsConnected())
+            {
+                message = "not connected";
+                return false;
+            }
+            if (!ChatAllowed(g_chat.sent, WallMs()))
+            {
+                message = "wait a moment: at most " + std::to_string(CHAT_LINES) + " lines per " +
+                          std::to_string((int)(CHAT_WINDOW_MS / 1000.0)) + " s";
+                Console::Feed(message);
+                return false;
+            }
             Writer w;
             w.Str(text);
-            return Net::Send(MSG_CHAT, w, true);
+            if (!Net::Send(MSG_CHAT, w, true))
+            {
+                message = "not connected";
+                return false;
+            }
+            Console::Chat("You", text);
+            message = "said: " + text;
+            return true;
         }
 
         std::string Status()

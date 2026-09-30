@@ -7,9 +7,12 @@
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsRelay.h"
+#include "DuelsRounds.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
+#include "DuelsTrace.h"
 #include "DuelsView.h"
+#include "DuelsWindow.h"
 
 #include <algorithm>
 #include <cmath>
@@ -198,12 +201,31 @@ namespace Duels
         return !server.empty();
     }
 
+    // Test verb "mouse": FTL's mouse held at a point for a while.
+    struct HeldMouse
+    {
+        int x = 0, y = 0;
+        double untilMs = 0.0;
+    };
+
+    static HeldMouse g_heldMouse;
+
+    void HeldMouseOnFrame()
+    {
+        if (WallMs() >= g_heldMouse.untilMs) return;
+        MouseControl *mouse = G_->GetMouseControl();
+        CApp *app = G_->GetCApp();
+        if (mouse) mouse->position = Point(g_heldMouse.x, g_heldMouse.y);
+        if (app && app->gui) app->gui->MouseMove(g_heldMouse.x, g_heldMouse.y);
+    }
+
     // Commands any player may use. The others change ships or automate play, so they need debug mode.
     static bool IsPlayerVerb(const std::string &verb)
     {
         static const std::set<std::string> verbs = {
             "console", "debug", "host", "join", "leave", "lobby", "name", "net", "netstats", "note", "quit", "relay", "say",
-            "screenshot", "status", "stop", "trace", "tracepower", "version", "window", "xp"};
+            "screenshot", "status", "stop", "trace", "tracepower", "version", "window", "xp",
+            "match", "ready", "forfeit", "concede", "draw"};
         return verbs.count(verb) != 0;
     }
 
@@ -541,8 +563,17 @@ namespace Duels
         }
         if (verb == "netsim")
         {
-            // netsim <delay ms> [jitter ms] [loss %]: test conditions for our outgoing packets
-            if (cmd.args.size() < 2) { message = "usage: netsim <delay ms> [jitter ms] [loss %]"; return false; }
+            // netsim <delay ms> [jitter ms] [loss %]: test conditions for our outgoing packets; netsim cut on|off: none
+            // go out or come in (a pulled cable)
+            if (ArgIs(cmd, 1, "cut"))
+            {
+                bool on;
+                if (!ParseOnOff(cmd, 2, on)) { message = "usage: netsim cut on|off"; return false; }
+                Net::SimulateCut(on);
+                message = on ? "network cut" : "network back";
+                return true;
+            }
+            if (cmd.args.size() < 2) { message = "usage: netsim <delay ms> [jitter ms] [loss %] | netsim cut on|off"; return false; }
             double delay = std::atof(cmd.args[1].c_str());
             double jitter = cmd.args.size() > 2 ? std::atof(cmd.args[2].c_str()) : 0.0;
             double loss = cmd.args.size() > 3 ? std::atof(cmd.args[3].c_str()) : 0.0;
@@ -555,10 +586,44 @@ namespace Duels
             std::string text = cmd.text.substr(cmd.text.find("say") + 3);
             size_t start = text.find_first_not_of(' ');
             text = start == std::string::npos ? "" : text.substr(start);
-            if (!Match::Say(text)) { message = "not connected"; return false; }
-            message = "said: " + text;
+            return Match::Say(text, message);
+        }
+
+        if (verb == "chatflood")
+        {
+            int count;
+            if (!ArgInt(cmd, 1, count) || count < 1 || count > 50) { message = "usage: chatflood <count>"; return false; }
+            message = std::to_string(Match::ChatFlood(count)) + " chat lines sent past the limits";
             return true;
         }
+        if (verb == "mouse")
+        {
+            // mouse <x> <y> [seconds]: FTL's mouse stays there (in its 1280 x 720 coordinates), for tooltips in
+            // screenshots (FTL shows one after the mouse rests on a thing for a moment).
+            int x, y;
+            if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y)) { message = "usage: mouse <x> <y> [seconds]"; return false; }
+            double seconds = cmd.args.size() > 3 ? std::atof(cmd.args[3].c_str()) : 3.0;
+            g_heldMouse.x = x;
+            g_heldMouse.y = y;
+            g_heldMouse.untilMs = WallMs() + seconds * 1000.0;
+            HeldMouseOnFrame();
+            message = "mouse at " + std::to_string(x) + "," + std::to_string(y);
+            return true;
+        }
+        if (verb == "fonttest")
+        {
+            // fonttest [seconds]: the match display's text in each of FTL's fonts, for a screenshot.
+            double seconds = cmd.args.size() > 1 ? std::atof(cmd.args[1].c_str()) : 5.0;
+            Hud::FontTest(seconds);
+            message = "font test shown";
+            return true;
+        }
+
+        // The Duels window (test verb: open, close, a click in it).
+        if (verb == "duels") return Window::RunVerb(cmd.args, message);
+
+        // The match flow (DuelsRounds.cpp): its settings, ready, forfeit, concede and draws.
+        if (Rounds::IsVerb(verb)) return Rounds::RunVerb(cmd, message);
 
         // Everything else acts on a ship.
         return ExecuteShipCommand(cmd, message);

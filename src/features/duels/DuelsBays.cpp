@@ -1203,6 +1203,36 @@ namespace Duels
             return out.str();
         }
 
+        bool Tooltip(const ShipSystem *system, std::string &text)
+        {
+            int kind, number;
+            if (!system || !BayOf(system->iSystemType, kind, number)) return false;
+            ShipManager *ship = ShipOf(system);
+            int index = number - 1;
+            std::string item;
+            if (kind == WEAPONS)
+            {
+                ProjectileFactory *weapon = Weapon(ship, index);
+                if (weapon && weapon->blueprint) item = const_cast<TextString&>(weapon->blueprint->desc.title).GetText();
+            }
+            else
+            {
+                Drone *drone = DroneIn(ship, index);
+                if (drone && drone->blueprint) item = const_cast<TextString&>(drone->blueprint->desc.title).GetText();
+            }
+            text = std::string(kind == WEAPONS ? "Weapon bay " : "Drone bay ") + std::to_string(number) + ": " +
+                   (item.empty() ? "empty" : item);
+            if (item.empty()) return true;
+            int bars = system->healthState.second, whole = system->healthState.first;
+            std::string state = whole < bars ? "Damaged: " + std::to_string(whole) + " of " + std::to_string(bars) + " bars whole"
+                                             : "Whole (" + std::to_string(bars) + (bars == 1 ? " bar)" : " bars)");
+            if (system->iLockCount > 0) state += ", ioned";
+            if (system->bUnderAttack && system->iHackEffect >= 2) state += ", hacked";
+            if (Disabled(system)) state += std::string(": the ") + (kind == WEAPONS ? "weapon" : "drone") + " is off until it is repaired";
+            text += "\n" + state;
+            return true;
+        }
+
         std::string Status()
         {
             std::ostringstream out;

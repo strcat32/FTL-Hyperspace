@@ -3,6 +3,7 @@
 #include "Duels.h"
 #include "DuelsConsole.h"
 #include "DuelsTrace.h"
+#include "DuelsWindow.h"
 
 #include <algorithm>
 #include <cctype>
@@ -18,12 +19,36 @@ namespace Duels
         static const size_t SHOWN_LINES = 12;     // the last messages, while the console is open
         static const size_t KEPT_LINES = 200;
         static const size_t KEPT_COMMANDS = 50;
+        static const double FEED_MS = 10000.0;     // a feed line stays this long (the last 2 s fading)
+        static const size_t FEED_SHOWN = 5;        // lines shown while the feed is closed
+        static const size_t FEED_OPEN_SHOWN = 12;  // and while it is open for chat
+        static const double ECHO_MS = 6000.0;      // debug mode: the log's lines at the top left this long
+        static const size_t ECHO_SHOWN = 8;
+
+        struct Timed
+        {
+            std::string text;
+            double at;
+            bool chat;
+        };
+
+        static Timed MakeTimed(const std::string &text, bool chat)
+        {
+            Timed timed;
+            timed.text = text;
+            timed.at = WallMs();
+            timed.chat = chat;
+            return timed;
+        }
 
         struct ConsoleState
         {
             bool open = false;
+            bool chat = false;             // open as the feed's chat line, not as the console
             struct TextInput *input = nullptr;    // "struct": InputBox has a TextInput() method
             std::deque<std::string> lines;
+            std::deque<Timed> feed;        // the feed's lines (chat and what matters)
+            std::deque<Timed> echo;        // debug mode: the log's latest lines, shown for a moment
             std::vector<std::string> commands;
             size_t commandPos = 0;
             int openKey = 0;               // the key that opened it, which may still arrive as a typed character
@@ -38,7 +63,7 @@ namespace Duels
             "droneparts", "dronepower", "export", "fire", "host", "import", "install", "ionize", "join", "keys", "leave", "lobby",
             "name", "nebula", "net", "netsim", "netstats", "nopause", "note", "pausetest", "power", "quit", "relay", "rooms", "say", "screenshot", "swap",
             "script", "spawn", "status", "stop", "supershield", "trace", "tracepower", "upgrade", "version", "view",
-            "weapon", "window", "xp"};
+            "weapon", "window", "xp", "match", "ready", "forfeit", "concede", "draw", "hull", "kill", "duels", "fonttest", "mouse", "chatflood"};
 
         static std::string Lower(std::string text)
         {
@@ -62,8 +87,28 @@ namespace Duels
 
         void Print(const std::string &line)
         {
-            PrintHelper::GetInstance()->AddMessage(line);
             Remember(line);
+            if (!GetState().debug) return;
+            g_console.echo.push_back(MakeTimed(line, false));
+            while (g_console.echo.size() > ECHO_SHOWN) g_console.echo.pop_front();
+        }
+
+        static void AddFeed(const std::string &line, bool chat)
+        {
+            g_console.feed.push_back(MakeTimed(line, chat));
+            while (g_console.feed.size() > KEPT_LINES) g_console.feed.pop_front();
+        }
+
+        void Feed(const std::string &line)
+        {
+            Remember(line);
+            AddFeed(line, false);
+        }
+
+        void Chat(const std::string &from, const std::string &text)
+        {
+            Remember(from + ": " + text);
+            AddFeed(from + ": " + text, true);
         }
 
         bool IsOpen()
@@ -72,7 +117,7 @@ namespace Duels
         }
 
         static void StartInput(const std::string &text);
-        static void Open();
+        static void Open(bool chat);
         static bool CanOpen(CommandGui *gui);
 
         bool OpenWith(CommandGui *gui, const std::string &text)
@@ -80,7 +125,7 @@ namespace Duels
             if (!g_console.open)
             {
                 if (!CanOpen(gui)) return false;
-                Open();
+                Open(false);
             }
             StartInput(text);
             return true;
@@ -109,10 +154,11 @@ namespace Duels
             g_console.input->pos = (int)g_console.input->text.size();
         }
 
-        static void Open()
+        static void Open(bool chat)
         {
             StartInput("");
             g_console.open = true;
+            g_console.chat = chat;
             g_console.commandPos = g_console.commands.size();
         }
 
@@ -120,6 +166,7 @@ namespace Duels
         {
             if (g_console.input) g_console.input->Stop();
             g_console.open = false;
+            g_console.chat = false;
         }
 
         // A line typed: DUEL commands with or without "DUEL", "HS <command>" for Hyperspace's commands, anything else
@@ -179,13 +226,12 @@ namespace Duels
             {
                 bool chat = IsChatKey(key);
                 if ((!chat && !IsConsoleKey(key)) || !CanOpen(gui)) return false;
-                Open();
-                if (chat) StartInput("say ");
+                Open(chat);
                 g_console.openKey = key;
                 g_console.openKeyUntilMs = WallMs() + 150.0;
                 return true;
             }
-            if (IsConsoleKey(key) || key == SDLK_ESCAPE)
+            if ((!g_console.chat && IsConsoleKey(key)) || key == SDLK_ESCAPE)
             {
                 Close();
                 return true;
@@ -224,6 +270,14 @@ namespace Duels
             case CEvent::TEXT_CONFIRM:
             {
                 std::string line = Trim(g_console.input->GetText());
+                if (g_console.chat)
+                {
+                    // The feed's chat line: said to the other player, then closed.
+                    Close();
+                    std::string command = "DUEL say " + line;
+                    if (!line.empty()) gui->RunCommand(command);
+                    break;
+                }
                 if (!line.empty()) Run(gui, line);
                 StartInput("");   // Enter ends the game's text entry; the console stays open
                 break;
@@ -238,33 +292,18 @@ namespace Duels
             return true;
         }
 
-        bool Render()
+        // A line of text on a dark backdrop.
+        static void Backdrop(float x, float y, float width, float height, float alpha)
         {
-            if (!g_console.open || !g_console.input) return false;
-            PrintHelper *printer = PrintHelper::GetInstance();
-            float x = (float)printer->x;
-            float y = (float)printer->y;
-            int font = printer->font;
+            CSurface::GL_DrawRect(x - 6.f, y - 4.f, width + 12.f, height + 8.f, GL_Color(0.f, 0.f, 0.f, 0.6f * alpha));
+        }
 
-            // The recent messages, then the input line under them with the caret, on a faint backdrop.
-            std::string text;
-            size_t first = g_console.lines.size() > SHOWN_LINES ? g_console.lines.size() - SHOWN_LINES : 0;
-            for (size_t i = first; i < g_console.lines.size(); ++i) text += (i > first ? "\n" : "") + g_console.lines[i];
-            float textHeight = text.empty() ? 0.f : freetype::easy_measurePrintLines(font, x, y, printer->lineLength, text).y;
-            const float lineHeight = 14.f;
-            CSurface::GL_DrawRect(x - 6.f, y - 5.f, (float)printer->lineLength + 12.f, textHeight + lineHeight + 10.f,
-                                  GL_Color(0.f, 0.f, 0.f, 0.55f));
-            CSurface::GL_SetColor(COLOR_WHITE);
-            if (!text.empty())
-            {
-                freetype::easy_printAutoNewlines(font, x, y, printer->lineLength, text);
-                y += textHeight;
-            }
-
+        // The input line with its caret (console or chat), at x, y.
+        static void InputLine(int font, float x, float y, const std::string &prompt)
+        {
             struct TextInput *input = g_console.input;
             input->OnLoop();   // the caret's blink
             std::string typed = input->GetText();
-            std::string prompt = "> ";
             freetype::easy_print(font, x, y, prompt + typed);
             if ((long long)(WallMs() / 500.0) % 2 == 0)
             {
@@ -273,6 +312,101 @@ namespace Duels
                 float caretX = x + (float)freetype::easy_measureWidth(font, before);
                 CSurface::GL_DrawRect(caretX, y + 1.f, 1.f, 11.f, COLOR_WHITE);
             }
+        }
+
+        static bool InGame()
+        {
+            WorldManager *world = G_->GetWorld();
+            CApp *app = G_->GetCApp();
+            return world && world->playerShip && world->commandGui && app && !app->menu.bOpen;
+        }
+
+        // The feed at the bottom left, above the power bars and systems: its recent lines fading, or (open for chat)
+        // more lines and the input line.
+        static void RenderFeed()
+        {
+            const int font = 10;
+            const float x = 16.f, bottom = 588.f, lineHeight = 14.f, width = 440.f;
+            double now = WallMs();
+            bool typing = g_console.open && g_console.chat && g_console.input;
+            std::vector<const Timed*> shown;
+            for (auto it = g_console.feed.rbegin(); it != g_console.feed.rend(); ++it)
+            {
+                if (shown.size() >= (typing ? FEED_OPEN_SHOWN : FEED_SHOWN)) break;
+                if (!typing && now - it->at > FEED_MS) break;
+                shown.push_back(&*it);
+            }
+            if (shown.empty() && !typing) return;
+            float lines = (float)shown.size() + (typing ? 1.f : 0.f);
+            float top = bottom - lines * lineHeight;
+            // Fading with its newest line.
+            float alpha = 1.f;
+            if (!typing && !shown.empty()) alpha = (float)std::min(1.0, std::max(0.0, (FEED_MS - (now - shown.front()->at)) / 2000.0));
+            Backdrop(x, top, width, lines * lineHeight, typing ? 1.f : alpha);
+            float y = top;
+            for (auto it = shown.rbegin(); it != shown.rend(); ++it)
+            {
+                const Timed &line = **it;
+                float lineAlpha = typing ? 1.f : (float)std::min(1.0, std::max(0.0, (FEED_MS - (now - line.at)) / 2000.0));
+                CSurface::GL_SetColor(line.chat ? GL_Color(0.75f, 0.95f, 1.f, lineAlpha) : GL_Color(1.f, 0.95f, 0.8f, lineAlpha));
+                freetype::easy_print(font, x, y, line.text);
+                y += lineHeight;
+            }
+            if (typing)
+            {
+                CSurface::GL_SetColor(COLOR_WHITE);
+                InputLine(font, x, y, "Say: ");
+            }
+            CSurface::GL_SetColor(COLOR_WHITE);
+        }
+
+        // Debug mode: the log's latest lines at the top left for a moment, on a dark backdrop.
+        static void RenderEcho(float x, float y, int font, int lineLength)
+        {
+            double now = WallMs();
+            std::string text;
+            for (const Timed &line : g_console.echo)
+            {
+                if (now - line.at > ECHO_MS) continue;
+                text += (text.empty() ? "" : "\n") + line.text;
+            }
+            if (text.empty()) return;
+            float height = freetype::easy_measurePrintLines(font, x, y, lineLength, text).y;
+            Backdrop(x, y, (float)lineLength, height, 1.f);
+            CSurface::GL_SetColor(COLOR_WHITE);
+            freetype::easy_printAutoNewlines(font, x, y, lineLength, text);
+        }
+
+        bool Render()
+        {
+            if (!InGame()) return false;
+            PrintHelper *printer = PrintHelper::GetInstance();
+            float x = (float)printer->x;
+            float y = (float)printer->y;
+            int font = printer->font;
+            RenderFeed();
+            bool console = g_console.open && !g_console.chat && g_console.input;
+            if (!console)
+            {
+                if (GetState().debug && !Window::IsOpen()) RenderEcho(x, y, font, printer->lineLength);   // not over the Duels window
+                return false;
+            }
+
+            // The recent messages, then the input line under them with the caret, on a faint backdrop.
+            std::string text;
+            size_t first = g_console.lines.size() > SHOWN_LINES ? g_console.lines.size() - SHOWN_LINES : 0;
+            for (size_t i = first; i < g_console.lines.size(); ++i) text += (i > first ? "\n" : "") + g_console.lines[i];
+            float textHeight = text.empty() ? 0.f : freetype::easy_measurePrintLines(font, x, y, printer->lineLength, text).y;
+            const float lineHeight = 14.f;
+            CSurface::GL_DrawRect(x - 6.f, y - 5.f, (float)printer->lineLength + 12.f, textHeight + lineHeight + 10.f,
+                                  GL_Color(0.f, 0.f, 0.f, 0.7f));
+            CSurface::GL_SetColor(COLOR_WHITE);
+            if (!text.empty())
+            {
+                freetype::easy_printAutoNewlines(font, x, y, printer->lineLength, text);
+                y += textHeight;
+            }
+            InputLine(font, x, y, "> ");
             return true;
         }
     }

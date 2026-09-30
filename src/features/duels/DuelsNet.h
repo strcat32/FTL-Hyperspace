@@ -13,7 +13,7 @@ namespace Duels
     namespace Net
     {
         static const uint16_t DEFAULT_PORT = 47620;
-        static const uint16_t PROTOCOL_VERSION = 3;   // bump whenever a message changes
+        static const uint16_t PROTOCOL_VERSION = 4;   // bump whenever a message changes
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;
@@ -37,7 +37,21 @@ namespace Duels
             virtual void OnDisconnected(const std::string &reason, bool opponentGone) = 0;
             // Things the player should see: the relay's room code, the relay refusing, ...
             virtual void OnNotice(const std::string &text) { (void)text; }
+            // The connection is lost while a match can go on (SetMatchToken): the session waits for the other player
+            // to come back (cutOff false) or tries to come back itself (true). OnConnected follows if it works, with
+            // Resumed() true, and OnDisconnected when the time is up.
+            virtual void OnConnectionLost(const std::string &reason, bool cutOff) { (void)reason; (void)cutOff; }
         };
+
+        // Coming back after a lost connection (roadmap 3.1, docs/design/match-flow.md): how long the match waits.
+        static const double REJOIN_GRACE_MS = 60000.0;
+        // The game's match (0: none, nothing to come back to); it goes with the handshake, so a player coming back
+        // continues the same match, and a stranger can't take the missing player's place.
+        void SetMatchToken(uint64_t token);
+        // The last OnConnected continued the match of before.
+        bool Resumed();
+        // While the connection is lost and the match waits: the time left, and whether we are the one cut off.
+        bool Reconnecting(double &msLeft, bool &cutOff);
 
         void SetListener(Listener *listener);
         // Sent in the handshake. Versions must match exactly; a different build only gets a warning in the log.
@@ -101,5 +115,7 @@ namespace Duels
         // Test conditions for our outgoing packets: fixed delay, random jitter (+/-) and loss in percent.
         // Setting the same on both sides simulates a symmetric connection.
         void Simulate(double delayMs, double jitterMs, double lossPercent);
+        // A pulled cable: nothing goes out or comes in, the relay's packets too (tests of coming back to a match).
+        void SimulateCut(bool cut);
     }
 }

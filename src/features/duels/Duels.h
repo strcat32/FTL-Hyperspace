@@ -14,7 +14,7 @@ struct CommandGui;
 namespace Duels
 {
     // Version of the Duels module (the Hyperspace version stays upstream's, so mods' version checks keep working).
-    static const char *const VERSION = "0.7.0-dev";
+    static const char *const VERSION = "0.8.0-dev";
 
     struct State
     {
@@ -56,6 +56,9 @@ namespace Duels
 
     // Called once per frame after CApp::OnLoop (runs in menus and while paused).
     void OnFrame();
+
+    // Test verb "mouse <x> <y> [seconds]": FTL's mouse held there, every frame (DuelsDriver.cpp).
+    void HeldMouseOnFrame();
 
     // Called when the game shuts down; flushes and closes trace files.
     void Shutdown();

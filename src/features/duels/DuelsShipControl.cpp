@@ -689,6 +689,45 @@ namespace Duels
         return true;
     }
 
+    // hull <ship> <points>: sets a ship's hull, 0 destroys it (tests of the match flow: the round ends).
+    static bool DoHull(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int points;
+        if (!ArgInt(cmd, 2, points) || points < 0)
+        {
+            message = "usage: hull <ship> <points>";
+            return false;
+        }
+        ship->ship.hullIntegrity.first = std::min(points, ship->ship.hullIntegrity.second);
+        message = "hull of ship " + std::to_string(ship->iShipId) + ": " + std::to_string(ship->ship.hullIntegrity.first) + "/" +
+                  std::to_string(ship->ship.hullIntegrity.second);
+        return true;
+    }
+
+    // kill <ship> crew: the ship's whole crew dies, wherever they are (tests of the crew-dead end of a round).
+    static bool DoKill(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        if (!ArgIs(cmd, 2, "crew"))
+        {
+            message = "usage: kill <ship> crew";
+            return false;
+        }
+        int killed = 0;
+        for (CrewMember *member : OwnCrew(ship))
+        {
+            if (member->IsDrone()) continue;
+            member->health.first = 0.f;
+            member->Kill(true);
+            ++killed;
+        }
+        message = std::to_string(killed) + " crew of ship " + std::to_string(ship->iShipId) + " killed";
+        return true;
+    }
+
     static bool DoDoor(const Command &cmd, std::string &message)
     {
         ShipManager *ship = ArgShip(cmd, 1, message);
@@ -787,6 +826,52 @@ namespace Duels
         return true;
     }
 
+    // Ships taken out of the location, deleted a round later (as Hyperspace parks the ships it replaces): nothing of
+    // this frame may still point at one.
+    static std::vector<CompleteShip*> g_removedShips;
+
+    bool RemoveEnemy()
+    {
+        for (CompleteShip *old : g_removedShips) delete old;
+        g_removedShips.clear();
+
+        WorldManager *world = G_->GetWorld();
+        CommandGui *gui = world ? world->commandGui : nullptr;
+        CompleteShip *player = world ? world->playerShip : nullptr;
+        CompleteShip *enemy = player ? player->enemyShip : nullptr;
+        if (!gui || !enemy) return false;
+        ShipManager *ship = enemy->shipManager;
+        ShipManager *own = player->shipManager;
+
+        // What we held of it lets go: our mind control of its crew, our hacking drone on one of its systems; then
+        // targeting, the enemy window and the crew selection (as FTL does when it leaves a location).
+        if (ship) ship->UpdateCrewmembers();
+        if (own && own->mindSystem) own->mindSystem->ReleaseCrew();
+        if (own && own->hackingSystem) own->hackingSystem->ShipDestroyed();
+        gui->ClearLocation();
+        if (ship)
+        {
+            ship->KillEveryone(true);
+            ship->SetDestroyed();
+        }
+        player->SetEnemyShip(nullptr);
+        player->arrivingParty.clear();
+        player->leavingParty.clear();
+        world->ships.erase(std::remove(world->ships.begin(), world->ships.end(), enemy), world->ships.end());
+        if (ship) world->space.ships.erase(std::remove(world->space.ships.begin(), world->space.ships.end(), ship), world->space.ships.end());
+        // Its drones leave space with it; the shots in flight go too.
+        std::vector<SpaceDrone*> &drones = world->space.drones;
+        drones.erase(std::remove_if(drones.begin(), drones.end(), [](SpaceDrone *drone) { return drone && drone->iShipId == 1; }),
+                     drones.end());
+        world->space.ClearProjectiles();
+        world->currentShipEvent.present = false;
+        g_removedShips.push_back(enemy);
+        // Its crew (the opponent's copies) are deleted by FTL's own clean-up.
+        if (G_->GetCrewFactory()) G_->GetCrewFactory()->RemoveExcessCrew();
+        Log("Ships: the enemy ship left the location");
+        return true;
+    }
+
     static bool DoSpawn(const Command &cmd, std::string &message)
     {
         if (cmd.args.size() < 2)
@@ -868,10 +953,11 @@ namespace Duels
         ShipManager *ship = ArgShip(cmd, 1, message);
         if (!ship) return false;
 
-        Log("--- ship %d: %s, hull %d/%d, reactor %d/%d ---", ship->iShipId, ship->myBlueprint.blueprintName.c_str(),
-            ship->ship.hullIntegrity.first, ship->ship.hullIntegrity.second,
+        Log("--- ship %d: %s, hull %d/%d, reactor %d/%d, scrap %d, missiles %d, drone parts %d%s ---", ship->iShipId,
+            ship->myBlueprint.blueprintName.c_str(), ship->ship.hullIntegrity.first, ship->ship.hullIntegrity.second,
             PowerManager::GetPowerManager(ship->iShipId)->currentPower.first,
-            PowerManager::GetPowerManager(ship->iShipId)->currentPower.second);
+            PowerManager::GetPowerManager(ship->iShipId)->currentPower.second, ship->currentScrap, ship->GetMissileCount(),
+            ship->GetDroneCount(), ship->bDestroyed ? ", destroyed" : "");
         for (int system = 0; system < SYSTEM_COUNT; ++system)
         {
             if (!ship->HasSystem(system)) continue;
@@ -1034,6 +1120,8 @@ namespace Duels
         if (verb == "crew") return DoCrew(cmd, message);
         if (verb == "crewpower") return DoCrewPower(cmd, message);
         if (verb == "door") return DoDoor(cmd, message);
+        if (verb == "hull") return DoHull(cmd, message);
+        if (verb == "kill") return DoKill(cmd, message);
         if (verb == "cloak") return DoCloak(cmd, message);
         if (verb == "spawn") return DoSpawn(cmd, message);
         if (verb == "export") return DoExport(cmd, message);

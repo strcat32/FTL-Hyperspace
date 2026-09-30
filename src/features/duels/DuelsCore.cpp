@@ -151,6 +151,7 @@ namespace Duels
         MuteForTests();
         PlaceOnTestDisplay();
         Match::OnFrame(WallMs());
+        HeldMouseOnFrame();
         View::OnFrame();
         Screen::OnFrame();
         RunDueScriptCommands();

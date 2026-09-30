@@ -67,6 +67,26 @@ namespace Duels
             std::deque<DelayedPacket> outbox;
             std::mt19937 random;
             uint32_t simulatedLosses = 0;
+            bool cut = false;          // test: nothing goes out or comes in (a pulled cable), the relay's packets too
+            uint32_t cutPackets = 0;
+
+            // Coming back to a match after a lost connection. `host` stays the match's role; `acceptsJoin` is who
+            // answers a handshake (the host, or whoever waits for the other to come back).
+            bool acceptsJoin = false;
+            uint64_t matchToken = 0;
+            uint64_t peerToken = 0;
+            bool resumed = false;
+            enum class Lost { None, Waiting, Rejoining };
+            Lost lost = Lost::None;
+            double lostAt = 0.0;
+            double nextAttempt = 0.0;
+            uint32_t attempts = 0;
+            // How to come back: the relay's room (with its password as typed), or the host's address.
+            bool backViaRelay = false;
+            std::string backServer;
+            uint16_t backPort = 0;
+            std::string backCode;
+            std::string relayPassword;
         };
 
         static Session g_session;
@@ -102,7 +122,7 @@ namespace Duels
             Session &s = g_session;
             // Leaving a relay room at once, rather than letting it time out.
             std::vector<uint8_t> leave;
-            if (s.relay && s.relayClient.Leave(leave) && s.socket.IsOpen()) s.socket.SendTo(s.peer, leave.data(), leave.size());
+            if (s.relay && s.relayClient.Leave(leave) && s.socket.IsOpen() && !s.cut) s.socket.SendTo(s.peer, leave.data(), leave.size());
             s.relay = false;
             s.relayClient.Reset();
             s.relayCode.clear();
@@ -134,6 +154,8 @@ namespace Duels
             writer.Str(g_session.build);
             writer.Str(g_session.name);
             writer.U8(g_session.debug ? 1 : 0);   // flags: 1 = debug mode
+            writer.U32((uint32_t)(g_session.matchToken & 0xffffffffu));   // the match to continue (0: a new one)
+            writer.U32((uint32_t)(g_session.matchToken >> 32));
         }
 
         // Pushes the link's packets through the simulated conditions to the socket (through the relay: inside its
@@ -147,7 +169,11 @@ namespace Duels
                 std::vector<std::vector<uint8_t>> control;
                 std::vector<Relay::Event> events;
                 s.relayClient.Update(s.now, control, events);
-                for (const std::vector<uint8_t> &packet : control) s.socket.SendTo(s.peer, packet.data(), packet.size());
+                for (const std::vector<uint8_t> &packet : control)
+                {
+                    if (s.cut) ++s.cutPackets;
+                    else s.socket.SendTo(s.peer, packet.data(), packet.size());
+                }
                 if (!events.empty())
                 {
                     Notice("relay: " + events.front().text);
@@ -178,6 +204,11 @@ namespace Duels
                 }
                 double delay = s.delayMs;
                 if (s.jitterMs > 0.0) delay += (unit(s.random) * 2.0 - 1.0) * s.jitterMs;
+                if (s.cut)
+                {
+                    ++s.cutPackets;
+                    continue;
+                }
                 if (delay <= 0.0 && s.outbox.empty())
                 {
                     s.socket.SendTo(s.peer, packet.data(), packet.size());
@@ -215,8 +246,50 @@ namespace Duels
                 s.delayMs = saved;
             }
             Log("Net: disconnected (%s)", reason.c_str());
+            bool waited = s.lost != Session::Lost::None;
+            s.lost = Session::Lost::None;
             Close();
-            if (before == Phase::Connected && s.listener) s.listener->OnDisconnected(reason, opponentGone);
+            if ((before == Phase::Connected || waited) && s.listener) s.listener->OnDisconnected(reason, opponentGone);
+        }
+
+        static const double REJOIN_RETRY_MS = 3000.0;
+
+        // The connection is gone. With a match to continue (SetMatchToken), the session doesn't end: it waits for the
+        // other player to come back, or tries to come back itself (cutOff), until REJOIN_GRACE_MS is over.
+        static void LoseConnection(const std::string &reason, bool cutOff, bool opponentGone)
+        {
+            Session &s = g_session;
+            if (s.matchToken == 0 || s.phase != Phase::Connected)
+            {
+                Disconnect(reason, false, opponentGone);
+                return;
+            }
+            s.lostAt = s.now;
+            s.attempts = 0;
+            s.resumed = false;
+            Log("Net: %s; the match waits %.0f s for %s", reason.c_str(), REJOIN_GRACE_MS / 1000.0,
+                cutOff ? "us to come back" : "the other player to come back");
+            if (cutOff)
+            {
+                // Back the same way: the same room at the relay, or the host's address.
+                s.backViaRelay = s.relay;
+                if (s.relay) s.backCode = s.relayCode;
+                s.lost = Session::Lost::Rejoining;
+                s.nextAttempt = s.now + REJOIN_RETRY_MS;
+                Close();
+            }
+            else
+            {
+                // Through a relay the room stays open for them; directly, the first packet from whoever comes back
+                // opens the session again (only the same match's player is let in, HandleMessage).
+                s.lost = Session::Lost::Waiting;
+                s.acceptsJoin = true;
+                s.link.Reset(0, s.now);
+                if (!s.relay) s.peer = NetAddress();
+                s.outbox.clear();
+                SetPhase(Phase::Hosting);
+            }
+            if (s.listener) s.listener->OnConnectionLost(reason, cutOff);
         }
 
         static bool CheckIdentity(Reader &reader, std::string &peerName, std::string &problem)
@@ -226,12 +299,15 @@ namespace Duels
             std::string build = reader.Str();
             peerName = reader.Str();
             uint8_t flags = reader.U8();
+            uint64_t tokenLow = reader.U32();
+            uint64_t tokenHigh = reader.U32();
             if (!reader.Ok())
             {
                 problem = "malformed handshake";
                 return false;
             }
             g_session.peerDebug = (flags & 1) != 0;
+            g_session.peerToken = tokenLow | (tokenHigh << 32);
             if (protocol != PROTOCOL_VERSION || version != g_session.version)
             {
                 char buffer[200];
@@ -254,10 +330,17 @@ namespace Duels
             uint8_t type = reader.U8();
             if (!reader.Ok()) return;
 
-            if (type == MSG_HELLO && s.host && s.phase == Phase::Hosting)
+            if (type == MSG_HELLO && s.acceptsJoin && s.phase == Phase::Hosting)
             {
                 std::string peerName, problem;
-                if (!CheckIdentity(reader, peerName, problem))
+                bool accepted = CheckIdentity(reader, peerName, problem);
+                // A match waiting for its other player lets only them back in.
+                if (accepted && s.lost == Session::Lost::Waiting && (s.peerToken == 0 || s.peerToken != s.matchToken))
+                {
+                    accepted = false;
+                    problem = "a match is waiting for its other player to come back";
+                }
+                if (!accepted)
                 {
                     Log("Net: rejecting %s: %s", s.peer.ToString().c_str(), problem.c_str());
                     Writer body;
@@ -270,32 +353,44 @@ namespace Duels
                     return;
                 }
                 s.peerName = peerName;
+                s.resumed = s.matchToken != 0 && s.peerToken == s.matchToken;
+                s.lost = Session::Lost::None;
                 Writer body;
                 WriteIdentity(body);
                 SendControl(MSG_WELCOME, body);
                 SetPhase(Phase::Connected);
-                Log("Net: %s joined from %s", peerName.c_str(), s.peer.ToString().c_str());
+                Log("Net: %s %s from %s", peerName.c_str(), s.resumed ? "came back" : "joined", s.peer.ToString().c_str());
                 if (s.listener) s.listener->OnConnected();
                 return;
             }
-            if (type == MSG_WELCOME && !s.host && s.phase == Phase::Joining)
+            if (type == MSG_WELCOME && !s.acceptsJoin && s.phase == Phase::Joining)
             {
                 std::string peerName, problem;
-                if (!CheckIdentity(reader, peerName, problem))
+                bool accepted = CheckIdentity(reader, peerName, problem);
+                // Coming back, it must be our match that is waiting there.
+                if (accepted && s.lost == Session::Lost::Rejoining && s.peerToken != s.matchToken)
+                {
+                    accepted = false;
+                    problem = "the other game is in another match now";
+                }
+                if (!accepted)
                 {
                     Disconnect(problem, true);
                     return;
                 }
                 s.peerName = peerName;
+                s.resumed = s.matchToken != 0 && s.peerToken == s.matchToken;
+                s.lost = Session::Lost::None;
                 SetPhase(Phase::Connected);
-                Log("Net: joined %s at %s", peerName.c_str(), s.peer.ToString().c_str());
+                Log("Net: %s %s at %s", s.resumed ? "back with" : "joined", peerName.c_str(), s.peer.ToString().c_str());
                 if (s.listener) s.listener->OnConnected();
                 return;
             }
-            if (type == MSG_REJECT && !s.host)
+            if (type == MSG_REJECT && !s.acceptsJoin)
             {
                 std::string reason = reader.Str();
                 Log("Net: the host refused: %s", reason.c_str());
+                // Coming back, the next try may work (the other side may not be waiting yet).
                 Close();
                 return;
             }
@@ -328,10 +423,14 @@ namespace Duels
         void SetDebugFlag(bool debug) { g_session.debug = debug; }
         bool PeerDebug() { return g_session.peerDebug; }
 
+        // A try to come back to a match (UpdateLost) goes through Join and JoinRelay: the match's role and the way
+        // back stay as they were.
+        static bool g_attempt = false;
+
         bool Host(uint16_t port, bool loopbackOnly, std::string &message)
         {
             Session &s = g_session;
-            if (s.phase != Phase::Idle) Disconnect("starting a new session", true);
+            if (s.phase != Phase::Idle || s.lost != Session::Lost::None) Disconnect("starting a new session", true);
             std::string error;
             if (!s.socket.Open(port, loopbackOnly, error))
             {
@@ -339,6 +438,7 @@ namespace Duels
                 return false;
             }
             s.host = true;
+            s.acceptsJoin = true;
             s.peer = NetAddress();
             s.link.Reset(0, s.now);
             s.random.seed(NewSessionId());
@@ -351,7 +451,7 @@ namespace Duels
         bool Join(const std::string &hostName, uint16_t port, std::string &message)
         {
             Session &s = g_session;
-            if (s.phase != Phase::Idle) Disconnect("starting a new session", true);
+            if (s.phase != Phase::Idle || (!g_attempt && s.lost != Session::Lost::None)) Disconnect("starting a new session", true);
             NetAddress address;
             std::string error;
             if (!ResolveAddress(hostName, port, address, error))
@@ -364,7 +464,13 @@ namespace Duels
                 message = "cannot open a UDP socket: " + error;
                 return false;
             }
-            s.host = false;
+            if (!g_attempt)
+            {
+                s.host = false;
+                s.backServer = hostName;
+                s.backPort = port;
+            }
+            s.acceptsJoin = false;
             s.peer = address;
             s.link.Reset(NewSessionId(), s.now);
             s.random.seed(NewSessionId());
@@ -380,7 +486,7 @@ namespace Duels
         static bool OpenRelay(const std::string &server, uint16_t port, std::string &message)
         {
             Session &s = g_session;
-            if (s.phase != Phase::Idle) Disconnect("starting a new session", true);
+            if (s.phase != Phase::Idle || (!g_attempt && s.lost != Session::Lost::None)) Disconnect("starting a new session", true);
             NetAddress address;
             std::string error;
             if (!ResolveAddress(server, port, address, error))
@@ -395,6 +501,11 @@ namespace Duels
             }
             s.relay = true;
             s.peer = address;
+            if (!g_attempt)
+            {
+                s.backServer = server;
+                s.backPort = port;
+            }
             // As typed, for the other player (with the port if it isn't the usual one; an IPv6 address in brackets).
             s.relayServer = server;
             if (port != Relay::DEFAULT_PORT)
@@ -411,6 +522,8 @@ namespace Duels
             Session &s = g_session;
             if (!OpenRelay(server, port, message)) return false;
             s.host = true;
+            s.acceptsJoin = true;
+            s.relayPassword = password;
             s.link.Reset(0, s.now);
             s.relayClient.Create(s.name, s.version, roomName, password, listed, s.now);
             SetPhase(Phase::Hosting);
@@ -429,7 +542,12 @@ namespace Duels
                 return false;
             }
             if (!OpenRelay(server, port, message)) return false;
-            s.host = false;
+            if (!g_attempt)
+            {
+                s.host = false;
+                s.relayPassword = password;
+            }
+            s.acceptsJoin = false;
             s.link.Reset(NewSessionId(), s.now);
             s.relayClient.Join(code, password, s.name, s.version, s.now);
             SetPhase(Phase::Joining);
@@ -558,7 +676,7 @@ namespace Duels
                 case Relay::Event::PeerLeft:
                     if (s.phase == Phase::Connected)
                     {
-                        Disconnect("the other player left or lost the connection", false, true);
+                        LoseConnection("the other player left or lost the connection", false, true);
                         return false;
                     }
                     // Still waiting for the handshake: wait for the next guest.
@@ -580,8 +698,34 @@ namespace Duels
 
         void Leave(const std::string &reason)
         {
-            if (g_session.phase == Phase::Idle) return;
+            if (g_session.phase == Phase::Idle && g_session.lost == Session::Lost::None) return;
             Disconnect(reason, true);
+        }
+
+        // Coming back to a match: a try every few seconds; the match ends when the time is up.
+        static void UpdateLost(double now)
+        {
+            Session &s = g_session;
+            if (s.lost == Session::Lost::Waiting && now - s.lostAt > REJOIN_GRACE_MS)
+            {
+                Disconnect("the other player didn't come back", false, true);
+                return;
+            }
+            if (s.lost != Session::Lost::Rejoining) return;
+            if (now - s.lostAt > REJOIN_GRACE_MS)
+            {
+                Disconnect("couldn't get back into the match in time", false);
+                return;
+            }
+            if (s.phase != Phase::Idle || now < s.nextAttempt) return;
+            s.nextAttempt = now + REJOIN_RETRY_MS;
+            ++s.attempts;
+            std::string message;
+            g_attempt = true;
+            bool started = s.backViaRelay ? JoinRelay(s.backServer, s.backPort, s.backCode, s.relayPassword, message)
+                                          : Join(s.backServer, s.backPort, message);
+            g_attempt = false;
+            Log("Net: trying to come back (%u): %s%s", s.attempts, message.c_str(), started ? "" : " (failed)");
         }
 
         void Update(double now)
@@ -589,6 +733,7 @@ namespace Duels
             Session &s = g_session;
             s.now = now;
             UpdateBrowser(now);
+            UpdateLost(now);
             if (s.phase == Phase::Idle) return;
 
             uint8_t buffer[2048];
@@ -598,6 +743,11 @@ namespace Duels
                 NetAddress from;
                 int size = s.socket.ReceiveFrom(from, buffer, sizeof(buffer));
                 if (size <= 0) break;
+                if (s.cut)
+                {
+                    ++s.cutPackets;
+                    continue;
+                }
 
                 if (s.relay)
                 {
@@ -668,17 +818,18 @@ namespace Duels
                 // we are the one cut off.
                 if (!s.relay)
                 {
-                    Disconnect("connection lost", false);
+                    // Nobody can tell which side lost it: the host waits, the guest tries to come back.
+                    LoseConnection("connection lost", !s.host, false);
                     return;
                 }
                 if (!s.relayClient.HasContact(now, RELAY_CONTACT_MS))
                 {
-                    Disconnect("connection lost: no contact to the relay", false);
+                    LoseConnection("connection lost: no contact to the relay", true, false);
                     return;
                 }
                 if (now - s.link.LastReceiveTime() > SILENCE_TIMEOUT_MS + RELAY_VERDICT_WAIT_MS)
                 {
-                    Disconnect("the other player lost the connection", false, true);
+                    LoseConnection("the other player lost the connection", false, true);
                     return;
                 }
             }
@@ -756,6 +907,25 @@ namespace Duels
         double PeerToLocalTime(double peerTime) { return peerTime - g_session.link.ClockOffsetMs(); }
         double LocalToPeerTime(double localTime) { return localTime + g_session.link.ClockOffsetMs(); }
         double RttMs() { return g_session.link.RttMs(); }
+
+        void SetMatchToken(uint64_t token) { g_session.matchToken = token; }
+        bool Resumed() { return g_session.resumed; }
+
+        bool Reconnecting(double &msLeft, bool &cutOff)
+        {
+            const Session &s = g_session;
+            if (s.lost == Session::Lost::None) return false;
+            msLeft = REJOIN_GRACE_MS - (s.now - s.lostAt);
+            if (msLeft < 0.0) msLeft = 0.0;
+            cutOff = s.lost == Session::Lost::Rejoining;
+            return true;
+        }
+
+        void SimulateCut(bool cut)
+        {
+            g_session.cut = cut;
+            Log("Net: test: the network is %s", cut ? "cut (nothing goes out or comes in)" : "back");
+        }
 
         void Simulate(double delayMs, double jitterMs, double lossPercent)
         {

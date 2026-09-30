@@ -46,7 +46,16 @@ namespace Duels
         bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, const std::string &password,
                        std::string &message);
         void Leave();
-        bool Say(const std::string &text);
+        // Chat to the other player (cleaned, cut to a length, a few lines per 10 s at most; rules, section 8).
+        bool Say(const std::string &text, std::string &message);
+        // Test verb "chatflood <count>": that many chat lines at once, past the sender's limits.
+        int ChatFlood(int count);
+        const std::string &PlayerName();
+
+        // The match flow (DuelsRounds.cpp): both ships stand for this round (we built theirs, they built ours); and a
+        // new round: the opponent's ship leaves and everything of the last fight is forgotten, the connection stays.
+        bool ShipsStand();
+        void NewFight();
         // Debug mode on (Duels::EnableDebug): the handshake tells the other player.
         void SetDebug(bool debug);
         // Crew experience (rules, roadmap 2.3): in a duel each skill gain of the crew counts this many times. The

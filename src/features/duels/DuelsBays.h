@@ -103,6 +103,9 @@ namespace Duels
         bool OriginalRoomCorner(ShipSystem *system, int &x, int &y);
 
         bool IsBay(const ShipSystem *system);
+        // SystemBox::MouseMove: the tooltip of a bay's icon (the enemy window): its weapon or drone, and how the bay is.
+        // FTL's own text for a system comes from level descriptions the bays (custom systems) don't have.
+        bool Tooltip(const ShipSystem *system, std::string &text);
         int BayNumber(int systemType);   // 1..MAX_BAYS, 0 when not a bay
         std::string Describe(ShipManager *ship);   // console: the rooms of a ship
         // duels_sync.csv: each bay (W1.., D1..) with its bars (intact/all), "i" when ioned, "h" when hacked, and its

@@ -26,7 +26,9 @@ namespace Duels
 
         // The name at the top right ("FTL:Duels <version>" instead of Hyperspace's "HS-<version>") and in the window
         // title.
-        bool VersionLabel(float x, float y, const std::string &text, std::string &label);
+        bool VersionLabel(int fontSize, float x, float y, const std::string &text, std::string &label);
+        // The version label's font (tiny; the network numbers use it too), or -1 before it was drawn.
+        int VersionFont();
         void OnFrame();
     }
 }

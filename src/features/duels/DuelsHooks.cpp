@@ -11,9 +11,11 @@
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
 #include "DuelsRooms.h"
+#include "DuelsRounds.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsView.h"
+#include "DuelsWindow.h"
 
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
@@ -167,6 +169,42 @@ HOOK_METHOD_PRIORITY(ShipSystem, CheckForRepower, -10000, () -> void)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::CheckForRepower -> Begin (DuelsHooks.cpp)\n")
     if (_shipObj.iShipId == 1 && Duels::GetState().aiOff[1]) return;
     super();
+}
+
+// No game over in a duel: a destroyed ship or a dead crew loses the round (DuelsRounds.cpp), and the next preparation
+// restores the ship.
+HOOK_METHOD_PRIORITY(CommandGui, CheckGameover, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::CheckGameover -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Rounds::GameOverAllowed()) return;
+    super();
+}
+
+// FTL's "enemy crew dead" end (the ship turns derelict, stops being a target, and our FTL drive fills) never comes for
+// the duel's replica: its crew are puppets, and a frame without any (before the roster, or while its owner's crew die)
+// would end the fight here. The owner's game reports a dead crew (DuelsRounds.cpp).
+HOOK_METHOD_PRIORITY(CompleteShip, DeadCrew, -2000, () -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CompleteShip::DeadCrew -> Begin (DuelsHooks.cpp)\n")
+    if (!bPlayerShip && Duels::GetState().aiOff[1] && shipManager && shipManager == G_->GetShipManager(1)) return false;
+    return super();
+}
+
+// A duel never pauses (no-pause): FTL's "PAUSED" banner, drawn while the store or a menu is open, would say it does.
+HOOK_METHOD_PRIORITY(CommandGui, RenderPause, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::RenderPause -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::GetState().noPause) return;
+    super();
+}
+
+// Upgrades (and the crew and equipment screens) only in a match's preparation (rules, section 1): FTL asks this for
+// the upgrade button and the U, C and I keys. Hyperspace's own hook is inside (priority 1000).
+HOOK_METHOD_PRIORITY(TutorialManager, AllowUpgrades, -2000, () -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> TutorialManager::AllowUpgrades -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Rounds::ShoppingAllowed()) return false;
+    return super();
 }
 
 // Game speed must stay at normal: under split authority a faster client would charge weapons faster.
@@ -679,13 +717,23 @@ HOOK_METHOD_PRIORITY(SystemBox, OnRender, -2000, (bool ignoreStatus) -> void)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> SystemBox::OnRender -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Bays::HideBox(pSystem)) return;
     int dx = 0, dy = 0;
-    if (!Duels::View::SysBoxShift(this, dx, dy)) return super(ignoreStatus);
-    Duels::View::BeforeSysBoxRender(this);
-    CSurface::GL_PushMatrix();
-    CSurface::GL_Translate((float)dx, (float)dy, 0.f);
-    super(ignoreStatus);
-    CSurface::GL_PopMatrix();
-    Duels::View::AfterSysBoxRender(this, dx, dy);
+    if (!Duels::View::SysBoxShift(this, dx, dy))
+    {
+        super(ignoreStatus);
+    }
+    else
+    {
+        Duels::View::BeforeSysBoxRender(this);
+        CSurface::GL_PushMatrix();
+        CSurface::GL_Translate((float)dx, (float)dy, 0.f);
+        super(ignoreStatus);
+        CSurface::GL_PopMatrix();
+        Duels::View::AfterSysBoxRender(this, dx, dy);
+    }
+    // A bay's icon (the enemy window) names its weapon or drone and how the bay is (roadmap J). FTL sets a system's
+    // tooltip while it draws its box, from texts the bays (custom systems) don't have.
+    std::string text;
+    if (mouseHover && pSystem && Duels::Bays::Tooltip(pSystem, text)) G_->GetMouseControl()->SetTooltip(text);
 }
 
 // Our own bays get no box in the subsystem panel (while it is laid out, our ship has none).
@@ -823,6 +871,8 @@ HOOK_METHOD_PRIORITY(CombatControl, RenderTarget, -2000, () -> void)
 HOOK_METHOD_PRIORITY(CommandGui, MouseMove, -2000, (int mX, int mY) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::MouseMove -> Begin (DuelsHooks.cpp)\n")
+    // Over the Duels window, the game underneath doesn't see the mouse.
+    if (Duels::Window::MouseMove(mX, mY)) return;
     Duels::View::BeginDecorations();
     super(mX, mY);
     Duels::View::EndDecorations();
@@ -1120,7 +1170,16 @@ HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) ->
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::KeyDown -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Console::KeyDown(this, key)) return;
+    if (Duels::Window::KeyDown((int)key)) return;
     super(key, shiftHeld);
+}
+
+// The Duels button and window take their clicks before the game does.
+HOOK_METHOD_PRIORITY(CommandGui, LButtonDown, -2000, (int mX, int mY, bool shiftHeld) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::LButtonDown -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Window::LButtonDown(mX, mY)) return;
+    super(mX, mY, shiftHeld);
 }
 
 HOOK_METHOD_PRIORITY(CommandGui, OnTextInput, -2000, (int ch) -> void)
@@ -1143,6 +1202,8 @@ HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> MouseControl::OnRender -> Begin (DuelsHooks.cpp)\n")
     Duels::Hud::Render();
+    Duels::Rounds::Render();
+    Duels::Window::Render();
     if (!Duels::Console::Render()) return super();
     PrintHelper *printer = PrintHelper::GetInstance();
     int x = printer->x;
@@ -1174,7 +1235,7 @@ HOOK_STATIC_PRIORITY(freetype, easy_printRightAlign, -2000, (int fontSize, float
 {
     LOG_HOOK("HOOK_STATIC_PRIORITY -> freetype::easy_printRightAlign -> Begin (DuelsHooks.cpp)\n")
     std::string label;
-    if (Duels::Screen::VersionLabel(x, y, text, label)) return super(fontSize, x, y, label);
+    if (Duels::Screen::VersionLabel(fontSize, x, y, text, label)) return super(fontSize, x, y, label);
     Duels::View::AdjustHeaderText(fontSize, x, y, text);
     return super(fontSize, x, y, text);
 }

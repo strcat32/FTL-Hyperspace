@@ -183,6 +183,11 @@ namespace Duels
             return BuildRoster() != g_crew.sentRoster;
         }
 
+        void SendRosterAgain()
+        {
+            g_crew.sentRoster.clear();
+        }
+
         void WriteRoster(Writer &w)
         {
             g_crew.sentRoster = BuildRoster();
@@ -762,6 +767,34 @@ namespace Duels
         void RemoveGuest(uint16_t id)
         {
             g_crew.guests.erase(id);
+        }
+
+        std::vector<std::pair<uint16_t, CrewMember*>> AwayCrew()
+        {
+            // Only those still aboard the replica (FTL deletes the dead once their death is over).
+            std::vector<std::pair<uint16_t, CrewMember*>> crew;
+            ShipManager *replica = G_->GetShipManager(1);
+            if (!replica) return crew;
+            for (const std::pair<const uint16_t, Puppet> &entry : g_crew.away)
+            {
+                const std::vector<CrewMember*> &list = replica->vCrewList;
+                if (entry.second.crew && std::find(list.begin(), list.end(), entry.second.crew) != list.end())
+                {
+                    crew.push_back(std::make_pair(entry.first, entry.second.crew));
+                }
+            }
+            return crew;
+        }
+
+        std::vector<std::pair<uint16_t, CrewMember*>> Guests()
+        {
+            // Only those still aboard (FTL deletes the dead once their death is over).
+            std::vector<std::pair<uint16_t, CrewMember*>> crew;
+            for (const std::pair<const uint16_t, CrewMember*> &entry : g_crew.guests)
+            {
+                if (CrewMember *guest = LiveGuest(entry.first)) crew.push_back(std::make_pair(entry.first, guest));
+            }
+            return crew;
         }
 
         void AdoptPuppet(uint16_t id, CrewMember *crew)

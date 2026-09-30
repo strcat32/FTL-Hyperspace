@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct CrewAnimation;
 struct CrewMember;
@@ -27,6 +29,8 @@ namespace Duels
         // each crew member is and how they are.
         bool RosterChanged();
         void WriteRoster(Writer &w);
+        // After a lost connection: the roster goes again with the next state.
+        void SendRosterAgain();
         void WriteState(Writer &w);
 
         // Their side: the roster makes the puppets; the state moves them (localTime: when the owner sent it, on our
@@ -80,6 +84,9 @@ namespace Duels
         // A guest taken back by their teleporter, now on the replica: the puppet for their id (the next roster has
         // them again).
         void AdoptPuppet(uint16_t id, CrewMember *crew);
+        // The end of a round (DuelsRefit.cpp): ours aboard the opponent's ship (with their ids), and theirs aboard ours.
+        std::vector<std::pair<uint16_t, CrewMember*>> AwayCrew();
+        std::vector<std::pair<uint16_t, CrewMember*>> Guests();
         // ShipSystem::PartialRepair: the replica's systems are repaired by their owner (the state brings the health).
         bool MayRepair(const ShipSystem *system);
         // CrewAnimation::OnUpdate: whether a crew member is shown fighting, repairing (a system, a breach or a fire),

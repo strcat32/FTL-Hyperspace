@@ -2,6 +2,7 @@
 #include "Duels.h"
 #include "DuelsHud.h"
 #include "DuelsNet.h"
+#include "DuelsScreen.h"
 #include "DuelsTrace.h"
 
 #include <algorithm>
@@ -111,9 +112,10 @@ namespace Duels
                 UpdateLines();
             }
 
-            // Next to the reactor bar, above the systems' power bars (they grow up to about y 585).
-            const float x = 52.f, top = 522.f, lineHeight = 13.f;
-            const int font = 10;
+            // At the top right, under the version label, in its tiny font (roadmap L).
+            int font = Screen::VersionFont();
+            if (font < 0) font = 10;
+            const float right = 1277.f, top = 13.f, lineHeight = 11.f;
             int count = 0;
             float width = 0.f;
             for (const std::string &line : g_net.lines)
@@ -123,14 +125,37 @@ namespace Duels
                 width = std::max(width, (float)freetype::easy_measureWidth(font, line));
             }
             if (count == 0) return;
-            CSurface::GL_DrawRect(x - 5.f, top - 3.f, width + 10.f, lineHeight * count + 6.f, GL_Color(0.f, 0.f, 0.f, 0.55f));
+            CSurface::GL_DrawRect(right - width - 4.f, top - 1.f, width + 6.f, lineHeight * count + 3.f, GL_Color(0.f, 0.f, 0.f, 0.5f));
             CSurface::GL_SetColor(GL_Color(0.75f, 0.9f, 1.f, 1.f));
             float y = top;
             for (const std::string &line : g_net.lines)
             {
                 if (line.empty()) continue;
-                freetype::easy_print(font, x, y, line);
+                freetype::easy_printRightAlign(font, right, y, line);
                 y += lineHeight;
+            }
+            CSurface::GL_SetColor(COLOR_WHITE);
+        }
+
+        // Test: the match display's text in each of FTL's fonts (the ids the game and Hyperspace use), for a screenshot.
+        static double g_fontTestUntil = 0.0;
+
+        void FontTest(double seconds)
+        {
+            g_fontTestUntil = WallMs() + seconds * 1000.0;
+        }
+
+        static void RenderFontTest()
+        {
+            static const int FONTS[] = {0, 10, 12, 13, 24, 51, 52, 62, 63};
+            CSurface::GL_DrawRect(90.f, 40.f, 760.f, 640.f, GL_Color(0.f, 0.f, 0.f, 0.8f));
+            float y = 50.f;
+            for (int font : FONTS)
+            {
+                CSurface::GL_SetColor(GL_Color(1.f, 0.95f, 0.8f, 1.f));
+                freetype::easy_print(font, 100.f, y, std::to_string(font) + ":  Round 2 of 5   Preparation 0:42");
+                freetype::easy_print(font, 100.f, y + 28.f, "Rounds 1 : 0   Damage 34.5 : 12.0");
+                y += 68.f;
             }
             CSurface::GL_SetColor(COLOR_WHITE);
         }
@@ -138,6 +163,7 @@ namespace Duels
         void Render()
         {
             if (g_net.on && InGame()) RenderNetStats();
+            if (WallMs() < g_fontTestUntil) RenderFontTest();
         }
     }
 }

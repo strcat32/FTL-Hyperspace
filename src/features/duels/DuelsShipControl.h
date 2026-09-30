@@ -14,6 +14,8 @@ namespace Duels
 
     // Spawns a ship blueprint (a player ship, too) as the enemy, ship 1.
     bool SpawnEnemy(const std::string &blueprint, std::string &message);
+    // The enemy ship (ship 1) leaves the location, with everything aboard; false if there is none.
+    bool RemoveEnemy();
 
     // Sets a system's power the way the player's power bars do. Returns true if the level was reached.
     bool SetSystemPower(ShipManager *ship, int system, int level);

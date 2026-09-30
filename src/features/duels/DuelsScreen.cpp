@@ -186,11 +186,19 @@ namespace Duels
             h = (int)(h * sy + 0.5f);
         }
 
-        bool VersionLabel(float x, float y, const std::string &text, std::string &label)
+        static int g_versionFont = -1;
+
+        bool VersionLabel(int fontSize, float x, float y, const std::string &text, std::string &label)
         {
             if (x != 1280.f || y != 0.f || text.compare(0, 3, "HS-") != 0) return false;
+            g_versionFont = fontSize;
             label = std::string("FTL:Duels ") + VERSION + " (HS " + text.substr(3) + ")";
             return true;
+        }
+
+        int VersionFont()
+        {
+            return g_versionFont;
         }
 
         void OnFrame()

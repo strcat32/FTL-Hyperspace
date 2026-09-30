@@ -12,8 +12,16 @@ namespace Duels
     // key ("\") still opens that.
     namespace Console
     {
-        // A message: on screen for a few seconds (Hyperspace's PrintHelper), and in the console's list.
+        // A message for the console's log: seen when the console is open (Tab). In debug mode it also shows at the top
+        // left for a few seconds, on a dark backdrop (roadmap L: the console is quiet in a normal duel).
         void Print(const std::string &line);
+
+        // The feed at the bottom left, above the power bars and systems (roadmap L): the few lines that matter (a
+        // player joins or leaves, a round starts or ends, a draw offer, a lost connection) and the chat. They fade
+        // after a while; the chat key opens the feed with more lines and an input line (Enter says it, Escape closes).
+        // Both go into the console's log too.
+        void Feed(const std::string &line);
+        void Chat(const std::string &from, const std::string &text);
 
         bool IsOpen();
 
