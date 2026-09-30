@@ -23,6 +23,8 @@ namespace Duels
         bool LButtonDown(int x, int y);
         bool KeyDown(int key);
         bool IsOpen();
+        // Opens it (the menu's HOST DUEL and JOIN DUEL, once the run began: the room's code is there).
+        void Open();
         // Test verb: duels open|close | duels click <x> <y> (a left click there, in FTL's 1280 x 720 coordinates) |
         // duels press <action> (a click on the window's button for that action: ready, concede, draw round, ...).
         bool RunVerb(const std::vector<std::string> &args, std::string &message);

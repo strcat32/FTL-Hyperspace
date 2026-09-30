@@ -3,10 +3,11 @@
 #include <string>
 #include <vector>
 
-// FTL: Duels on FTL's main menu (roadmap 3.5; docs/design/lobby.md in the FTL: Duels repository). This part: the first
-// start's name prompt, the tutorial box that explains a duel from hosting to the rounds (instead of FTL's first
-// message box), and the players' guide (USAGE.md, in the data mod as data/duels_guide.md) in a scrolling window. The
-// windows wear FTL's look (DuelsStyle.cpp).
+// FTL: Duels on FTL's main menu (roadmap 3.5; docs/design/lobby.md in the FTL: Duels repository): the title screen's
+// panel (HOST DUEL, JOIN DUEL, the player's name, the guide; their windows are DuelsLobby.cpp's), the first start's
+// name prompt, the tutorial box that explains a duel from hosting to the rounds (instead of FTL's first message box),
+// and the players' guide (USAGE.md, in the data mod as data/duels_guide.md) in a scrolling window. The windows wear
+// FTL's look (DuelsStyle.cpp).
 namespace Duels
 {
     namespace Menu

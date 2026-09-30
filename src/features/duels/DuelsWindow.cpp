@@ -280,9 +280,26 @@ namespace Duels
             }
             else
             {
+                // Before the match: a room waiting for its guest, a room being joined, the opponent there, or nothing.
                 std::string opponent = Net::IsConnected() ? Net::PeerName() : "";
-                TextCentre(BIG, middle, bigY, opponent.empty() ? "NOT IN A DUEL" : "VS  " + opponent, Rgb(255, 255, 255));
-                TextCentre(TEXT, middle, smallY, opponent.empty() ? "Host or join one from the console (Tab)" : "Waiting for the match", Rgb(220, 224, 230));
+                std::string big = "NOT IN A DUEL", small = "Host or join one from the main menu, or the console (Tab)";
+                if (!opponent.empty())
+                {
+                    big = "VS  " + Match::ScreenName(opponent);
+                    small = "Waiting for the match";
+                }
+                else if (Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
+                {
+                    big = "ROOM " + Net::RelayCode();
+                    small = "Waiting for a guest";
+                }
+                else if (Net::GetPhase() == Net::Phase::Joining)
+                {
+                    big = "JOINING";
+                    small = Net::RelayCode().empty() ? std::string("Waiting for the host's answer") : "Room " + Net::RelayCode();
+                }
+                TextCentre(BIG, middle, bigY, big, Rgb(255, 255, 255));
+                TextCentre(TEXT, middle, smallY, small, Rgb(220, 224, 230));
             }
         }
 
@@ -292,9 +309,23 @@ namespace Duels
             const GL_Color white = Rgb(255, 255, 255), soft = Rgb(206, 210, 216), gold = Rgb(255, 235, 170);
             y += Style::Label(x, y, "THE MATCH") + 8.f;
             std::string opponent = Net::IsConnected() ? Net::PeerName() : "";
-            if (opponent.empty())
+            if (opponent.empty() && Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
             {
-                y += Paragraph(FONT, x, y, w, "Not in a duel. Host or join one from the console (Tab): host relay, lobby, join <code>.", soft) + 6.f;
+                // The room waits for its guest (HOST DUEL, or the console's host relay).
+                Text(FONT, x, y, "Room " + Net::RelayCode() + " is open", gold);
+                y += 15.f;
+                y += Paragraph(FONT, x, y, w, "Waiting for a guest: give the other player the code, or they find the room in JOIN "
+                                              "DUEL's list if it is listed.", soft) + 6.f;
+            }
+            else if (opponent.empty() && Net::GetPhase() == Net::Phase::Joining)
+            {
+                y += Paragraph(FONT, x, y, w, "Joining the room" + (Net::RelayCode().empty() ? std::string() : " " + Net::RelayCode()) + "...",
+                               gold) + 6.f;
+            }
+            else if (opponent.empty())
+            {
+                y += Paragraph(FONT, x, y, w, "Not in a duel. Host or join one from the main menu, or from the console (Tab): host "
+                                              "relay, lobby, join <code>.", soft) + 6.f;
             }
             else
             {
@@ -488,6 +519,11 @@ namespace Duels
                 return true;
             }
             return false;
+        }
+
+        void Open()
+        {
+            g_win.open = true;
         }
 
         bool IsOpen()

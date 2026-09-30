@@ -46,6 +46,11 @@ namespace Duels
     // Executes one command immediately. Returns false and fills `message` on failure.
     bool Execute(const Command &cmd, std::string &message);
 
+    // The menu's HOST DUEL and JOIN DUEL (DuelsLobby.cpp): a room at the relay in use, as "host relay [name ...]
+    // [password ...] [unlisted]" opens one and "join <code> [password]" joins one.
+    bool HostRoom(const std::string &roomName, const std::string &password, bool listed, std::string &message);
+    bool JoinRoom(const std::string &code, const std::string &password, std::string &message);
+
     // Debug mode: test commands (refits, damage, scripts, ...) and Hyperspace's own commands work. It comes on with
     // "debug on", DUELS_DEBUG=1 or a test scenario, stays on until the game restarts, and the other player of every
     // duel after it is told (rules, section 4). `why` goes to the log.

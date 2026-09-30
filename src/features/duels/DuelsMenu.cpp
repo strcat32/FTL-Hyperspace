@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsConfig.h"
+#include "DuelsLobby.h"
 #include "DuelsMatch.h"
 #include "DuelsMenu.h"
 #include "DuelsStyle.h"
@@ -42,12 +43,14 @@ namespace Duels
             std::string nameError;
             bool dontShow = false;
             bool tutorialShown = false;          // once per start
+            bool nameThenTutorial = false;       // the name prompt of a first start: the tutorial box follows
             std::vector<GuideRow> guide;
             size_t guideTop = 0;
             size_t guideShown = 0;                // rows on the page last drawn
             size_t guideLastTop = 0;              // the top row of the last page
             bool guideLoaded = false;
             Style::Box ok, guideButton, check, up, down, close, field;
+            Style::Box panelHost, panelJoin, panelName, panelGuide;   // the title screen's panel
         };
 
         static MenuState g;
@@ -97,8 +100,9 @@ namespace Duels
             return start == std::string::npos ? "" : text.substr(start, end - start + 1);
         }
 
-        static void OpenName()
+        static void OpenName(bool thenTutorial)
         {
+            g.nameThenTutorial = thenTutorial;
             if (!g.nameInput) g.nameInput = new struct TextInput((int)NAME_MAX, TextInput::ALLOW_ASCII, "");
             Match::Init();   // the saved name, or this start's captain (a crew member's name) to begin with
             std::string current = Match::PlayerName();
@@ -131,7 +135,8 @@ namespace Duels
             if (g.nameInput) g.nameInput->Stop();
             Log("Menu: the player's name is '%s'", name.c_str());
             g.open = Window::None;
-            if (Config::Value("tutorial") != "off") OpenTutorial();
+            if (g.nameThenTutorial && Config::Value("tutorial") != "off") OpenTutorial();
+            g.nameThenTutorial = false;
         }
 
         static void RenderName()
@@ -445,6 +450,56 @@ namespace Duels
             Log("Menu: FTL's buttons%s", text.c_str());
         }
 
+        // ---------------------------------------------------------------------------------------------------------
+        // FTL: Duels' panel on the title screen (roadmap 3.5): HOST DUEL, JOIN DUEL, the player's name and the guide.
+        // FTL's own column of buttons stays as it is (it fills the right side down to the screen's bottom); the panel
+        // takes the empty left side.
+        // ---------------------------------------------------------------------------------------------------------
+
+        static const float PX = 70.f, PY = 330.f, PW = 380.f, PH = 222.f;
+
+        // FTL's menu shows its title screen: not the hangar, the options, the stats, the credits or a question.
+        static bool OnTitle()
+        {
+            CApp *app = G_->GetCApp();
+            if (!app || !app->menu.bOpen) return false;
+            MainMenu &m = app->menu;
+            return !m.shipBuilder.bOpen && !m.bScoreScreen && !m.bCreditScreen && !m.optionScreen.bOpen && !m.changelog.bOpen &&
+                   !m.confirmNewGame.bOpen && !m.bSelectSave;
+        }
+
+        static void BigButton(Style::Box &box, float x, float y, float w, float h, const std::string &label, int font)
+        {
+            box.x = x;
+            box.y = y;
+            box.w = w;
+            box.h = h;
+            bool hover = box.Contains(g.mouseX, g.mouseY) && g.open == Window::None && !Lobby::IsOpen();
+            Style::Button(x, y, w, h, label, font, hover ? Style::Look::Hover : Style::Look::Idle);
+        }
+
+        static void RenderPanel()
+        {
+            Style::Dialog(PX, PY, PW, PH, "FTL: DUELS", false);
+            BigButton(g.panelHost, PX + 30.f, PY + 30.f, PW - 60.f, 50.f, "HOST DUEL", 63);
+            BigButton(g.panelJoin, PX + 30.f, PY + 94.f, PW - 60.f, 50.f, "JOIN DUEL", 63);
+            float y = PY + PH - 50.f;
+            CSurface::GL_SetColor(Rgb(206, 210, 216));
+            freetype::easy_print(TEXT, PX + 30.f, y + 7.f, "You: " + Match::ScreenName(Match::PlayerName()));
+            BigButton(g.panelName, PX + PW - 30.f - 84.f - 8.f - 72.f, y, 72.f, 28.f, "NAME", TEXT);
+            BigButton(g.panelGuide, PX + PW - 30.f - 84.f, y, 84.f, 28.f, "GUIDE", TEXT);
+        }
+
+        static bool ClickPanel(int x, int y)
+        {
+            if (g.panelHost.Contains(x, y)) Lobby::OpenHost();
+            else if (g.panelJoin.Contains(x, y)) Lobby::OpenJoin();
+            else if (g.panelName.Contains(x, y)) OpenName(false);
+            else if (g.panelGuide.Contains(x, y)) OpenGuide(Window::None);
+            else return false;
+            return true;
+        }
+
         void Render()
         {
             LogMenuButtons();
@@ -452,9 +507,16 @@ namespace Duels
             {
                 g.pending = false;
                 if (g.open != Window::None || !SettingsFromConfig()) {}   // a test scenario opens them itself
-                else if (Config::PlayerName().empty()) OpenName();
+                else if (Config::PlayerName().empty()) OpenName(true);
                 else if (!g.tutorialShown && Config::Value("tutorial") != "off") OpenTutorial();
             }
+            bool title = OnTitle();
+            if (title) RenderPanel();
+            else
+            {
+                g.panelHost.w = g.panelJoin.w = g.panelName.w = g.panelGuide.w = 0.f;   // not there: no clicks
+            }
+            Lobby::Render();
             switch (g.open)
             {
             case Window::Name: RenderName(); break;
@@ -465,20 +527,27 @@ namespace Duels
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
+        // One of our windows is open (ours or the lobby's): FTL's menu gets no input.
         bool IsOpen()
         {
-            return g.open != Window::None;
+            return g.open != Window::None || Lobby::IsOpen();
         }
 
         bool MouseMove(int x, int y)
         {
             g.mouseX = x;
             g.mouseY = y;
+            Lobby::MouseMove(x, y);
             return IsOpen();
         }
 
         bool MouseClick(int x, int y)
         {
+            if (g.open == Window::None)
+            {
+                if (Lobby::MouseClick(x, y)) return true;
+                if (OnTitle() && ClickPanel(x, y)) return true;
+            }
             switch (g.open)
             {
             case Window::Name:
@@ -502,6 +571,7 @@ namespace Duels
 
         bool TextInput(int ch)
         {
+            if (g.open == Window::None) return Lobby::TextInput(ch);
             if (g.open != Window::Name || !g.nameInput) return false;
             g.nameInput->OnTextInput(ch);
             g.nameError.clear();
@@ -513,6 +583,7 @@ namespace Duels
         // prompt: a name is needed.
         bool TextEvent(int event)
         {
+            if (g.open == Window::None) return Lobby::TextEvent(event);
             if (g.open != Window::Name || !g.nameInput) return IsOpen();
             if (event == CEvent::TEXT_CONFIRM) AcceptName();
             else if (event != CEvent::TEXT_CANCEL)
@@ -525,6 +596,7 @@ namespace Duels
 
         bool KeyDown(int key)
         {
+            if (g.open == Window::None) return Lobby::KeyDown(key);
             switch (g.open)
             {
             case Window::Name:
@@ -548,17 +620,23 @@ namespace Duels
 
         bool RunVerb(const std::vector<std::string> &args, std::string &message)
         {
-            if (args.size() >= 2 && args[1] == "name") OpenName();
+            if (args.size() >= 2 && args[1] == "name") OpenName(true);   // as on a first start
             else if (args.size() >= 2 && args[1] == "tutorial") OpenTutorial();
             else if (args.size() >= 2 && args[1] == "guide") OpenGuide(Window::None);
             else if (args.size() >= 2 && args[1] == "close") Close();
             else if (args.size() >= 2)
             {
-                message = "usage: menu name|tutorial|guide|close";
+                // The lobby's: host, join, choose, cancel, code, password, start.
+                if (Lobby::RunVerb(args, message)) return true;
+                if (message.empty())
+                {
+                    message = "usage: menu name|tutorial|guide|close|host|join|choose|cancel|code <code|@file>|password <password>|start";
+                }
                 return false;
             }
             const char *names[] = {"nothing", "the name prompt", "the tutorial box", "the players' guide"};
-            message = std::string("menu: ") + names[(int)g.open] + " open; the player's name '" + Match::PlayerName() + "'";
+            message = std::string("menu: ") + names[(int)g.open] + " open" + (Lobby::IsOpen() ? ", and a lobby window" : "") +
+                      "; the player's name '" + Match::PlayerName() + "'";
             return true;
         }
     }

@@ -173,9 +173,9 @@ namespace Duels
             return h;
         }
 
-        void Dialog(float x, float y, float w, float h, const std::string &title)
+        void Dialog(float x, float y, float w, float h, const std::string &title, bool dim)
         {
-            CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, GL_Color(0.f, 0.f, 0.f, 0.55f));
+            if (dim) CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, GL_Color(0.f, 0.f, 0.f, 0.55f));
             Blend(x + 2.f, y + 2.f, w - 4.f, h - 4.f, Rgb(40, 13, 17), Rgb(12, 20, 44), 9.f);
             WindowOutline((int)x, (int)y, (int)w, (int)h);
             TitleTab(x, y, title);

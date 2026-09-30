@@ -3,6 +3,7 @@
 #include "DuelsConsole.h"
 #include "DuelsMatch.h"
 #include "DuelsScreen.h"
+#include "DuelsLobby.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
 #include "DuelsView.h"
@@ -156,6 +157,7 @@ namespace Duels
         Screen::OnFrame();
         RunDueScriptCommands();
         SwapOnFrame();
+        Lobby::OnFrame();
         AutotestOnFrame();
         TraceFrame();
         TraceProjectiles();

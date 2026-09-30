@@ -1368,6 +1368,44 @@ namespace Duels
             return true;
         }
 
+        NextDuel GetNextDuel()
+        {
+            LoadSettings();
+            const Settings &s = g.settings;
+            NextDuel next;
+            next.rounds = s.rounds;
+            next.prepSeconds = s.prepSeconds;
+            next.stallSeconds = s.stallSeconds;
+            next.permadeath = s.permadeath;
+            next.env = s.env;
+            next.hazards = s.hazards;
+            return next;
+        }
+
+        bool SetNextDuel(const NextDuel &next, std::string &message)
+        {
+            LoadSettings();
+            if (g.active)
+            {
+                message = "the match is on: its settings are the host's from the start";
+                return false;
+            }
+            Settings &s = g.settings;
+            s.rounds = (uint8_t)std::max(1, std::min(99, next.rounds));
+            s.prepSeconds = (uint16_t)std::max(0, std::min(3600, next.prepSeconds));
+            s.stallSeconds = (uint16_t)std::max(0, std::min(3600, next.stallSeconds));
+            s.permadeath = next.permadeath;
+            s.env = next.env < Environment::MODE_COUNT ? next.env : (uint8_t)Environment::MODE_AUTO;
+            s.hazards = next.hazards;
+            s.free = false;
+            SaveSettings();
+            message = "best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) + " s preparation, anti-stall " +
+                      (s.stallSeconds ? std::to_string(s.stallSeconds) + " s" : std::string("off")) + ", permanent death " +
+                      (s.permadeath ? "on" : "off") + ", environment " + Environment::ModeName(s.env) +
+                      (s.env == Environment::MODE_AUTO ? " (" + Environment::HazardsName(s.hazards) + ")" : "");
+            return true;
+        }
+
         bool RunVerb(const Command &cmd, std::string &message)
         {
             const std::string &verb = cmd.args[0];

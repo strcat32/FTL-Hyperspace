@@ -68,7 +68,7 @@ namespace Duels
 
         // A window over the main menu (roadmap 3.5): the screen behind it dimmed, FTL: Duels' red and blue, FTL's
         // outline and a title tab, as the Duels window.
-        void Dialog(float x, float y, float w, float h, const std::string &title);
+        void Dialog(float x, float y, float w, float h, const std::string &title, bool dim = true);
         // A check box (22 x 22 at x, y): FTL's light border and dark inside, the light square when it is on; the
         // border yellow under the mouse.
         const float CHECK_SIZE = 22.f;

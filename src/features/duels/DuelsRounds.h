@@ -81,6 +81,20 @@ namespace Duels
 
         std::string Status();
 
+        // The host's settings for the next duel, as the Host window (DuelsLobby.cpp, roadmap 3.5) shows and changes
+        // them; changed as the "match" verbs change them (kept in duels.cfg in a player's game). Not while a match runs.
+        struct NextDuel
+        {
+            int rounds = 5;
+            int prepSeconds = 60;
+            int stallSeconds = 300;
+            bool permadeath = true;
+            uint8_t env = 0;        // Environment::Mode
+            uint8_t hazards = 0;    // the kinds MODE_AUTO may roll
+        };
+        NextDuel GetNextDuel();
+        bool SetNextDuel(const NextDuel &next, std::string &message);
+
         // The Duels window (DuelsWindow.cpp, roadmap 3.2): what it shows, and what its buttons may do now.
         struct Summary
         {

@@ -254,6 +254,28 @@ namespace Duels
         }
     }
 
+    bool HostRoom(const std::string &roomName, const std::string &password, bool listed, std::string &message)
+    {
+        UseConfiguredRelay();
+        if (g_relayServer.empty())
+        {
+            message = "no relay server (a relay line in duels.cfg, or the relay command)";
+            return false;
+        }
+        return Match::HostRelay(g_relayServer, (uint16_t)g_relayPort, roomName, password, listed, message);
+    }
+
+    bool JoinRoom(const std::string &code, const std::string &password, std::string &message)
+    {
+        UseConfiguredRelay();
+        if (g_relayServer.empty())
+        {
+            message = "no relay server (a relay line in duels.cfg, or the relay command)";
+            return false;
+        }
+        return Match::JoinRelay(g_relayServer, (uint16_t)g_relayPort, code, password, message);
+    }
+
     bool Execute(const Command &cmd, std::string &message)
     {
         if (cmd.args.empty())
