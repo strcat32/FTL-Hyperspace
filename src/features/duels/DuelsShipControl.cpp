@@ -6,6 +6,7 @@
 #include "DuelsHacking.h"
 #include "DuelsMatch.h"
 #include "DuelsMind.h"
+#include "DuelsRefit.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
@@ -1004,6 +1005,53 @@ namespace Duels
         Log("swap with shot %u of the opponent in the air: %s%s", (unsigned)Match::ShotsReceived(), ok ? "" : "FAILED: ", message.c_str());
     }
 
+    // upgradeclick <system|reactor> [right]: a click (a right-click) on that system's box in FTL's upgrade screen, or
+    // on the reactor's button, wherever the ship has it (tests of the shop: roadmap V, AJ, AK). The screen is open.
+    static bool DoUpgradeClick(const Command &cmd, std::string &message)
+    {
+        CApp *app = G_->GetCApp();
+        CommandGui *gui = app ? app->gui : nullptr;
+        if (!gui || cmd.args.size() < 2)
+        {
+            message = "usage: upgradeclick <system|reactor> [right]";
+            return false;
+        }
+        bool right = ArgIs(cmd, 2, "right");
+        int x = 0, y = 0;
+        bool found = false;
+        if (cmd.args[1] == "reactor")
+        {
+            const Globals::Rect &r = gui->upgradeScreen.reactorButton.hitbox;
+            x = r.x + r.w / 2;
+            y = r.y + r.h / 2;
+            found = true;
+        }
+        else
+        {
+            int id = ParseSystem(cmd.args[1]);
+            found = id >= 0 && Refit::BoxPlace(id, x, y);
+        }
+        if (!found)
+        {
+            message = "no upgrade box for " + cmd.args[1] + " on the upgrade screen's page";
+            return false;
+        }
+        gui->MouseMove(x, y);
+        if (right)
+        {
+            gui->RButtonDown(x, y, false);
+            gui->RButtonUp(x, y, false);
+        }
+        else
+        {
+            gui->LButtonDown(x, y, false);
+            gui->LButtonUp(x, y, false);
+        }
+        message = std::string(right ? "right-clicked" : "clicked") + " the upgrade box of " + cmd.args[1] + " at " +
+                  std::to_string(x) + "," + std::to_string(y);
+        return true;
+    }
+
     // rooms <ship>: the ship's rooms (tiles), their consoles and systems (the weapon bays' cut, DuelsBays.cpp).
     static bool DoRooms(const Command &cmd, std::string &message)
     {
@@ -1046,6 +1094,14 @@ namespace Duels
             Log("  system %-10s room %2d power %d/%d health %d/%d", ShipSystem::SystemIdToName(shipSystem->iSystemType).c_str(),
                 shipSystem->roomId, shipSystem->powerState.first, shipSystem->powerState.second,
                 shipSystem->healthState.first, shipSystem->healthState.second);
+        }
+        // Our cargo (FTL's equipment screen keeps it): where a sold system's weapons or drones go (roadmap AK).
+        CApp *app = G_->GetCApp();
+        if (ship->iShipId == 0 && app && app->gui)
+        {
+            std::string cargo;
+            for (const std::string &item : app->gui->equipScreen.GetCargoHold()) cargo += " " + (item.empty() ? std::string("-") : item);
+            Log("  cargo%s", cargo.c_str());
         }
         if (ship->shieldSystem)
         {
@@ -1202,6 +1258,7 @@ namespace Duels
         if (verb == "import") return DoImport(cmd, message);
         if (verb == "describe") return DoDescribe(cmd, message);
         if (verb == "rooms") return DoRooms(cmd, message);
+        if (verb == "upgradeclick") return DoUpgradeClick(cmd, message);
         if (verb == "swap") return DoSwap(cmd, message);
         if (verb == "pausetest") return DoPauseTest(cmd, message);
         if (verb == "quit")

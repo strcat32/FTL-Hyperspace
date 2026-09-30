@@ -634,13 +634,15 @@ namespace Duels
         }
 
         // ---------------------------------------------------------------------------------------------------------
-        // The shop buys back: levels taken back, systems sold (roadmap V)
+        // The shop buys back: levels taken back, systems sold (roadmap V), for all they cost (AJ), every system (AK)
         // ---------------------------------------------------------------------------------------------------------
 
+        // Every system of FTL's can be sold, down to nothing (AK): a ship can do without its shields, and a player who
+        // sells the engines or the piloting gives up dodging and running away. Not the weapon and drone bays (they
+        // follow their weapons and drones).
         static bool Sellable(int id)
         {
-            return id == SYS_CLOAKING || id == SYS_HACKING || id == SYS_MIND || id == SYS_TELEPORTER || id == SYS_DRONES ||
-                   id == SYS_ARTILLERY || id == SYS_BATTERY;
+            return id >= 0 && id < SYS_ALL && id != SYS_REACTOR;
         }
 
         static std::string SystemTitle(int id)
@@ -678,10 +680,11 @@ namespace Duels
             Console::Feed(text);
         }
 
-        static int LowestLevel(int id)
+        // Levels go back down to 1 (AK: the levels a ship began the match with have their price too), then the system
+        // itself is sold.
+        static int LowestLevel(int)
         {
-            auto start = g_refit.startLevels.find(id);
-            return start != g_refit.startLevels.end() ? std::max(1, start->second) : 1;
+            return 1;
         }
 
         // What a level cost (FTL's upgrade screen charges upgradeCosts[level - 2] for it).
@@ -691,13 +694,14 @@ namespace Duels
             return blueprint->upgradeCosts[level - 2];
         }
 
-        // Half of what the system and its levels up to `level` cost.
+        // What the system and its levels up to `level` cost, all of it (AJ: rebuilding the ship for the next round
+        // shouldn't be punished).
         static int SalePrice(const SystemBlueprint *blueprint, int level)
         {
             if (!blueprint) return 0;
             int paid = blueprint->desc.cost;
             for (int l = 2; l <= level; ++l) paid += LevelPrice(blueprint, l);
-            return paid / 2;
+            return paid;
         }
 
         bool TakeBackLevel(UpgradeBox *box)
@@ -713,7 +717,7 @@ namespace Duels
             int level = system->powerState.second, lowest = LowestLevel(id);
             if (level > lowest)
             {
-                int refund = LevelPrice(box->blueprint, level) / 2;
+                int refund = LevelPrice(box->blueprint, level);
                 // Its power first: a system holds no more power than its level (FTL takes it as damage does).
                 if (system->powerState.first > level - 1) system->ForceDecreasePower(system->powerState.first - (level - 1));
                 system->UpgradeSystem(-1);
@@ -723,13 +727,7 @@ namespace Duels
                 Say(SystemTitle(id) + " down to level " + std::to_string(level - 1) + ": +" + std::to_string(refund) + " scrap");
                 return true;
             }
-            if (!Sellable(id))
-            {
-                Sound("powerUpFail");
-                Say(SystemTitle(id) + " stays at level " + std::to_string(level) + (g_refit.startLevels.count(id) ? ", as the match began" : "") +
-                    ": a ship can't do without it");
-                return true;
-            }
+            if (!Sellable(id)) return false;
             int price = SalePrice(box->blueprint, level);
             double now = WallMs();
             if (g_refit.saleArmed != id || now > g_refit.saleArmedUntil)
@@ -781,10 +779,10 @@ namespace Duels
             PowerManager *power = PowerManager::GetPowerManager(0);
             if (!power || ship->iShipId != 0) return false;
             int level = power->currentPower.second;
-            if (level <= g_refit.startReactor)
+            if (level <= 1)
             {
                 Sound("powerUpFail");
-                Say("The reactor stays at " + std::to_string(level) + " bars, as the match began");
+                Say("The reactor keeps its last bar");
                 return true;
             }
             if (power->GetAvailablePower() < 1)
@@ -793,7 +791,7 @@ namespace Duels
                 Say("Every reactor bar is in use: take power off a system first");
                 return true;
             }
-            int refund = ReactorPrice(ship, level) / 2;
+            int refund = ReactorPrice(ship, level);
             power->currentPower.second -= 1;
             ship->ModifyScrapCount(refund, false);
             Sound("downgradeSystem");
@@ -801,8 +799,24 @@ namespace Duels
             return true;
         }
 
+        static std::map<int, std::pair<Globals::Rect, double>> g_boxPlaces;   // system id: the button's hit box, when
+
+        bool BoxPlace(int systemId, int &x, int &y)
+        {
+            auto place = g_boxPlaces.find(systemId);
+            if (place == g_boxPlaces.end() || WallMs() - place->second.second > 1000.0) return false;
+            const Globals::Rect &r = place->second.first;
+            x = r.x + r.w / 2;
+            y = r.y + r.h / 2;
+            return true;
+        }
+
         void RenderSaleMark(UpgradeBox *box)
         {
+            if (box && box->system && box->currentButton)
+            {
+                g_boxPlaces[box->system->iSystemType] = std::make_pair(box->currentButton->hitbox, WallMs());
+            }
             if (!box || !box->system || g_refit.saleArmed != box->system->iSystemType || WallMs() > g_refit.saleArmedUntil) return;
             if (!Rounds::InPreparation() || !box->currentButton) return;
             const Globals::Rect &r = box->currentButton->hitbox;
@@ -816,8 +830,8 @@ namespace Duels
         {
             if (g_refit.tipShown || !Rounds::InPreparation()) return;
             g_refit.tipShown = true;
-            Console::Feed("Upgrades: a right-click takes a level back for half its price; an extra system at its lowest "
-                          "level sells for half at a second right-click");
+            Console::Feed("Upgrades: a right-click takes a level back for what it cost; a system at level 1 sells for "
+                          "what it cost at a second right-click");
         }
 
         void ResetWeaponCharge()

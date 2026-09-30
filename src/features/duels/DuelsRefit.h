@@ -91,6 +91,9 @@ namespace Duels
         bool TakeBackLevel(UpgradeBox *box);
         bool TakeBackReactor(ReactorButton *button);
         void RenderSaleMark(UpgradeBox *box);
+        // Where the upgrade screen last drew a system's box (its button's hit box), for the test verb upgradeclick:
+        // Hyperspace keeps the boxes in pages of its own, not in FTL's list.
+        bool BoxPlace(int systemId, int &x, int &y);
         void OnUpgradesOpen();
         void OnUpgradesLoop();
     }
