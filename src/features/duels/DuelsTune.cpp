@@ -58,6 +58,8 @@ namespace Duels
             std::map<std::string, std::string> own;     // ours that differ from the defaults
             std::map<std::string, std::string> match;   // the match's (the host's) that differ from the defaults
             bool inMatch = false;
+            // A ranked room's season stands in for ours (roadmap BG).
+            const std::map<std::string, std::string> *season = nullptr;
         };
 
         static State g;
@@ -241,8 +243,8 @@ namespace Duels
         void WriteMatch(Writer &w)
         {
             Load();
-            // The host plays by its own, as it sends them.
-            g.match = g.own;
+            // The host plays by its own, as it sends them (in a ranked room: the season's).
+            g.match = g.season ? *g.season : g.own;
             g.inMatch = true;
             w.U8((uint8_t)std::min<size_t>(g.match.size(), 255));
             for (const std::pair<const std::string, std::string> &entry : g.match)
@@ -281,6 +283,42 @@ namespace Duels
             if (!g.inMatch) return;
             g.inMatch = false;
             g.match.clear();
+        }
+
+        std::string SeasonValue(const std::string &name, const std::string &value, bool &isDefault, std::string &why)
+        {
+            isDefault = false;
+            const Setting *setting = Find(name);
+            if (!setting)
+            {
+                why = "this game has no fine setting " + name + " (a newer game's?)";
+                return "";
+            }
+            std::string normal = Normal(*setting, value, why);
+            isDefault = !normal.empty() && normal == Default(*setting);
+            return normal;
+        }
+
+        void UseSeason(const std::map<std::string, std::string> *fine)
+        {
+            g.season = fine;
+        }
+
+        bool MatchIs(const std::map<std::string, std::string> &fine)
+        {
+            return g.inMatch && g.match == fine;
+        }
+
+        std::vector<std::pair<std::string, std::string>> MatchChanged()
+        {
+            std::vector<std::pair<std::string, std::string>> changed;
+            if (!g.inMatch) return changed;
+            for (const Setting &setting : SETTINGS)
+            {
+                std::map<std::string, std::string>::const_iterator found = g.match.find(setting.name);
+                if (found != g.match.end()) changed.push_back(*found);
+            }
+            return changed;
         }
 
         bool RunVerb(const Command &cmd, std::string &message)

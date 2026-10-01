@@ -3,6 +3,7 @@
 #include "DuelsAccount.h"
 #include "DuelsConfig.h"
 #include "DuelsHttp.h"
+#include "DuelsRounds.h"
 #include "DuelsScript.h"
 #include "DuelsTrace.h"
 
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -34,6 +36,12 @@ namespace Duels
             bool ratingKnown = false;
             int rating = 0, rd = 0, matches = 0;
             std::string message;
+            // The season (roadmap BG).
+            SeasonView season;
+            // After a ranked match: the rating asked for again at these times; the one before, the one after.
+            std::vector<double> refreshAt;
+            int ratingBefore = 0, matchesBefore = 0, ratingAfter = 0;
+            bool changeKnown = false, awaitingChange = false;
         };
 
         static AccountState g;
@@ -128,6 +136,14 @@ namespace Duels
                                g.rd = (int)(std::atof(me["rd"].c_str()) + 0.5);
                                g.matches = std::atoi(me["matches"].c_str());
                                g.message.clear();
+                               // A ranked match counted: the new rating, for the end screen.
+                               if (g.awaitingChange && g.matches != g.matchesBefore)
+                               {
+                                   g.awaitingChange = false;
+                                   g.changeKnown = true;
+                                   g.ratingAfter = g.rating;
+                                   Log("Account: the ranked match counted: rating %d -> %d", g.ratingBefore, g.ratingAfter);
+                               }
                                Log("Account: %s, rating %d (RD %d), %d match(es)", g.name.c_str(), g.rating, g.rd, g.matches);
                            }
                            else if (r.status == 401)
@@ -211,9 +227,72 @@ namespace Duels
             Log("Account: signed out (%s deleted)", FILE_NAME);
         }
 
+        SeasonView GetSeason()
+        {
+            return g.season;
+        }
+
+        void FetchSeason()
+        {
+            if (g.season.fetching) return;
+            g.season.fetching = true;
+            Http::Send("GET", Base() + "/api/season", "", "",
+                       [](const Http::Response &r)
+                       {
+                           g.season.fetching = false;
+                           Http::Object season;
+                           if (r.status != 200 || !Http::ReadObject(r.body, season) || season["id"].empty())
+                           {
+                               g.season.error = "no season: " + ErrorOf(r);
+                               Log("Account: %s", g.season.error.c_str());
+                               return;
+                           }
+                           int id = std::atoi(season["id"].c_str());
+                           std::string why;
+                           if (Rounds::SetSeason(id, season["name"], season["config"], why))
+                           {
+                               g.season.known = true;
+                               g.season.id = id;
+                               g.season.name = season["name"];
+                               g.season.error.clear();
+                           }
+                           else
+                           {
+                               g.season.known = false;
+                               g.season.error = why;
+                           }
+                       });
+        }
+
+        void AfterRankedMatch()
+        {
+            Load();
+            if (g.state != State::SignedIn) return;
+            g.ratingBefore = g.ratingKnown ? g.rating : 1500;
+            g.matchesBefore = g.matches;
+            g.changeKnown = false;
+            g.awaitingChange = true;
+            const double now = WallMs();
+            g.refreshAt = {now + 2500.0, now + 8000.0, now + 20000.0};
+            Log("Account: the ranked match's result is at the relay: the rating is asked for again");
+        }
+
+        bool RatingChange(int &before, int &after)
+        {
+            if (!g.changeKnown) return false;
+            before = g.ratingBefore;
+            after = g.ratingAfter;
+            return true;
+        }
+
         void Frame()
         {
             Http::Frame();
+            if (!g.refreshAt.empty() && WallMs() >= g.refreshAt.front())
+            {
+                g.refreshAt.erase(g.refreshAt.begin());
+                if (g.awaitingChange) Refresh();
+            }
             if (g.state != State::Linking || g.code.empty() || g.polling) return;
             const double now = WallMs();
             if (now >= g.deadlineMs)
@@ -293,7 +372,7 @@ namespace Duels
                            Http::Object ticket;
                            if (r.status == 200 && Http::ReadObject(r.body, ticket) && !ticket["ticket"].empty() && !ticket["ticket_key"].empty())
                            {
-                               if (done) done(true, ticket["ticket"], Unbase64(ticket["ticket_key"]), "");
+                               if (done) done(true, Unbase64(ticket["ticket"]), Unbase64(ticket["ticket_key"]), "");
                                return;
                            }
                            if (r.status == 401) Refresh();   // signs out if the key is gone
@@ -354,7 +433,16 @@ namespace Duels
                 message = "asking the master for a ticket for " + relay;
                 return true;
             }
-            message = "usage: account | account signin | account cancel | account signout | account refresh | account ticket <relay>";
+            if (ArgIs(cmd, 1, "season"))
+            {
+                FetchSeason();
+                SeasonView season = GetSeason();
+                message = season.known ? "season " + std::to_string(season.id) + " (" + season.name + "); asking the master again"
+                                       : "asking the master for the season" + (season.error.empty() ? std::string() : " (" + season.error + ")");
+                return true;
+            }
+            message = "usage: account | account signin | account cancel | account signout | account refresh | account ticket <relay> | "
+                      "account season";
             return false;
         }
     }

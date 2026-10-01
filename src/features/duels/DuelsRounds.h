@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -90,8 +91,25 @@ namespace Duels
         // star map stays shut); EscapeAllowed: this is its fight and our ship isn't down; DriveReady: FTL's own terms
         // for a jump (the drive charged, the engines and piloting working); Escape: the jump, as the JUMP button's.
         bool InMatch();
-        // Whether this match is ranked (roadmap BB), and why not: debug mode, against the AI, not recorded.
+        // Whether this match is ranked (roadmap BB, BG), and why not: not a ranked room, not the season's settings,
+        // debug mode, against the AI, not recorded.
         bool Ranked(std::string &why);
+
+        // Ranked play (roadmap BG; docs/design/ranked-play.md): the season's settings from the master (a preset's lines:
+        // the match's settings, xp, fine settings), which every ranked match plays by: in a ranked room the host's
+        // game plays by them, and both games check the match does. False and why when this game can't read them (a
+        // newer game's settings).
+        bool SetSeason(int id, const std::string &name, const std::string &config, std::string &why);
+        bool SeasonKnown();
+        int SeasonId();
+        std::string SeasonName();
+        float SeasonXp();
+        const std::map<std::string, std::string> &SeasonFine();
+        // The season's settings as short rows, for the HOST DUEL window.
+        std::vector<std::string> SeasonRows();
+        // A ranked room's other player didn't come back in time (Net::Listener::OnOpponentGone): the player still here
+        // wins the match, and its result goes to the relay.
+        void OpponentGone();
         bool EscapeAllowed();
         // The host's match settings as duels.cfg and a preset keep them ("match_rounds", "5": roadmap U, BE); one of them
         // applied (false and why when it isn't one); them kept in duels.cfg (when the settings come from the file).

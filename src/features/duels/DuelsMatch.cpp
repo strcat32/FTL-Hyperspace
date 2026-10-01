@@ -6,6 +6,7 @@
 #include "Projectile_Extend.h"
 #include "Systems.h"
 #include "Duels.h"
+#include "DuelsAccount.h"
 #include "DuelsConsole.h"
 #include "DuelsBays.h"
 #include "DuelsBoarding.h"
@@ -199,6 +200,7 @@ namespace Duels
         {
             bool initialised = false;
             std::string playerName = "Captain";
+            std::string rankedName;   // a ranked room's: the Steam name (rules, section 6), while the session lasts
 
             bool loadoutSent = false;
             std::string sentArmament;      // our weapons and drones, in slot order, as the last loadout had them
@@ -2899,6 +2901,11 @@ namespace Duels
             return g_xpSetting;
         }
 
+        float MatchXp()
+        {
+            return g_xpMatch;
+        }
+
         bool SetCrewXp(float factor, std::string &message)
         {
             if (!(factor >= XP_MIN && factor <= XP_MAX))
@@ -3058,6 +3065,10 @@ namespace Duels
                 LoadXpSetting();
                 g_xpMatch = Net::IsHost() ? g_xpSetting : XP_DEFAULT;
                 g_xpCarry = 0.f;
+                // A ranked room (roadmap BG): the season's crew experience and fine settings, not the host's own.
+                bool season = Net::IsHost() && Net::RoomRanked() && Rounds::SeasonKnown();
+                Tune::UseSeason(season ? &Rounds::SeasonFine() : nullptr);
+                if (season) g_xpMatch = Rounds::SeasonXp();
                 if (Net::IsHost())
                 {
                     SendSettings();
@@ -3099,6 +3110,13 @@ namespace Duels
                 Rounds::OnDisconnected(opponentGone);
                 ResetMatch();
                 Tune::EndMatch();   // our own fine settings again (roadmap BE)
+                Tune::UseSeason(nullptr);
+                UseRankedName("");
+            }
+
+            void OnOpponentGone() override
+            {
+                Rounds::OpponentGone();
             }
 
             void OnMessage(uint8_t type, Reader &reader) override
@@ -3201,6 +3219,22 @@ namespace Duels
             if (!name.empty()) g_match.playerName = name;
             Net::SetListener(&g_listener);
             Net::SetIdentity(g_match.playerName, VERSION, BUILD_IDENTIFIER_HASH);
+            // Coming back into a ranked room needs a new ticket from the master (roadmap BG).
+            Net::SetTicketSource([](const std::string &relay, Net::TicketDone done)
+                                 {
+                                     Account::Ticket(relay, [done](bool ok, const std::string &ticket, const std::string &key, const std::string &why)
+                                                     {
+                                                         if (!ok) Log("Match: no ticket for %s: %s", "the ranked room", why.c_str());
+                                                         done(ok, ticket, key);
+                                                     });
+                                 });
+        }
+
+        void UseRankedName(const std::string &name)
+        {
+            Init();
+            g_match.rankedName = name.substr(0, NAME_MAX);
+            Net::SetIdentity(PlayerName(), VERSION, BUILD_IDENTIFIER_HASH);
         }
 
         // Before a duel connects: the game's data goes into the handshake (roadmap 4.1; FTL has loaded it by then).
@@ -3213,6 +3247,14 @@ namespace Duels
         {
             Init();
             Net::Update(now);
+            // A ranked match's result reached the relay (roadmap BG): the master rates it; the new rating comes.
+            static int resultState = 0;
+            int state = Net::ResultState();
+            if (state != resultState)
+            {
+                if (state == 2) Account::AfterRankedMatch();
+                resultState = state;
+            }
             // The enemy window fits and mirrors the opponent's ship while it is a duel replica, or the AI's ship in a
             // match against the AI (roadmap AN).
             View::SetDuelOpponent((g_match.replicaReady || Ai::ShipStands()) && G_->GetShipManager(1) != nullptr);
@@ -3284,7 +3326,7 @@ namespace Duels
 
         const std::string &PlayerName()
         {
-            return g_match.playerName;
+            return g_match.rankedName.empty() ? g_match.playerName : g_match.rankedName;
         }
 
         std::string ScreenName(const std::string &name)
@@ -3316,7 +3358,7 @@ namespace Duels
         {
             Init();
             g_match.playerName = name.size() > NAME_MAX ? name.substr(0, NAME_MAX) : name;
-            Net::SetIdentity(g_match.playerName, VERSION, BUILD_IDENTIFIER_HASH);
+            Net::SetIdentity(PlayerName(), VERSION, BUILD_IDENTIFIER_HASH);
         }
 
         bool Host(uint16_t port, bool loopbackOnly, std::string &message)

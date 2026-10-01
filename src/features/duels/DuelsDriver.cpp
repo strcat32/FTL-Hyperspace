@@ -236,8 +236,16 @@ namespace Duels
         static const std::set<std::string> verbs = {
             "console", "debug", "host", "join", "leave", "lobby", "name", "net", "netstats", "note", "quit", "relay", "say",
             "screenshot", "status", "stop", "trace", "tracepower", "version", "window", "xp",
-            "match", "ready", "forfeit", "concede", "draw", "ban", "pick", "timeout", "demo", "replay", "tune", "preset", "account"};
+            "match", "ready", "forfeit", "concede", "draw", "ban", "pick", "timeout", "demo", "replay", "tune", "preset", "account",
+            "master"};
         return verbs.count(verb) != 0;
+    }
+
+    // A test scenario without debug mode (@nodebug, a ranked match's test: debug mode makes a match unranked) may still
+    // drive the menus as a player's mouse does: these only click and look.
+    static bool IsUiVerb(const std::string &verb)
+    {
+        return verb == "menu" || verb == "click" || verb == "describe";
     }
 
     void EnableDebug(const char *why)
@@ -302,7 +310,7 @@ namespace Duels
         State &state = GetState();
         const std::string &verb = cmd.args[0];
 
-        if (!state.debug && !IsPlayerVerb(verb))
+        if (!state.debug && !IsPlayerVerb(verb) && !(AutotestActive() && IsUiVerb(verb)))
         {
             message = "'" + verb + "' is a test command: it needs debug mode (debug on)";
             return false;
@@ -772,6 +780,13 @@ namespace Duels
         if (verb == "tune") return Tune::RunVerb(cmd, message);
         // The player's account at the master (roadmap BG).
         if (verb == "account") return Account::RunVerb(cmd, message);
+        if (verb == "master")
+        {
+            // master [<server>|<web address>]: the master server for this run (duels.cfg's stays; a test's local one).
+            if (cmd.raw.size() > 1) Config::UseMaster(cmd.raw[1]);
+            message = "master " + Config::Master() + " (" + Config::MasterUrl() + ")";
+            return true;
+        }
         if (verb == "preset") return Tune::RunPresetVerb(cmd, message);
         if (verb == "replay") return Demo::RunReplayVerb(cmd, message);
         // Ours in the main menu (test verb: the name prompt, the tutorial box, the players' guide).

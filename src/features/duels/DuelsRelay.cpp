@@ -28,11 +28,14 @@ namespace Duels
             EVENT = 0x0C,
             ERROR_ = 0x0E,
             LIST = 0x10,
-            ROOMS = 0x11
+            ROOMS = 0x11,
+            RESULT = 0x12
         };
 
-        static const uint8_t PROTOCOL_VERSION = 2;
-        enum : uint8_t { FLAG_LISTED = 1, FLAG_PASSWORD = 2 };   // CREATE; a listing's flag 1: password
+        static const uint8_t PROTOCOL_VERSION = 3;
+        enum : uint8_t { FLAG_LISTED = 1, FLAG_PASSWORD = 2 };   // CREATE; a listing's flag 1: password, 2: ranked
+        static const uint8_t ROOM_RANKED = 1;                     // JOINED's and EVENT's flags
+        static const size_t PROOF_SIZE = 16;
 
         static const size_t HEADER_SIZE = 4;
         static const size_t TAG_SIZE = 16;
@@ -131,7 +134,8 @@ namespace Duels
         }
 
         void Client::Create(const std::string &playerName, const std::string &gameVersion, const std::string &newRoomName,
-                            const std::string &password, bool showInList, double now)
+                            const std::string &password, bool showInList, double now, const std::string &newTicket,
+                            const std::string &newTicketKey)
         {
             Reset();
             mode = Mode::Create;
@@ -140,11 +144,16 @@ namespace Duels
             roomName = CutUtf8(newRoomName, 32);
             PasswordToken(password, passwordToken);
             listed = showInList;
+            if (newTicketKey.size() == 32)
+            {
+                ticket = newTicket;
+                ticketKey = newTicketKey;
+            }
             StartHandshake(now);
         }
 
         void Client::Join(const std::string &roomCode, const std::string &password, const std::string &playerName,
-                          const std::string &gameVersion, double now)
+                          const std::string &gameVersion, double now, const std::string &newTicket, const std::string &newTicketKey)
         {
             Reset();
             mode = Mode::Join;
@@ -152,6 +161,11 @@ namespace Duels
             name = CutUtf8(playerName, 32);
             version = CutUtf8(gameVersion, 32);
             PasswordToken(password, passwordToken);
+            if (newTicketKey.size() == 32)
+            {
+                ticket = newTicket;
+                ticketKey = newTicketKey;
+            }
             StartHandshake(now);
         }
 
@@ -197,6 +211,16 @@ namespace Duels
                     w.U8((uint8_t)((listed ? FLAG_LISTED : 0) | (password ? FLAG_PASSWORD : 0)));
                 }
                 w.Bytes(passwordToken, sizeof(passwordToken));
+                // Protocol 3: the ticket (empty: none) and, after it, the proof that we hold its key: HMAC-SHA256 of
+                // every byte so far with the key, its first 16 bytes.
+                if (!ticket.empty() && ticket.size() <= 255)
+                {
+                    w.Str(ticket);
+                    uint8_t mac[Crypto::SHA256_SIZE];
+                    Crypto::HmacSha256((const uint8_t*)ticketKey.data(), ticketKey.size(), w.data.data(), w.data.size(), mac);
+                    w.Bytes(mac, PROOF_SIZE);
+                }
+                else w.U8(0);
                 PadTo(w, REQUEST_MIN_SIZE);
             }
             packets.push_back(w.data);
@@ -266,7 +290,10 @@ namespace Duels
                         room.roomName = r.Str();
                         room.hostName = r.Str();
                         room.version = r.Str();
-                        room.password = (r.U8() & 1) != 0;
+                        uint8_t flags = r.U8();
+                        room.password = (flags & 1) != 0;
+                        room.ranked = (flags & 2) != 0;
+                        room.rating = r.U16();
                         list.rooms.push_back(room);
                     }
                     if (!r.Ok()) return false;
@@ -284,7 +311,13 @@ namespace Duels
                     std::memcpy(key, bytes, sizeof(key));
                     state = State::InRoom;
                     lastReceivedMs = now;
-                    events.push_back(Event{Event::RoomCreated, code, 0});
+                    // The relay took the ticket (else ERROR 9): the room is ranked.
+                    ranked = !ticket.empty();
+                    ticket.clear();
+                    ticketKey.clear();
+                    Event created{Event::RoomCreated, code, 0};
+                    created.ranked = ranked;
+                    events.push_back(created);
                 }
                 else if (type == JOINED && mode == Mode::Join && haveCookie)
                 {
@@ -295,13 +328,22 @@ namespace Duels
                     std::memcpy(newKey, bytes, sizeof(newKey));
                     uint64_t seed = U64(r);
                     std::string hostName = r.Str();
+                    uint8_t flags = r.U8();
+                    int hostRating = r.U16();
                     if (!r.Ok()) return false;
                     clientId = id;
                     std::memcpy(key, newKey, sizeof(key));
                     matchSeed = seed;
                     state = State::InRoom;
                     lastReceivedMs = now;
-                    events.push_back(Event{Event::RoomJoined, hostName, seed});
+                    ranked = (flags & ROOM_RANKED) != 0;
+                    peerRating = hostRating;
+                    ticket.clear();
+                    ticketKey.clear();
+                    Event joined{Event::RoomJoined, hostName, seed};
+                    joined.ranked = ranked;
+                    joined.rating = hostRating;
+                    events.push_back(joined);
                 }
                 else if (type == ERROR_)
                 {
@@ -346,11 +388,22 @@ namespace Duels
                 int event = rest.U8();
                 uint64_t seed = U64(rest);
                 std::string peerName = rest.Str();
+                uint8_t flags = rest.U8();
+                int rating = rest.U16();
                 if (!rest.Ok()) return false;
                 if (event == 1)
                 {
                     matchSeed = seed;
-                    events.push_back(Event{Event::PeerJoined, peerName, seed});
+                    if (flags & ROOM_RANKED) ranked = true;
+                    peerRating = rating;
+                    Event joined{Event::PeerJoined, peerName, seed};
+                    joined.ranked = (flags & ROOM_RANKED) != 0;
+                    joined.rating = rating;
+                    events.push_back(joined);
+                }
+                else if (event == 4)
+                {
+                    events.push_back(Event{Event::ResultRecorded, "", 0});
                 }
                 else if (event == 2)
                 {
@@ -405,6 +458,27 @@ namespace Duels
             w.U32(clientId);
             w.U32(++sendSeq);
             w.Bytes(payload, size);
+            packet = w.data;
+            Tag(packet);
+            return true;
+        }
+
+        bool Client::Result(const MatchResult &result, std::vector<uint8_t> &packet)
+        {
+            if (state != State::InRoom) return false;
+            Writer w;
+            Header(w, RESULT);
+            w.U32(clientId);
+            w.U32(++sendSeq);
+            w.U8(result.outcome);
+            w.U8(result.halves);
+            w.U8(result.peerHalves);
+            w.U8(result.rounds);
+            w.U8(result.flags);
+            w.U32(result.season);
+            w.Bytes(result.settings, sizeof(result.settings));
+            w.U32(result.seconds);
+            w.Str(CutUtf8(result.note, 60));
             packet = w.data;
             Tag(packet);
             return true;

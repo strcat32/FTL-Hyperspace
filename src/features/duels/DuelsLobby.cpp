@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsAccount.h"
 #include "DuelsConfig.h"
 #include "DuelsAi.h"
 #include "DuelsConsole.h"
@@ -71,6 +72,9 @@ namespace Duels
             int aiShip = 0;                      // the AI's ship: 0 random, else PlayerShips()[aiShip - 1]
             Style::Box playerBox, aiBox, aiShipLess, aiShipMore;
             Style::Box listedBox, recordBox, roundsLess, roundsMore, prepLess, prepMore, stallLess, stallMore, permadeathBox;
+            // Ranked (roadmap BG): a Steam sign-in, a ticket from the master for the relay, the season's settings.
+            bool ranked = false;
+            Style::Box rankedBox;
             Style::Box demoBox, joinDemoBox;     // "Record a demo" (roadmap AV)
             std::string replayPath;              // the demo that plays with the run (roadmap AU)
             Style::Box hazardBoxes[Environment::KIND_COUNT];
@@ -95,6 +99,12 @@ namespace Duels
             Pending pending = Pending::None;
             std::string roomName, roomPassword, roomCode;
             bool roomListed = true;
+            // Ranked (roadmap BG): the room we open is ranked; the room we join is (its listing said so, or the relay's
+            // ERROR 10); the ticket for the attempt's relay, asked for first (a later answer of an earlier ask is dropped).
+            bool roomRanked = false, joinRanked = false;
+            bool ticketWait = false, ticketReady = false, ticketFailed = false;
+            std::string ticket, ticketKey, ticketWhy;
+            uint32_t ticketRun = 0;
             bool sawHangar = false;
             std::vector<Net::RelayAddress> attemptRelays;
             size_t attemptIndex = 0;
@@ -258,6 +268,8 @@ namespace Duels
             g.name.input->SetText(roomName);
             g.password.input->SetText("");
             g.listed = Config::Value("room_listed") != "off";
+            g.ranked = Config::Value("room_ranked") == "on" && Account::SignedIn();
+            if (Account::SignedIn()) Account::FetchSeason();
             g.next = Rounds::GetNextDuel();
             g.message.clear();
             g.open = Window::Host;
@@ -276,10 +288,30 @@ namespace Duels
             g.roomName = g.name.Text();
             g.roomPassword = g.password.Text();
             g.roomListed = g.listed;
+            g.roomRanked = g.ranked && !g.vsAi;
+            g.joinRanked = false;
+            if (g.roomRanked)
+            {
+                // A ranked room: signed in, and the season's settings here (the match plays by them).
+                if (!Account::SignedIn())
+                {
+                    g.message = "Ranked needs a Steam sign-in: SIGN IN in the FTL: DUELS panel first.";
+                    return;
+                }
+                if (!Rounds::SeasonKnown())
+                {
+                    Account::FetchSeason();
+                    Account::SeasonView season = Account::GetSeason();
+                    g.message = season.error.empty() ? "The season's settings are on their way from the master: START again in a moment."
+                                                     : "No ranked season: " + season.error;
+                    return;
+                }
+            }
             if (SettingsFromConfig())
             {
                 Config::SaveValue("room_name", g.roomName);
                 Config::SaveValue("room_listed", g.listed ? "on" : "off");
+                Config::SaveValue("room_ranked", g.ranked ? "on" : "off");
             }
             if (g.vsAi)
             {
@@ -293,8 +325,9 @@ namespace Duels
             // The room opens at the first relay of the list that answers (part 4).
             bool start = StartsWithoutHangar();
             g.attemptRelays = Net::RelayList();
-            Log("Lobby: %s; the room '%s' (%s%s) opens with the run, at the first of %u relay(s) that answers: %s",
-                start ? "START" : "choose a ship", g.roomName.c_str(), g.roomListed ? "listed" : "unlisted",
+            if (g.roomRanked) message = Rounds::SeasonName() + "'s settings (the season's, not these)";
+            Log("Lobby: %s; the %sroom '%s' (%s%s) opens with the run, at the first of %u relay(s) that answers: %s",
+                start ? "START" : "choose a ship", g.roomRanked ? "ranked " : "", g.roomName.c_str(), g.roomListed ? "listed" : "unlisted",
                 g.roomPassword.empty() ? "" : ", with a password", (unsigned)g.attemptRelays.size(), message.c_str());
             OpenHangar(Pending::Host, start);
         }
@@ -350,11 +383,27 @@ namespace Duels
             y += 66.f;
             CheckAt(g.listedBox, lx, y, !g.listed, "Private: only who has its code can join");
             y += 32.f;
-            CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
+            // Ranked (roadmap BG): only signed in with Steam; the season's settings, recorded.
+            const bool ranked = g.ranked && !g.vsAi;
+            if (g.vsAi) g.rankedBox = Style::Box();
+            else
+            {
+                CheckAt(g.rankedBox, lx, y, ranked, Account::SignedIn() ? "Ranked (the season's settings)" : "Ranked: SIGN IN with Steam first");
+                y += 32.f;
+            }
+            if (ranked)
+            {
+                g.recordBox = Style::Box();
+                Text(FONT, lx + 30.f, y + 6.f, "Public recording: on (a ranked match is recorded)", soft);
+            }
+            else CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
             y += 32.f;
             CheckAt(g.demoBox, lx, y, Demo::RecordingOn(), "Record a demo (in demos\\, for REPLAYS)");
             y += 40.f;
-            Paragraph(FONT, lx, y, lw, g.vsAi && StartsWithoutHangar()
+            if (ranked) Paragraph(FONT, lx, y, lw, "START asks the master for a ticket, then opens a ranked room: a guest needs a Steam "
+                                                  "sign-in too. The match plays by the season's settings; its result goes to the "
+                                                  "master, which rates both players.", soft);
+            else Paragraph(FONT, lx, y, lw, g.vsAi && StartsWithoutHangar()
                                            ? "START begins the run and the match against the AI, on this computer: no room, "
                                              "nothing over the network. The ships are chosen first, the AI's turns its own."
                                        : g.vsAi ? "CHOOSE SHIP opens FTL's hangar. Its START begins the run and the match against "
@@ -372,6 +421,31 @@ namespace Duels
             y = HY + 24.f;
             y += Style::Label(rx, y, "THE MATCH") + 14.f;
             const Rounds::NextDuel &n = g.next;
+            if (ranked)
+            {
+                // The season's settings, locked: none of ours shows (their boxes take no clicks).
+                for (Style::Box *box : {&g.roundsLess, &g.roundsMore, &g.prepLess, &g.prepMore, &g.stallLess, &g.stallMore,
+                                        &g.permadeathBox, &g.shipsLess, &g.shipsMore})
+                    *box = Style::Box();
+                for (Style::Box &box : g.hazardBoxes) box = Style::Box();
+                for (Style::Box &box : g.typeBoxes) box = Style::Box();
+                for (auto &layouts : g.layoutBoxes)
+                    for (Style::Box &box : layouts) box = Style::Box();
+                Account::SeasonView season = Account::GetSeason();
+                if (Rounds::SeasonKnown())
+                {
+                    y += Paragraph(TEXT, rx, y, rw, Rounds::SeasonName() + "'s settings", gold) + 6.f;
+                    y += Paragraph(FONT, rx, y, rw, "The master sets them for the season: every ranked match plays by them.", soft) + 10.f;
+                    for (const std::string &row : Rounds::SeasonRows()) y += Paragraph(FONT, rx, y, rw, row, light) + 6.f;
+                }
+                else if (season.fetching || season.error.empty()) Paragraph(FONT, rx, y, rw, "Asking the master for the season's settings...", soft);
+                else Paragraph(FONT, rx, y, rw, "No ranked season: " + season.error, Rgb(255, 140, 120));
+                float by = HY + HH - 58.f;
+                if (!g.message.empty()) Paragraph(FONT, HX + 30.f, by + 8.f, 380.f, g.message, Rgb(255, 140, 120));
+                ButtonAt(g.cancel, HX + HW - 30.f - 190.f - 12.f - 130.f, by, 130.f, 34.f, "CANCEL");
+                ButtonAt(g.choose, HX + HW - 30.f - 190.f, by, 190.f, 34.f, StartsWithoutHangar() ? "START" : "CHOOSE SHIP");
+                return;
+            }
             auto stepper = [&](const std::string &label, const std::string &value, Style::Box &less, Style::Box &more, bool canLess,
                                bool canMore)
             {
@@ -468,6 +542,16 @@ namespace Duels
             else if (g.name.box.Contains(x, y)) Focus(&g.name);
             else if (g.password.box.Contains(x, y)) Focus(&g.password);
             else if (g.listedBox.Contains(x, y)) g.listed = !g.listed;
+            else if (g.rankedBox.Contains(x, y))
+            {
+                if (!Account::SignedIn()) g.message = "Ranked needs a Steam sign-in: SIGN IN in the FTL: DUELS panel first.";
+                else
+                {
+                    g.ranked = !g.ranked;
+                    g.message.clear();
+                    if (g.ranked) Account::FetchSeason();
+                }
+            }
             else if (g.recordBox.Contains(x, y)) n.record = !n.record;
             else if (g.demoBox.Contains(x, y)) Demo::SetRecordingOn(!Demo::RecordingOn());
             else if (g.roundsLess.Contains(x, y) && n.rounds > 1) n.rounds = n.rounds % 2 == 0 ? n.rounds - 1 : n.rounds - 2;
@@ -615,6 +699,8 @@ namespace Duels
                     return;
                 }
                 g.roomCode = code;
+                g.roomRanked = false;
+                g.joinRanked = false;   // a ranked room says so (ERROR 10): a ticket then
                 g.attemptRelays = Net::RelayList();
                 Log("Lobby: START; the room %s is joined with the run (looked for at %u relay(s))%s", code.c_str(),
                     (unsigned)g.attemptRelays.size(), g.roomPassword.empty() ? "" : " (with a password)");
@@ -638,7 +724,15 @@ namespace Duels
                 Focus(&g.joinPassword);
                 return;
             }
+            if (room.ranked && !Account::SignedIn())
+            {
+                g.message = "That room is ranked: SIGN IN with Steam first (the FTL: DUELS panel).";
+                return;
+            }
             g.roomCode = room.code;
+            g.roomRanked = false;
+            g.joinRanked = room.ranked;
+            if (room.ranked && !Rounds::SeasonKnown()) Account::FetchSeason();
             g.attemptRelays = {room.relay};
             Log("Lobby: START; the room %s ('%s', %s's) at %s is joined with the run", room.code.c_str(), room.roomName.c_str(),
                 room.hostName.c_str(), room.relay.name.c_str());
@@ -695,6 +789,7 @@ namespace Duels
                 Text(FONT, cHost, ty, Fit(FONT, Match::ScreenName(room.hostName), 116.f), sameVersion ? light : soft);
                 Text(FONT, cRelay, ty, Fit(FONT, room.relay.name, 110.f), soft);
                 if (!sameVersion) Text(FONT, cLock, ty, "v" + Fit(FONT, room.version, 56.f), red);
+                else if (room.ranked) Text(FONT, cLock, ty, room.password ? "RANKED, PW" : "RANKED", Rgb(140, 255, 130));
                 else if (room.password) Text(FONT, cLock, ty, "PASSWORD", gold);
                 g.rows.push_back(box);
                 g.rowKeys.push_back(Key(room));
@@ -732,9 +827,11 @@ namespace Duels
                 bool sameVersion = room.version == Net::Version();
                 line("Version", room.version + (sameVersion ? "" : " (yours: " + Net::Version() + ")"), sameVersion ? light : red);
                 line("Password", room.password ? "needed: type it below" : "none", room.password ? gold : light);
+                line("Ranked", room.ranked ? "yes: the host's rating " + std::to_string(room.rating) + "; a Steam sign-in needed" : "no",
+                     room.ranked ? Rgb(140, 255, 130) : light);
                 dy += 6.f;
-                Paragraph(FONT, dx, dy, dw, "Whether it is ranked, needs Steam or runs debug mode, and its match settings come with "
-                                            "the relay's next version.", soft);
+                if (room.ranked) Paragraph(FONT, dx, dy, dw, "A ranked match plays by the season's settings, and the master rates both "
+                                                             "players.", soft);
             }
             else Paragraph(FONT, dx, dy, dw, "A click on a room in the list shows it here.", soft);
 
@@ -859,11 +956,64 @@ namespace Duels
 
         // The room at the relay of this attempt: opened (the host) or joined (the guest), as "host relay" and "join" do.
         // A relay that can't be reached at all is skipped.
+        // A ranked room's attempt asks the master for a ticket for its relay first (roadmap BG).
+        static bool NeedsTicket()
+        {
+            return (g.pending == Pending::Host && g.roomRanked) || (g.pending == Pending::Join && g.joinRanked);
+        }
+
+        static void AskTicket(const Net::RelayAddress &relay)
+        {
+            uint32_t run = ++g.ticketRun;
+            g.ticketWait = true;
+            g.ticketReady = g.ticketFailed = false;
+            g.ticketWhy.clear();
+            std::string name = Net::RelayName(relay.server, relay.port);
+            Log("Lobby: a ticket for %s from the master", name.c_str());
+            Account::Ticket(name, [run](bool ok, const std::string &ticket, const std::string &key, const std::string &why)
+                            {
+                                if (run != g.ticketRun) return;
+                                g.ticketWait = false;
+                                if (ok)
+                                {
+                                    g.ticketReady = true;
+                                    g.ticket = ticket;
+                                    g.ticketKey = key;
+                                }
+                                else
+                                {
+                                    g.ticketFailed = true;
+                                    g.ticketWhy = why;
+                                    Log("Lobby: no ticket: %s", why.c_str());
+                                }
+                            });
+        }
+
         static bool StartAttempt()
         {
             while (g.attemptIndex < g.attemptRelays.size())
             {
                 const Net::RelayAddress &relay = g.attemptRelays[g.attemptIndex];
+                if (NeedsTicket())
+                {
+                    if (g.ticketWait) return true;   // the master's answer comes (the frame's update waits for it)
+                    if (g.ticketFailed)
+                    {
+                        g.ticketFailed = false;
+                        ++g.attemptIndex;
+                        continue;
+                    }
+                    if (!g.ticketReady)
+                    {
+                        AskTicket(relay);
+                        return true;
+                    }
+                    g.ticketReady = false;
+                    Net::SetTicket(g.ticket, g.ticketKey);
+                    // A ranked room's players go by their Steam names (rules, section 6).
+                    Match::UseRankedName(Account::GetView().name);
+                }
+                else Match::UseRankedName("");
                 std::string message;
                 bool ok = g.pending == Pending::Host
                               ? Match::HostRelay(relay.server, relay.port, g.roomName, g.roomPassword, g.roomListed, message)
@@ -885,7 +1035,9 @@ namespace Duels
             std::string text;
             int error = Net::LastRelayError(&text);
             why = text.empty() ? "the connection failed" : text;
-            retry = error == Relay::Event::NO_ANSWER || error == 4 || error == 6 || (g.pending == Pending::Join && error == 2);
+            // A relay that takes no tickets (ERROR 9) may be followed by one that does.
+            retry = error == Relay::Event::NO_ANSWER || error == 4 || error == 6 || (g.pending == Pending::Join && error == 2) ||
+                    error == Relay::Event::TICKET_REFUSED;
             return -1;
         }
 
@@ -895,10 +1047,13 @@ namespace Duels
             std::string relay = g.attemptIndex < g.attemptRelays.size() ? g.attemptRelays[g.attemptIndex].name : std::string("-");
             g.pending = Pending::None;
             g.attempting = false;
+            ++g.ticketRun;
+            g.ticketWait = g.ticketReady = g.ticketFailed = false;
             if (ok)
             {
-                std::string text = host ? "Room " + Net::RelayCode() + " is open at " + relay + ": waiting for a guest"
-                                        : "Joined " + Net::PeerName() + "'s room at " + relay;
+                std::string kind = Net::RoomRanked() ? "Ranked room " : "Room ";
+                std::string text = host ? kind + Net::RelayCode() + " is open at " + relay + ": waiting for a guest"
+                                        : "Joined " + Net::PeerName() + "'s " + (Net::RoomRanked() ? "ranked " : "") + "room at " + relay;
                 Log("Lobby: %s", text.c_str());
                 Console::Feed(text);
             }
@@ -916,7 +1071,8 @@ namespace Duels
         void ToLobby()
         {
             if (g.saving) return;
-            if (Demo::SwapBusy())
+            // The swap of full states, and a ranked match's result on its way to the relay (roadmap BG).
+            if (Demo::SwapBusy() || Net::ResultState() == 1)
             {
                 g.saving = true;
                 g.savingUntilMs = WallMs() + 10000.0;
@@ -968,9 +1124,10 @@ namespace Duels
             CApp *app = G_->GetCApp();
             if (!app) return;
             // LOBBY once the swap of full states is done (or 10 s on).
-            if (g.saving && (!Demo::SwapBusy() || WallMs() > g.savingUntilMs))
+            if (g.saving && ((!Demo::SwapBusy() && Net::ResultState() != 1) || WallMs() > g.savingUntilMs))
             {
-                Log("Lobby: %s", Demo::SwapBusy() ? "the swap of full states isn't done after 10 s: LOBBY all the same" : "the swap of full states is done");
+                Log("Lobby: %s", Demo::SwapBusy() || Net::ResultState() == 1 ? "the swap of full states (or the result) isn't done after 10 s: LOBBY all the same"
+                                                                              : "the swap of full states is done");
                 g.saving = false;
                 g.cover = false;
                 LeaveToLobby();
@@ -1053,7 +1210,16 @@ namespace Duels
             {
                 g.attempting = true;
                 g.attemptIndex = 0;
+                g.ticketWait = g.ticketReady = g.ticketFailed = false;
                 if (!StartAttempt()) Finish(false, "no relay of the list can be reached");
+                return;
+            }
+            // A ranked room's ticket on its way: the attempt starts when it comes (or the next relay's, without one).
+            if (g.ticketWait) return;
+            if (g.ticketReady || g.ticketFailed)
+            {
+                std::string why = g.ticketWhy;
+                if (!StartAttempt()) Finish(false, why.empty() ? "no relay of the list can be reached" : "no ticket from the master: " + why);
                 return;
             }
             bool retry = false;
@@ -1063,6 +1229,20 @@ namespace Duels
             if (state > 0)
             {
                 Finish(true, "");
+                return;
+            }
+            // A ranked room, joined by its code (ERROR 10): with a ticket, at the same relay.
+            if (g.pending == Pending::Join && !g.joinRanked && Net::LastRelayError() == Relay::Event::RANKED_ROOM)
+            {
+                if (!Account::SignedIn())
+                {
+                    Finish(false, "a ranked room: SIGN IN with Steam first (the FTL: DUELS panel)");
+                    return;
+                }
+                g.joinRanked = true;
+                if (!Rounds::SeasonKnown()) Account::FetchSeason();
+                Log("Lobby: a ranked room: a ticket first");
+                if (!StartAttempt()) Finish(false, why);
                 return;
             }
             if (retry && g.attemptIndex + 1 < g.attemptRelays.size())
@@ -1120,6 +1300,17 @@ namespace Duels
                 Demo::SetRecordingOn(!Demo::RecordingOn());
                 message = std::string("Record a demo: ") + (Demo::RecordingOn() ? "on" : "off");
                 return true;
+            }
+            else if (what == "ranked" && args.size() > 2 && g.open == Window::Host)
+            {
+                // ranked on|off: HOST DUEL's Ranked (roadmap BG).
+                if (args[2] == "on" && !Account::SignedIn())
+                {
+                    message = "not signed in: ranked needs a Steam sign-in";
+                    return false;
+                }
+                g.ranked = args[2] == "on";
+                if (g.ranked) Account::FetchSeason();
             }
             else if (what == "ai" && args.size() > 2 && g.open == Window::Host)
             {

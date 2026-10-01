@@ -111,6 +111,10 @@ namespace Duels
         // host's setting counts for both players; 1 is FTL's own pace.
         bool SetCrewXp(float factor, std::string &message);
         float CrewXpSetting();   // ours, for the duels we host (a preset keeps it, roadmap BE)
+        float MatchXp();         // this duel's (the host's; in a ranked room the season's, roadmap BG)
+        // A ranked room's players go by their Steam names (rules, section 6): the name for the next session's
+        // handshake ("": our own again).
+        void UseRankedName(const std::string &name);
         std::string CrewXpStatus();
         std::string Status();
 

@@ -37,6 +37,8 @@ namespace Duels
         // Its web address (roadmap BG): https://<master>, or the address as written when it is one ("http://127.0.0.1:8099",
         // a test's stand-in master: its host is the relay then).
         std::string MasterUrl();
+        // Another master for this run only (the "master" command; a test's local master): duels.cfg keeps its own.
+        void UseMaster(const std::string &master);
         // The relay servers: the file's, in its order, then the master (the project's public relay).
         const std::vector<std::string> &Relays();
         // The server is the master's (the project's public relay).

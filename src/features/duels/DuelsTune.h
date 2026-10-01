@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -51,6 +52,15 @@ namespace Duels
         void WriteMatch(Writer &w);
         bool ReadMatch(Reader &r, std::string &note);
         void EndMatch();
+
+        // Ranked play (roadmap BG): a season's fine setting as it is kept ("" and why when the name or the value isn't
+        // one; isDefault when it is the default, which a season's list leaves out); the season's fine settings in
+        // place of ours for the matches we host in a ranked room (nullptr: ours again); whether the match's are
+        // exactly these (those off their defaults); the match's off their defaults (for the settings' hash).
+        std::string SeasonValue(const std::string &name, const std::string &value, bool &isDefault, std::string &why);
+        void UseSeason(const std::map<std::string, std::string> *fine);
+        bool MatchIs(const std::map<std::string, std::string> &fine);
+        std::vector<std::pair<std::string, std::string>> MatchChanged();
 
         // Verbs: tune | tune <name> | tune <name> <value>|default; preset list | preset save <name> | preset load <name>.
         bool RunVerb(const Command &cmd, std::string &message);

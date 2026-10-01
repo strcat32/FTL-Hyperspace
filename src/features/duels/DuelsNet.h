@@ -1,8 +1,10 @@
 #pragma once
 
+#include "DuelsRelay.h"
 #include "DuelsWire.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 // Session between two players: one hosts (listens on a UDP port), the other joins. The handshake checks that both
@@ -41,6 +43,9 @@ namespace Duels
             // to come back (cutOff false) or tries to come back itself (true). OnConnected follows if it works, with
             // Resumed() true, and OnDisconnected when the time is up.
             virtual void OnConnectionLost(const std::string &reason, bool cutOff) { (void)reason; (void)cutOff; }
+            // A ranked room's other player didn't come back in time (roadmap BG): the match is decided now, while we
+            // are still in the room, so its result reaches the relay (SendResult) before OnDisconnected.
+            virtual void OnOpponentGone() {}
         };
 
         // Coming back after a lost connection (roadmap 3.1, docs/design/match-flow.md): how long the match waits.
@@ -85,6 +90,25 @@ namespace Duels
         // Relay::Event::NO_ANSWER; 0 when the last try had none. HostRelay and JoinRelay clear it.
         int LastRelayError(std::string *text = nullptr);
 
+        // Ranked rooms (roadmap BG; relay protocol 3): the master's ticket for the next HostRelay or JoinRelay (its
+        // bytes and its 32-byte key); a room made with one is ranked, and a ranked room takes only guests with one.
+        void SetTicket(const std::string &ticket, const std::string &key);
+        // Where a ticket comes from when the session needs one by itself: coming back into a ranked room after a lost
+        // connection (the relay's name, "server:port"; done gets the ticket and its key, or false).
+        using TicketDone = std::function<void(bool ok, const std::string &ticket, const std::string &key)>;
+        void SetTicketSource(std::function<void(const std::string &relay, TicketDone done)> source);
+        // The room is ranked: both players came with a valid ticket (the relay says so). The other player's rating
+        // from their ticket.
+        bool RoomRanked();
+        int PeerRating();
+        // A relay's name for the master's tickets: "server:port" (the port always).
+        std::string RelayName(const std::string &server, uint16_t port);
+        std::string RelayName();
+        // The match's result for the relay (a ranked room): sent again every second until the relay has it.
+        void SendResult(const Relay::MatchResult &result);
+        // The result: 0 none, 1 on its way, 2 the relay has it, -1 the relay didn't answer.
+        int ResultState();
+
         // A relay of the list: its name there ("server[:port]"), and where it is.
         struct RelayAddress
         {
@@ -99,6 +123,8 @@ namespace Duels
             RelayAddress relay;
             std::string code, roomName, hostName, version;
             bool password = false;
+            bool ranked = false;   // a ranked room: joining needs a ticket (a Steam sign-in)
+            int rating = 0;        // its host's rating
         };
         struct RoomSearch
         {

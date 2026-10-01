@@ -199,6 +199,14 @@ namespace Duels
             return s.master;
         }
 
+        void UseMaster(const std::string &master)
+        {
+            Load();
+            g_settings.master = master;
+            g_settings.masterInFile = true;   // nothing to write into the file
+            Log("Config: the master for this run: %s", master.c_str());
+        }
+
         bool IsPublicRelay(const std::string &server)
         {
             Load();

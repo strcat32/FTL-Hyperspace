@@ -10,6 +10,7 @@
 #include "DuelsNet.h"
 #include "DuelsAi.h"
 #include "DuelsBays.h"
+#include "DuelsCrypto.h"
 #include "DuelsRounds.h"
 #include "DuelsScript.h"
 #include "DuelsRefit.h"
@@ -235,6 +236,8 @@ namespace Duels
             bool defeatSent = false;        // ours reported this round
 
             double pausedSince = -1.0;      // the connection was lost then (our clock): the match is paused
+            double startedMs = 0.0;         // the match began then (our clock): its length for a ranked result
+            bool resultSent = false;        // a ranked match's result went to the relay
             uint32_t eventsSent = 0, eventsReceived = 0, statesSent = 0, statesReceived = 0;
             // Guest: we answered the host's draw offer (its end then is no taking back).
             bool drawAnswered = false;
@@ -959,6 +962,8 @@ namespace Duels
                  Number(result.dealt[them]) + ", " + ScoreLine());
         }
 
+        static void SendRankedResult();
+
         static void EnterMatchOver()
         {
             RoundCleanup();
@@ -978,6 +983,7 @@ namespace Duels
             else MatchUi::Splash("MATCH LOST", g.me == HOST ? MatchUi::BLUE : MatchUi::RED, 4000.0, "powerUpFail");
             Announce(text + ", " + PointsLine(d, g.me, them) + " (" + ReasonText(d.matchReason) + ")");
             Note("match over: " + ScoreLine());
+            SendRankedResult();
         }
 
         static void ApplyLocal()
@@ -1523,10 +1529,8 @@ namespace Duels
             if (!list.empty()) s.list = list;
         }
 
-        std::vector<std::pair<std::string, std::string>> SettingLines()
+        static std::vector<std::pair<std::string, std::string>> SettingLinesOf(const Settings &s)
         {
-            LoadSettings();
-            const Settings &s = g.settings;
             std::string hazards = Environment::HazardsName(s.hazards);   // "sun, pulsar" or "none"
             hazards.erase(std::remove(hazards.begin(), hazards.end(), ' '), hazards.end());
             std::string list;
@@ -1546,6 +1550,12 @@ namespace Duels
                     {"match_list", list}};
         }
 
+        std::vector<std::pair<std::string, std::string>> SettingLines()
+        {
+            LoadSettings();
+            return SettingLinesOf(g.settings);
+        }
+
         // Kept for the next start; a test scenario leaves duels.cfg as it is (the next test starts from its own).
         static void SaveSettings()
         {
@@ -1558,10 +1568,8 @@ namespace Duels
             SaveSettings();
         }
 
-        bool ApplySetting(const std::string &key, const std::string &value, std::string &why)
+        static bool ApplySettingTo(Settings &s, const std::string &key, const std::string &value, std::string &why)
         {
-            LoadSettings();
-            Settings &s = g.settings;
             char *end = nullptr;
             long number = std::strtol(value.c_str(), &end, 10);
             const bool isNumber = !value.empty() && end && *end == '\0';
@@ -1599,6 +1607,113 @@ namespace Duels
                 return false;
             }
             return true;
+        }
+
+        bool ApplySetting(const std::string &key, const std::string &value, std::string &why)
+        {
+            LoadSettings();
+            return ApplySettingTo(g.settings, key, value, why);
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // Ranked play (roadmap BG): the season's settings, locked by the master.
+        // ---------------------------------------------------------------------------------------------------------
+
+        struct SeasonState
+        {
+            bool known = false;
+            int id = 0;
+            std::string name;
+            Settings settings;
+            float xp = 3.f;
+            std::map<std::string, std::string> fine;
+        };
+
+        static SeasonState g_season;
+
+        bool SetSeason(int id, const std::string &name, const std::string &config, std::string &why)
+        {
+            SeasonState season;
+            season.id = id;
+            season.name = name;
+            std::stringstream lines(config);
+            std::string line;
+            while (std::getline(lines, line))
+            {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                size_t start = line.find_first_not_of(" \t");
+                if (start == std::string::npos || line[start] == '#') continue;
+                std::string text = line.substr(start);
+                size_t space = text.find_first_of(" \t");
+                std::string key = text.substr(0, space);
+                size_t valueStart = space == std::string::npos ? std::string::npos : text.find_first_not_of(" \t", space);
+                std::string value = valueStart == std::string::npos ? std::string() : text.substr(valueStart);
+                while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.pop_back();
+                std::string problem;
+                if (key == "xp")
+                {
+                    float xp = (float)std::atof(value.c_str());
+                    if (!(xp >= 1.f && xp <= 10.f)) problem = "xp isn't from 1 to 10";
+                    else season.xp = xp;
+                }
+                else if (key.compare(0, 6, "match_") == 0)
+                {
+                    if (!value.empty() && !ApplySettingTo(season.settings, key, value, problem)) problem = key + ": " + problem;
+                }
+                else
+                {
+                    bool isDefault = false;
+                    std::string normal = Tune::SeasonValue(key, value, isDefault, problem);
+                    if (normal.empty()) problem = key + ": " + problem;
+                    else if (!isDefault) season.fine[key] = normal;
+                }
+                if (!problem.empty())
+                {
+                    why = "the season's settings don't read here (" + problem + "): a newer game may be needed";
+                    Log("Rounds: season %d (%s): %s", id, name.c_str(), why.c_str());
+                    return false;
+                }
+            }
+            season.known = true;
+            season.settings.free = false;
+            g_season = season;
+            Log("Rounds: ranked season %d (%s): best of %u, %u s preparation, crew experience %g, %u fine setting(s) off their defaults",
+                id, name.c_str(), (unsigned)season.settings.rounds, (unsigned)season.settings.prepSeconds, season.xp,
+                (unsigned)season.fine.size());
+            return true;
+        }
+
+        bool SeasonKnown() { return g_season.known; }
+        int SeasonId() { return g_season.id; }
+        std::string SeasonName() { return g_season.name; }
+        float SeasonXp() { return g_season.xp; }
+        const std::map<std::string, std::string> &SeasonFine() { return g_season.fine; }
+
+        static bool SameSettings(const Settings &a, const Settings &b)
+        {
+            return a.rounds == b.rounds && a.prepSeconds == b.prepSeconds && a.permadeath == b.permadeath && a.free == b.free &&
+                   a.stallSeconds == b.stallSeconds && a.env == b.env && a.hazards == b.hazards && a.record == b.record &&
+                   a.ships == b.ships && a.pool == b.pool && a.list == b.list && a.timeouts == b.timeouts &&
+                   a.timeoutSeconds == b.timeoutSeconds;
+        }
+
+        // The match plays by the season's settings: the match's, its crew experience, its fine settings.
+        static bool SeasonMatches(const Settings &s)
+        {
+            return g_season.known && SameSettings(s, g_season.settings) && std::fabs(Match::MatchXp() - g_season.xp) < 0.001f &&
+                   Tune::MatchIs(g_season.fine);
+        }
+
+        // The match's settings as one text, hashed: the same in both games when they play by the same settings.
+        static void SettingsHash(const Settings &s, uint8_t hash[32])
+        {
+            std::string text;
+            for (const std::pair<std::string, std::string> &line : SettingLinesOf(s)) text += line.first + " " + line.second + "\n";
+            char xp[32];
+            std::snprintf(xp, sizeof(xp), "xp %g\n", Match::MatchXp());
+            text += xp;
+            for (const std::pair<std::string, std::string> &line : Tune::MatchChanged()) text += line.first + " " + line.second + "\n";
+            Crypto::Sha256Digest((const uint8_t*)text.data(), text.size(), hash);
         }
 
         void Reset()
@@ -1647,11 +1762,15 @@ namespace Duels
             Environment::ClearBeacon();
             g.active = true;
             g.me = Net::IsHost() ? HOST : GUEST;
+            g.startedMs = Now();
             g.random.seed(NewSeed() ^ (uint32_t)(Net::MatchSeed() & 0xffffffffu));
             Refit::OnMatchStart();
             if (g.me != HOST) return;   // the host's match state comes
             g.data = Data();
-            g.data.settings = g.settings;
+            // A ranked room plays by the season's settings (roadmap BG), not the host's own.
+            bool season = Net::RoomRanked() && g_season.known;
+            g.data.settings = season ? g_season.settings : g.settings;
+            if (season) Log("Rounds: a ranked room: the match plays by %s's settings", g_season.name.c_str());
             g.data.token = ((uint64_t)g.random() << 32) | g.random();
             if (g.data.token == 0) g.data.token = 1;
             Net::SetMatchToken(g.data.token);
@@ -1748,6 +1867,20 @@ namespace Duels
         double TimeoutLeftMs()
         {
             return TimeoutPaused() ? std::max(0.0, FromHost(g.data.timeoutEnd) - Now()) : 0.0;
+        }
+
+        void OpponentGone()
+        {
+            if (!g.active) return;
+            Data &d = g.data;
+            if (d.phase == Phase::None || d.phase == Phase::MatchOver) return;
+            d.matchWinner = g.me;
+            d.matchReason = REASON_LEFT;
+            d.phase = Phase::MatchOver;
+            g.appliedPhase = Phase::MatchOver;
+            RoundCleanup();
+            Announce("Match over: you win (the other player didn't come back)");
+            SendRankedResult();
         }
 
         void OnDisconnected(bool opponentGone)
@@ -2469,21 +2602,80 @@ namespace Duels
             }
         }
 
-        // Why a match isn't ranked, "" when it is: debug mode, against the AI, not recorded.
+        // Why a match isn't ranked, "" when it is: debug mode, against the AI, not recorded; a room that isn't ranked
+        // (a ranked room needs both players signed in with Steam, roadmap BG), or a match that doesn't play by the
+        // season's settings.
         static std::string UnrankedReasons(const Settings &s)
         {
             std::string reasons = GetState().debug ? "debug mode" : "";
-            if (g.local) reasons += std::string(reasons.empty() ? "" : ", ") + "against the AI";
-            if (!s.record) reasons += std::string(reasons.empty() ? "" : ", ") + "not recorded";
-            // A ranked match plays by the standard rules (roadmap BE, proposed): fine settings off their defaults.
-            if (Tune::Custom()) reasons += std::string(reasons.empty() ? "" : ", ") + "custom fine settings";
+            auto add = [&reasons](const std::string &why) { reasons += (reasons.empty() ? "" : ", ") + why; };
+            if (g.local) add("against the AI");
+            if (!s.record) add("not recorded");
+            if (g.local) return reasons;
+            if (Net::RoomRanked())
+            {
+                if (!g_season.known) add("the season's settings unknown");
+                else if (g.active && !SeasonMatches(s)) add("not the season's settings");
+            }
+            else
+            {
+                // A ranked match plays by the season's settings (roadmap BE, BG): fine settings off their defaults.
+                if (Tune::Custom()) add("custom fine settings");
+                add("not a ranked room");
+            }
             return reasons;
+        }
+
+        // A ranked room's match is over: its result for the relay, as this game saw it (once).
+        static void SendRankedResult()
+        {
+            if (!Net::RoomRanked() || Net::Replaying() || g.resultSent) return;
+            g.resultSent = true;
+            const Data &d = g.data;
+            uint8_t them = Other(g.me);
+            Relay::MatchResult result;
+            result.outcome = d.matchWinner == NOBODY ? Relay::MatchResult::DRAW
+                             : d.matchWinner == g.me ? Relay::MatchResult::WON : Relay::MatchResult::LOST;
+            result.halves = (uint8_t)std::min(255, Halves(d, g.me));
+            result.peerHalves = (uint8_t)std::min(255, Halves(d, them));
+            result.rounds = (uint8_t)std::min<size_t>(255, d.results.size());
+            std::string why = UnrankedReasons(d.settings);
+            if (why.empty()) result.flags |= Relay::MatchResult::FLAG_RANKED;
+            if (d.matchReason == REASON_LEFT) result.flags |= Relay::MatchResult::FLAG_PEER_LEFT;
+            result.season = (uint32_t)g_season.id;
+            SettingsHash(d.settings, result.settings);
+            result.seconds = (uint32_t)std::max(0.0, (Now() - g.startedMs) / 1000.0);
+            result.note = why;
+            Log("Rounds: the ranked match's result: %s, half points %u:%u, %u round(s), %s", result.outcome == 1 ? "won" : result.outcome == 2 ? "lost" : "a draw",
+                (unsigned)result.halves, (unsigned)result.peerHalves, (unsigned)result.rounds, why.empty() ? "ranked" : ("unranked: " + why).c_str());
+            Net::SendResult(result);
         }
 
         bool Ranked(std::string &why)
         {
             why = UnrankedReasons(g.active ? g.data.settings : g.settings);
             return why.empty();
+        }
+
+        std::vector<std::string> SeasonRows()
+        {
+            std::vector<std::string> rows;
+            if (!g_season.known) return rows;
+            const Settings &s = g_season.settings;
+            rows.push_back((s.rounds == 1 ? std::string("One round") : "Best of " + std::to_string(s.rounds) + " rounds") + ", " +
+                           std::to_string(s.prepSeconds) + " s preparation");
+            rows.push_back(std::string("Permanent death ") + (s.permadeath ? "on" : "off") + ", anti-stall " +
+                           (s.stallSeconds > 0 ? Duration(s.stallSeconds) : std::string("off")));
+            if (s.env == Environment::MODE_OFF || (s.env == Environment::MODE_AUTO && s.hazards == 0)) rows.push_back("No hazards");
+            else if (s.env != Environment::MODE_AUTO) rows.push_back(std::string("Every fight near ") + Environment::KindName(s.env - 1));
+            else rows.push_back("Hazards from round 3: " + Environment::HazardsName(s.hazards));
+            rows.push_back(s.ships == SHIPS_BANS ? "Ships: bans, then a pick" : s.ships == SHIPS_LIST ? "Ships: a pick from a list"
+                                                                                                    : "Ships: each player's own");
+            char xp[48];
+            std::snprintf(xp, sizeof(xp), "Crew experience x%g, %u timeouts a round", g_season.xp, (unsigned)s.timeouts);
+            rows.push_back(xp);
+            if (!g_season.fine.empty()) rows.push_back(std::to_string(g_season.fine.size()) + " fine setting(s) of the season's own");
+            return rows;
         }
 
         // The settings as the Duels window's rows (AS): always five short lines.

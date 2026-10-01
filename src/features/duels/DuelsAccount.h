@@ -42,11 +42,29 @@ namespace Duels
         void Refresh();
         void Frame();
 
-        // A ticket for a ranked room on a relay (the master's id of it): its bytes and its key (decoded), or why not.
+        // A ticket for a ranked room on a relay (the master's id of it, or "server:port"): its bytes and its key (both
+        // decoded), or why not.
         using TicketDone = std::function<void(bool ok, const std::string &ticket, const std::string &key, const std::string &why)>;
         void Ticket(const std::string &relayId, TicketDone done);
 
+        // Ranked play's season (roadmap BG): its settings from the master (GET /api/season), handed to
+        // Rounds::SetSeason; asked for when HOST DUEL's Ranked is ticked or a ranked room is joined.
+        struct SeasonView
+        {
+            bool known = false, fetching = false;
+            int id = 0;
+            std::string name, error;
+        };
+        SeasonView GetSeason();
+        void FetchSeason();
+        // A ranked match's result reached the relay: the rating is asked for again (twice, a few seconds apart), and
+        // the change kept for the end screen.
+        void AfterRankedMatch();
+        // After a ranked match: the rating before it and now (false until the master's new one came).
+        bool RatingChange(int &before, int &after);
+
         // Test verb: account | account signin | account cancel | account signout | account refresh | account ticket <relay>
+        // | account season
         bool RunVerb(const Command &cmd, std::string &message);
     }
 }

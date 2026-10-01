@@ -95,9 +95,23 @@ namespace Duels
             std::string backCode;
             std::string relayPassword;
             bool roomPrivate = false;   // the room we host isn't in the relay's room list
+            // Ranked rooms (roadmap BG): the ticket for the next handshake; the room was ranked (kept for coming back,
+            // which needs a new ticket); the match's result for the relay, until it has it; a disconnection waiting
+            // for that.
+            std::string ticket, ticketKey;
+            bool backRanked = false;
+            bool ticketAsked = false;
+            bool resultQueued = false, resultAcked = false;
+            Relay::MatchResult result;
+            double resultSentAt = 0.0;
+            int resultTries = 0;
+            double closeAt = 0.0;
         };
 
         static Session g_session;
+        static std::function<void(const std::string &, TicketDone)> g_ticketSource;
+        static const double RESULT_RETRY_MS = 1000.0;
+        static const int RESULT_TRIES = 10;
 
         // A look at the relay's list of open rooms, with a socket of its own.
         struct Browser
@@ -143,9 +157,21 @@ namespace Duels
             g_session.phaseStart = g_session.now;
         }
 
+        static void SendResultNow()
+        {
+            Session &s = g_session;
+            std::vector<uint8_t> packet;
+            if (!s.relay || !s.socket.IsOpen() || s.cut || !s.relayClient.Result(s.result, packet)) return;
+            s.socket.SendTo(s.peer, packet.data(), packet.size());
+            s.resultSentAt = s.now;
+            ++s.resultTries;
+        }
+
         static void Close()
         {
             Session &s = g_session;
+            // A ranked match's result the relay hasn't confirmed yet: once more, just before leaving.
+            if (s.resultQueued && !s.resultAcked) SendResultNow();
             // Leaving a relay room at once, rather than letting it time out.
             std::vector<uint8_t> leave;
             if (s.relay && s.relayClient.Leave(leave) && s.socket.IsOpen() && !s.cut) s.socket.SendTo(s.peer, leave.data(), leave.size());
@@ -300,8 +326,10 @@ namespace Duels
                 cutOff ? "us to come back" : "the other player to come back");
             if (cutOff)
             {
-                // Back the same way: the same room at the relay, or the host's address.
+                // Back the same way: the same room at the relay, or the host's address; a ranked room with a new ticket.
                 s.backViaRelay = s.relay;
+                s.backRanked = s.relay && s.relayClient.Ranked();
+                s.ticketAsked = false;
                 if (s.relay) s.backCode = s.relayCode;
                 s.lost = Session::Lost::Rejoining;
                 s.nextAttempt = s.now + REJOIN_RETRY_MS;
@@ -572,7 +600,11 @@ namespace Duels
             s.relayPassword = password;
             s.roomPrivate = !listed;
             s.link.Reset(0, s.now);
-            s.relayClient.Create(s.name, s.version, roomName, password, listed, s.now);
+            s.resultQueued = s.resultAcked = false;
+            s.resultTries = 0;
+            s.relayClient.Create(s.name, s.version, roomName, password, listed, s.now, s.ticket, s.ticketKey);
+            s.ticket.clear();
+            s.ticketKey.clear();
             SetPhase(Phase::Hosting);
             message = "asking the relay " + s.peer.ToString() + " for a room";
             Log("Net: %s", message.c_str());
@@ -598,7 +630,14 @@ namespace Duels
             }
             s.acceptsJoin = false;
             s.link.Reset(NewSessionId(), s.now);
-            s.relayClient.Join(code, password, s.name, s.version, s.now);
+            if (!g_attempt)
+            {
+                s.resultQueued = s.resultAcked = false;
+                s.resultTries = 0;
+            }
+            s.relayClient.Join(code, password, s.name, s.version, s.now, s.ticket, s.ticketKey);
+            s.ticket.clear();
+            s.ticketKey.clear();
             SetPhase(Phase::Joining);
             message = "joining room " + code + " at the relay " + s.peer.ToString();
             Log("Net: %s", message.c_str());
@@ -779,6 +818,8 @@ namespace Duels
                         room.hostName = listing.hostName;
                         room.version = listing.version;
                         room.password = listing.password;
+                        room.ranked = listing.ranked;
+                        room.rating = listing.rating;
                         g_search.rooms.push_back(room);
                     }
                     if (!event.rooms.empty() && event.page + 1 < event.pages && event.page + 1 < SEARCH_PAGES)
@@ -798,6 +839,45 @@ namespace Duels
 
         bool UsesRelay() { return g_session.relay; }
         std::string RelayCode() { return g_session.relayCode; }
+
+        void SetTicket(const std::string &ticket, const std::string &key)
+        {
+            g_session.ticket = ticket;
+            g_session.ticketKey = key;
+        }
+
+        void SetTicketSource(std::function<void(const std::string &relay, TicketDone done)> source) { g_ticketSource = source; }
+
+        bool RoomRanked() { return g_session.relay && g_session.relayClient.Ranked(); }
+        int PeerRating() { return g_session.relay ? g_session.relayClient.PeerRating() : 0; }
+
+        std::string RelayName(const std::string &server, uint16_t port)
+        {
+            return (server.find(':') != std::string::npos ? "[" + server + "]" : server) + ":" + std::to_string(port ? port : Relay::DEFAULT_PORT);
+        }
+
+        std::string RelayName() { return RelayName(g_session.backServer, g_session.backPort); }
+
+        void SendResult(const Relay::MatchResult &result)
+        {
+            Session &s = g_session;
+            if (!s.relay || !s.relayClient.Ranked()) return;
+            s.result = result;
+            s.resultQueued = true;
+            s.resultAcked = false;
+            s.resultTries = 0;
+            SendResultNow();
+            Log("Net: the match's result to the relay (outcome %u, half points %u:%u, flags %u)", (unsigned)result.outcome,
+                (unsigned)result.halves, (unsigned)result.peerHalves, (unsigned)result.flags);
+        }
+
+        int ResultState()
+        {
+            const Session &s = g_session;
+            if (!s.resultQueued) return 0;
+            if (s.resultAcked) return 2;
+            return s.resultTries >= RESULT_TRIES && (!s.relay || s.now - s.resultSentAt >= RESULT_RETRY_MS) ? -1 : 1;
+        }
         bool RoomPrivate() { return g_session.host && g_session.roomPrivate; }
         uint64_t MatchSeed() { return g_session.relay ? g_session.relayClient.MatchSeed() : 0; }
 
@@ -853,6 +933,10 @@ namespace Duels
                     return false;
                 case Relay::Event::RoomList:
                     break;   // only the room list's own client asks for it
+                case Relay::Event::ResultRecorded:
+                    if (s.resultQueued && !s.resultAcked) Log("Net: the relay has the match's result");
+                    s.resultAcked = true;
+                    break;
                 case Relay::Event::Error:
                     g_lastRelayError = event.errorCode;
                     g_lastRelayErrorText = event.text;
@@ -881,6 +965,19 @@ namespace Duels
             Session &s = g_session;
             if (s.lost == Session::Lost::Waiting && now - s.lostAt > REJOIN_GRACE_MS)
             {
+                // A ranked room: the match is decided while we are still in the room, and its result goes to the relay
+                // first (3 s at most).
+                if (s.closeAt == 0.0 && s.relay && s.relayClient.Ranked() && s.listener && !s.resultQueued)
+                {
+                    s.listener->OnOpponentGone();
+                    if (s.resultQueued)
+                    {
+                        s.closeAt = now + 3000.0;
+                        return;
+                    }
+                }
+                if (s.closeAt > 0.0 && !s.resultAcked && now < s.closeAt) return;
+                s.closeAt = 0.0;
                 Disconnect("the other player didn't come back", false, true);
                 return;
             }
@@ -891,6 +988,23 @@ namespace Duels
                 return;
             }
             if (s.phase != Phase::Idle || now < s.nextAttempt) return;
+            // Back into a ranked room: with a new ticket (a ticket works once), asked for first.
+            if (s.backViaRelay && s.backRanked && s.ticket.empty())
+            {
+                if (!s.ticketAsked && g_ticketSource)
+                {
+                    s.ticketAsked = true;
+                    Log("Net: a ticket to come back into the ranked room");
+                    g_ticketSource(RelayName(s.backServer, s.backPort), [](bool ok, const std::string &ticket, const std::string &key)
+                                   {
+                                       g_session.ticketAsked = false;
+                                       if (ok) SetTicket(ticket, key);
+                                       else Log("Net: no ticket to come back");
+                                   });
+                }
+                s.nextAttempt = now + 500.0;
+                return;
+            }
             s.nextAttempt = now + REJOIN_RETRY_MS;
             ++s.attempts;
             std::string message;
@@ -914,6 +1028,8 @@ namespace Duels
             UpdateSearch(now);
             UpdateLost(now);
             if (s.phase == Phase::Idle) return;
+            // A ranked match's result: again every second until the relay has it.
+            if (s.resultQueued && !s.resultAcked && s.resultTries < RESULT_TRIES && now - s.resultSentAt >= RESULT_RETRY_MS) SendResultNow();
 
             uint8_t buffer[2048];
             std::vector<Link::Bytes> delivered;

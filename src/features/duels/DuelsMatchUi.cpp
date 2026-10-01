@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsAccount.h"
 #include "DuelsHud.h"
 #include "DuelsLobby.h"
 #include "DuelsMatchUi.h"
@@ -500,6 +501,26 @@ namespace Duels
             if (!score.empty()) score[0] = (char)std::toupper((unsigned char)score[0]);
             PrintCentre(10, EX + EW / 2.f, y, score, GL_Color(0.75f, 0.78f, 0.82f, 1.f));
             y += 28.f;
+
+            // A ranked room's match (roadmap BG): its result on its way to the relay, then the master's new rating.
+            if (Net::RoomRanked())
+            {
+                std::string why, line;
+                GL_Color lineColour = ColourOf(WHITE, 0.9f);
+                int before = 0, after = 0;
+                if (!Rounds::Ranked(why)) line = "Unranked: " + why;
+                else if (Account::RatingChange(before, after))
+                {
+                    line = "Rating " + std::to_string(before) + " to " + std::to_string(after) + " (" + (after >= before ? "+" : "") +
+                           std::to_string(after - before) + ")";
+                    lineColour = ColourOf(GOLD, 1.f);
+                }
+                else if (Net::ResultState() == 2) line = "The result is at the relay: the master rates the match...";
+                else if (Net::ResultState() == 1) line = "Sending the result to the relay...";
+                else if (Net::ResultState() == -1) line = "The relay didn't confirm the result";
+                if (!line.empty()) PrintCentre(12, EX + EW / 2.f, y - 8.f, line, lineColour);
+                y += 22.f;
+            }
 
             // Each round.
             float lx = EX + 40.f;
