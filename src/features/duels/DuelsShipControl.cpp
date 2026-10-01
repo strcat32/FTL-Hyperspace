@@ -736,25 +736,35 @@ namespace Duels
         return true;
     }
 
-    // kill <ship> crew: the ship's whole crew dies, wherever they are (tests of the crew-dead end of a round).
+    // kill <ship> crew [<index>]: the ship's whole crew dies, wherever they are (tests of the crew-dead end of a round),
+    // or one of them (as the crew verb counts them: tests of Permanent Death).
     static bool DoKill(const Command &cmd, std::string &message)
     {
         ShipManager *ship = ArgShip(cmd, 1, message);
         if (!ship) return false;
-        if (!ArgIs(cmd, 2, "crew"))
+        int only = -1;
+        if (!ArgIs(cmd, 2, "crew") || (cmd.args.size() > 3 && !ArgInt(cmd, 3, only)))
         {
-            message = "usage: kill <ship> crew";
+            message = "usage: kill <ship> crew [<index>]";
+            return false;
+        }
+        std::vector<CrewMember*> crew = OwnCrew(ship);
+        if (only >= (int)crew.size())
+        {
+            message = "no crew member " + std::to_string(only) + " (" + std::to_string(crew.size()) + ")";
             return false;
         }
         int killed = 0;
-        for (CrewMember *member : OwnCrew(ship))
+        for (int i = 0; i < (int)crew.size(); ++i)
         {
-            if (member->IsDrone()) continue;
+            CrewMember *member = crew[i];
+            if (member->IsDrone() || (only >= 0 && i != only)) continue;
+            message = member->GetName() + " (" + member->species + ") of ship " + std::to_string(ship->iShipId) + " killed";
             member->health.first = 0.f;
             member->Kill(true);
             ++killed;
         }
-        message = std::to_string(killed) + " crew of ship " + std::to_string(ship->iShipId) + " killed";
+        if (only < 0) message = std::to_string(killed) + " crew of ship " + std::to_string(ship->iShipId) + " killed";
         return true;
     }
 
@@ -1145,10 +1155,13 @@ namespace Duels
         for (size_t index = 0; index < crew.size(); ++index)
         {
             CrewMember *member = crew[index];
-            // task: FTL's CrewTask (0 = manning, 1 = repairing, ...); mans: the system it gives its skill to
-            Log("  crew %u %-8s %-12s on ship %d room %2d health %.0f/%.0f task %d mans %s%s", (unsigned)index, member->species.c_str(),
-                member->GetName().c_str(), member->currentShipId, member->iRoomId, member->health.first, member->health.second, member->task.taskId,
+            // task: FTL's CrewTask (0 = manning, 1 = repairing, ...); mans: the system it gives its skill to; slot: where it
+            // stands in its room; station: its saved position (room/slot, the stations FTL's "return" button sends it to)
+            Log("  crew %u %-8s %-12s on ship %d room %2d health %.0f/%.0f task %d mans %s slot %d station %d/%d%s", (unsigned)index,
+                member->species.c_str(), member->GetName().c_str(), member->currentShipId, member->iRoomId, member->health.first,
+                member->health.second, member->task.taskId,
                 member->bActiveManning && member->currentSystem ? ShipSystem::SystemIdToName(member->currentSystem->iSystemType).c_str() : "-",
+                member->currentSlot.slotId, member->savedPosition.roomId, member->savedPosition.slotId,
                 member->fStunTime > 0.f ? (" stunned " + std::to_string((int)std::ceil(member->fStunTime)) + " s").c_str() : "");
         }
         for (Door *door : ship->ship.vDoorList)

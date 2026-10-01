@@ -369,105 +369,79 @@ namespace Duels
             Log("Match: replica augments: %s", list.empty() ? "none" : list.c_str());
         }
 
+        Loadout TakeLoadout(ShipManager *ship)
+        {
+            Loadout loadout;
+            if (!ship) return loadout;
+            loadout.blueprint = ship->myBlueprint.blueprintName;
+            loadout.hullMax = ship->ship.hullIntegrity.second;
+            loadout.hull = ship->ship.hullIntegrity.first;
+            PowerManager *power = PowerManager::GetPowerManager(ship->iShipId);
+            loadout.reactor = power ? power->currentPower.second : 0;
+            for (ShipSystem *system : ship->vSystemList) loadout.systems.push_back(std::make_pair(system->iSystemType, system->powerState.second));
+            if (ship->weaponSystem)
+            {
+                for (ProjectileFactory *weapon : ship->GetWeaponList()) loadout.weapons.push_back(weapon->blueprint ? weapon->blueprint->name : "");
+            }
+            for (CrewMember *crew : ship->vCrewList) loadout.crew.push_back(crew->species);
+            // Drones in slot order (drone messages refer to slots), and the drone parts.
+            if (ship->droneSystem)
+            {
+                for (Drone *drone : ship->GetDroneList()) loadout.drones.push_back(drone->blueprint ? drone->blueprint->name : "");
+            }
+            loadout.droneParts = ship->GetDroneCount();
+            loadout.augments = ship->GetAugmentationList();
+            return loadout;
+        }
+
         static void SendLoadout()
         {
             ShipManager *ship = G_->GetShipManager(0);
             if (!ship) return;
+            Loadout loadout = TakeLoadout(ship);
             Writer w;
-            w.Str(ship->myBlueprint.blueprintName);
-            w.I16((int16_t)ship->ship.hullIntegrity.second);
-            w.I16((int16_t)ship->ship.hullIntegrity.first);
-            w.U8((uint8_t)PowerManager::GetPowerManager(0)->currentPower.second);
-
-            w.U8((uint8_t)ship->vSystemList.size());
-            for (ShipSystem *system : ship->vSystemList)
+            w.Str(loadout.blueprint);
+            w.I16((int16_t)loadout.hullMax);
+            w.I16((int16_t)loadout.hull);
+            w.U8((uint8_t)loadout.reactor);
+            w.U8((uint8_t)loadout.systems.size());
+            for (const std::pair<int, int> &system : loadout.systems)
             {
-                w.U8((uint8_t)system->iSystemType);
-                w.U8((uint8_t)system->powerState.second);
+                w.U8((uint8_t)system.first);
+                w.U8((uint8_t)system.second);
             }
-            std::vector<ProjectileFactory*> weapons = ship->weaponSystem ? ship->GetWeaponList() : std::vector<ProjectileFactory*>();
-            w.U8((uint8_t)weapons.size());
-            for (ProjectileFactory *weapon : weapons) w.Str(weapon->blueprint ? weapon->blueprint->name : "");
-            w.U8((uint8_t)ship->vCrewList.size());
-            for (CrewMember *crew : ship->vCrewList) w.Str(crew->species);
-            // Drones in slot order (drone messages refer to slots), and the drone parts.
-            std::vector<Drone*> drones = ship->droneSystem ? ship->GetDroneList() : std::vector<Drone*>();
-            w.U8((uint8_t)drones.size());
-            for (Drone *drone : drones) w.Str(drone->blueprint ? drone->blueprint->name : "");
-            w.I16((int16_t)ship->GetDroneCount());
-            std::vector<std::string> augments = ship->GetAugmentationList();
-            w.U8((uint8_t)augments.size());
-            for (const std::string &augment : augments) w.Str(augment);
+            w.U8((uint8_t)loadout.weapons.size());
+            for (const std::string &weapon : loadout.weapons) w.Str(weapon);
+            w.U8((uint8_t)loadout.crew.size());
+            for (const std::string &species : loadout.crew) w.Str(species);
+            w.U8((uint8_t)loadout.drones.size());
+            for (const std::string &drone : loadout.drones) w.Str(drone);
+            w.I16((int16_t)loadout.droneParts);
+            w.U8((uint8_t)loadout.augments.size());
+            for (const std::string &augment : loadout.augments) w.Str(augment);
 
             Net::Send(MSG_LOADOUT, w, true);
             g_match.loadoutSent = true;
             g_match.sentArmament = Armament(ship);
-            Log("Match: loadout sent (%s, hull %d/%d, %u systems, %u weapons, %u drones, %u augments)",
-                ship->myBlueprint.blueprintName.c_str(), ship->ship.hullIntegrity.first, ship->ship.hullIntegrity.second,
-                (unsigned)ship->vSystemList.size(), (unsigned)weapons.size(), (unsigned)drones.size(), (unsigned)augments.size());
+            Log("Match: loadout sent (%s, hull %d/%d, %u systems, %u weapons, %u drones, %u augments)", loadout.blueprint.c_str(),
+                loadout.hull, loadout.hullMax, (unsigned)loadout.systems.size(), (unsigned)loadout.weapons.size(),
+                (unsigned)loadout.drones.size(), (unsigned)loadout.augments.size());
         }
 
-        static void ApplyLoadout(Reader &r)
+        void FitShip(ShipManager *ship, const Loadout &loadout)
         {
-            std::string blueprint = r.Str();
-            int hullMax = r.I16();
-            int hull = r.I16();
-            int reactor = r.U8();
+            // (The fitting was the replica's first: its names kept.)
+            ShipManager *replica = ship;
+            if (!replica) return;
+            const int hullMax = loadout.hullMax, hull = loadout.hull, reactor = loadout.reactor, droneParts = loadout.droneParts;
             struct SystemLevel { int id; int level; };
-            std::vector<SystemLevel> systems(r.U8());
-            for (SystemLevel &system : systems)
-            {
-                system.id = r.U8();
-                system.level = r.U8();
-            }
-            std::vector<std::string> weapons(r.U8());
-            for (std::string &weapon : weapons) weapon = r.Str();
-            std::vector<std::string> crew(r.U8());
-            for (std::string &species : crew) species = r.Str();
-            std::vector<std::string> drones(r.U8());
-            for (std::string &drone : drones) drone = r.Str();
-            int droneParts = r.I16();
-            std::vector<std::string> augments(r.U8());
-            for (std::string &augment : augments) augment = r.Str();
-            if (!r.Ok())
-            {
-                Log("Match: malformed loadout");
-                return;
-            }
-
-            if (!InGame())
-            {
-                Log("Match: loadout received outside a game; ignored");
-                return;
-            }
-            ShipManager *replica = G_->GetShipManager(1);
-            if (replica && replica->myBlueprint.blueprintName != blueprint)
-            {
-                Log("Match: an enemy (%s) is already present; it stays", replica->myBlueprint.blueprintName.c_str());
-            }
-            // The replica's shields go where the player's own ship has them (DuelsView) from the moment it exists:
-            // our combat drones pick their orbit from its shield ellipse as soon as it is our target.
-            View::UsePlayerShieldPosition(nullptr);
-            if (!replica)
-            {
-                std::string message;
-                if (!SpawnEnemy(blueprint, message))
-                {
-                    Log("Match: cannot build the opponent's ship: %s", message.c_str());
-                    return;
-                }
-                replica = G_->GetShipManager(1);
-                if (!replica) return;
-            }
-
-            // The replica belongs to the network from now on: no AI, no pause, no local repower.
-            State &state = GetState();
-            state.aiOff[1] = true;
-            state.noPause = true;
+            std::vector<SystemLevel> systems;
+            for (const std::pair<int, int> &system : loadout.systems) systems.push_back(SystemLevel{system.first, system.second});
+            const std::vector<std::string> &weapons = loadout.weapons, &drones = loadout.drones, &augments = loadout.augments;
 
             replica->ship.hullIntegrity.second = hullMax;
             replica->ship.hullIntegrity.first = hull;
-            PowerManager::GetPowerManager(1)->currentPower.second = reactor;
+            if (PowerManager *power = PowerManager::GetPowerManager(replica->iShipId)) power->currentPower.second = reactor;
 
             // Systems the owner sold in a preparation (roadmap V) leave the replica too.
             for (int id = 0; id < SYS_ALL; ++id)
@@ -547,6 +521,69 @@ namespace Duels
             }
             if (replica->droneSystem) replica->ModifyDroneCount(droneParts - replica->GetDroneCount());
             SetReplicaAugments(replica, augments);
+        }
+
+        static void ApplyLoadout(Reader &r)
+        {
+            Loadout loadout;
+            loadout.blueprint = r.Str();
+            loadout.hullMax = r.I16();
+            loadout.hull = r.I16();
+            loadout.reactor = r.U8();
+            loadout.systems.resize(r.U8());
+            for (std::pair<int, int> &system : loadout.systems)
+            {
+                system.first = r.U8();
+                system.second = r.U8();
+            }
+            loadout.weapons.resize(r.U8());
+            for (std::string &weapon : loadout.weapons) weapon = r.Str();
+            loadout.crew.resize(r.U8());
+            for (std::string &species : loadout.crew) species = r.Str();
+            loadout.drones.resize(r.U8());
+            for (std::string &drone : loadout.drones) drone = r.Str();
+            loadout.droneParts = r.I16();
+            loadout.augments.resize(r.U8());
+            for (std::string &augment : loadout.augments) augment = r.Str();
+            if (!r.Ok())
+            {
+                Log("Match: malformed loadout");
+                return;
+            }
+            const std::string &blueprint = loadout.blueprint;
+
+            if (!InGame())
+            {
+                Log("Match: loadout received outside a game; ignored");
+                return;
+            }
+            ShipManager *replica = G_->GetShipManager(1);
+            if (replica && replica->myBlueprint.blueprintName != blueprint)
+            {
+                Log("Match: an enemy (%s) is already present; it stays", replica->myBlueprint.blueprintName.c_str());
+            }
+            // The replica's shields go where the player's own ship has them (DuelsView) from the moment it exists:
+            // our combat drones pick their orbit from its shield ellipse as soon as it is our target.
+            View::UsePlayerShieldPosition(nullptr);
+            if (!replica)
+            {
+                std::string message;
+                if (!SpawnEnemy(blueprint, message))
+                {
+                    Log("Match: cannot build the opponent's ship: %s", message.c_str());
+                    return;
+                }
+                replica = G_->GetShipManager(1);
+                if (!replica) return;
+            }
+
+            // The replica belongs to the network from now on: no AI, no pause, no local repower.
+            State &state = GetState();
+            state.aiOff[1] = true;
+            state.noPause = true;
+
+            FitShip(replica, loadout);
+
 
             View::UsePlayerShieldPosition(replica);
             // Combat drones already bound to it took their waypoint from its shields before they moved; they take a

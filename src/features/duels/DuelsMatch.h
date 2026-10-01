@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct ArtillerySystem;
 struct BombProjectile;
@@ -51,6 +53,21 @@ namespace Duels
         bool Say(const std::string &text, std::string &message);
         // Test verb "chatflood <count>": that many chat lines at once, past the sender's limits.
         int ChatFlood(int count);
+        // A ship's fitting (the loadout a duel sends, roadmap 2.1; the AI's ship between rounds, 3.6): its blueprint,
+        // hull, reactor, systems and their levels, weapons and drones in slot order, drone parts, augments, and its
+        // crew's species. FitShip fits a ship built from that blueprint to it (hull, reactor, systems removed, added,
+        // raised and lowered, weapons and drones, drone parts, augments; not the crew).
+        struct Loadout
+        {
+            std::string blueprint;
+            int hullMax = 0, hull = 0, reactor = 0;
+            std::vector<std::pair<int, int>> systems;   // id, level
+            std::vector<std::string> weapons, crew, drones, augments;
+            int droneParts = 0;
+        };
+        Loadout TakeLoadout(ShipManager *ship);
+        void FitShip(ShipManager *ship, const Loadout &loadout);
+
         const std::string &PlayerName();
         // Players' names (roadmap AG): the name prompt and the name command take up to NAME_MAX characters, and the
         // console and the chat log show them whole. On the screen (the score panel, the lines under the buttons, the

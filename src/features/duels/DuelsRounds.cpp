@@ -403,7 +403,8 @@ namespace Duels
         // Our ship: damage and defeat
         // ---------------------------------------------------------------------------------------------------------
 
-        // Our crew wherever they are: aboard our ship (not the opponent's boarders, not drones) and aboard theirs.
+        // Our crew wherever they are: aboard our ship (not the opponent's boarders, not drones) and aboard theirs. (The
+        // crew registry is the duel's; against the AI, FTL's own ship ids tell whose crew is whose.)
         static std::vector<CrewMember*> OurCrew()
         {
             std::vector<CrewMember*> crew;
@@ -413,14 +414,14 @@ namespace Duels
             {
                 for (CrewMember *member : own->vCrewList)
                 {
-                    if (member && !member->IsDrone() && !Crew::IsGuest(member)) crew.push_back(member);
+                    if (member && !member->IsDrone() && (g.local ? member->iShipId == 0 : !Crew::IsGuest(member))) crew.push_back(member);
                 }
             }
             if (replica)
             {
                 for (CrewMember *member : replica->vCrewList)
                 {
-                    if (member && !member->IsDrone() && Crew::AwayId(member) >= 0) crew.push_back(member);
+                    if (member && !member->IsDrone() && (g.local ? member->iShipId == 0 : Crew::AwayId(member) >= 0)) crew.push_back(member);
                 }
             }
             return crew;
@@ -520,6 +521,7 @@ namespace Duels
             bool ownDown = G_->GetShipManager(0) && G_->GetShipManager(0)->ship.hullIntegrity.first <= 0;
             bool theirsDown = G_->GetShipManager(1) && G_->GetShipManager(1)->ship.hullIntegrity.first <= 0;
             Refit::EndOfRound(ownDown, theirsDown);
+            if (g.local) Ai::OnRoundEnd(ownDown, theirsDown);
         }
 
         static void EnterPrep()
@@ -540,7 +542,7 @@ namespace Duels
             g.peerTaken = 0.f;
             g.peerLevels[0] = g.peerLevels[1] = 1.f;
             Refit::OpenShop(d.round, d.shop);
-            if (g.local) Ai::OnPrep(d.round);
+            if (g.local) Ai::OnPrep(d.round, d.scrap, d.shop, d.settings.permadeath);
             Announce("Round " + std::to_string(d.round) + " of " + std::to_string(d.settings.rounds) + ": preparation, " +
                      std::to_string(d.settings.prepSeconds) + " s (" + std::to_string(d.scrap) + " scrap, shop and upgrades)");
             // Revealed now, so that the players can prepare for it (rules, section 5).

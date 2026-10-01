@@ -275,6 +275,15 @@ namespace Duels
             {
                 if (Alive(entry.second)) return false;
             }
+            // A match against the AI (roadmap 3.6) has no crew registry: FTL's own ship ids tell ours aboard its ship.
+            ShipManager *other = G_->GetShipManager(1 - ship->iShipId);
+            if (Rounds::IsLocal() && other)
+            {
+                for (CrewMember *crew : other->vCrewList)
+                {
+                    if (crew && !crew->IsDrone() && crew->iShipId == ship->iShipId && Alive(crew)) return false;
+                }
+            }
             // Clones on the way count as alive (rules, section 3).
             CrewMemberFactory *factory = G_->GetCrewFactory();
             return !factory || factory->CountCloneReadyCrew(true) == 0;
@@ -763,13 +772,18 @@ namespace Duels
         }
 
         // What the reactor's bar `level` cost (Hyperspace's reactor prices, ReactorButton::OnRightClick).
-        static int ReactorPrice(ShipManager *ship, int level)
+        int ReactorPrice(const std::string &blueprint, int level)
         {
-            const CustomShipDefinition &def = CustomShipSelect::GetInstance()->GetDefinition(ship->myBlueprint.blueprintName);
+            const CustomShipDefinition &def = CustomShipSelect::GetInstance()->GetDefinition(blueprint);
             const std::vector<int> &costs = def.reactorPrices;
             int column = (int)std::floor((level - 1) / 5) + 1;
             if (column >= 0 && column < (int)costs.size() && costs[column] >= 0) return costs[column];
             return costs.empty() ? 0 : costs[0] + (column - 1) * def.reactorPriceIncrement;
+        }
+
+        int ReactorMax(const std::string &blueprint)
+        {
+            return CustomShipSelect::GetInstance()->GetDefinition(blueprint).maxReactorLevel;
         }
 
         bool TakeBackReactor(ReactorButton *button)
@@ -791,7 +805,7 @@ namespace Duels
                 Say("Every reactor bar is in use: take power off a system first");
                 return true;
             }
-            int refund = ReactorPrice(ship, level);
+            int refund = ReactorPrice(ship->myBlueprint.blueprintName, level);
             power->currentPower.second -= 1;
             ship->ModifyScrapCount(refund, false);
             Sound("downgradeSystem");

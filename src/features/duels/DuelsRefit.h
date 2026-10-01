@@ -47,7 +47,8 @@ namespace Duels
         // The fight begins: the crew as they are (with Permanent Death off, everyone who dies in it returns).
         void OnFightStart();
 
-        // The ship's whole crew is dead: no one alive (drones don't count), and no clone on the way.
+        // The ship's whole crew is dead: no one alive (drones don't count), and no clone on the way. (Ours aboard the
+        // other ship count: in a duel the crew registry knows them, in a match against the AI FTL's own ship ids.)
         bool CrewGone(ShipManager *ship);
 
         // The round is over. Everyone alive goes home: our crew aboard the opponent's ship come back, theirs aboard
@@ -81,10 +82,9 @@ namespace Duels
 
         // The shop buys back (roadmap V; rules, section 7), in a match's preparation, in FTL's upgrade screen. A
         // right-click on a system or the reactor with no upgrade waiting (FTL's own right-click takes one of those
-        // back) takes a level back for half its price, down to the level the ship began the match with (a system
-        // bought since: level 1). At its lowest a system the ship can do without (cloaking, hacking, mind control, the
-        // teleporter, drones, artillery, the backup battery) is sold at a second right-click within 3 s, for half of
-        // what it and its levels cost; its weapons or drones go to the cargo (Hyperspace's RemoveSystem). True when
+        // back) takes a level back for all it cost (AJ), down to level 1. At level 1 a system (any of FTL's but the
+        // reactor, AK) is sold at a second right-click within 3 s, for all that it and its levels cost; its weapons or
+        // drones go to the cargo (Hyperspace's RemoveSystem). The reactor goes down to 1 bar. True when
         // the right-click was taken. RenderSaleMark marks a box whose sale waits for the second click; OnUpgradesOpen
         // shows the tip once a match. The sale itself happens in OnUpgradesLoop (Upgrades::OnLoop, before FTL's own):
         // it builds the screen's boxes anew, which a right-click can't do while FTL goes through them.
@@ -96,5 +96,10 @@ namespace Duels
         bool BoxPlace(int systemId, int &x, int &y);
         void OnUpgradesOpen();
         void OnUpgradesLoop();
+
+        // A ship's reactor (its blueprint's): the price of its bar `bar` (Hyperspace's reactor prices, as its
+        // ReactorButton charges them), and the most bars it can have. For the AI's shopping too (DuelsAi.cpp).
+        int ReactorPrice(const std::string &blueprint, int bar);
+        int ReactorMax(const std::string &blueprint);
     }
 }
