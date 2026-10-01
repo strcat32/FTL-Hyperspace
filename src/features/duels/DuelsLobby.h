@@ -14,6 +14,9 @@ namespace Duels
     {
         void OpenHost();
         void OpenJoin();
+        // The demo browser's PLAY (roadmap AU): a run starts as START starts one (no hangar, its cover), and the demo
+        // plays with it.
+        void PlayReplay(const std::string &path);
         bool IsOpen();
         void Render();
         void MouseMove(int x, int y);

@@ -4,6 +4,7 @@
 #include "DuelsAi.h"
 #include "DuelsConsole.h"
 #include "DuelsEnvironment.h"
+#include "DuelsDemo.h"
 #include "DuelsLobby.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
@@ -52,7 +53,8 @@ namespace Duels
             None,
             Host,   // a room opens when the run begins
             Join,   // the room is joined when the run begins
-            Ai      // the match against FTL's AI begins with the run (roadmap 3.6)
+            Ai,     // the match against FTL's AI begins with the run (roadmap 3.6)
+            Replay  // a demo plays with the run (roadmap AU)
         };
 
         struct LobbyState
@@ -69,6 +71,8 @@ namespace Duels
             int aiShip = 0;                      // the AI's ship: 0 random, else PlayerShips()[aiShip - 1]
             Style::Box playerBox, aiBox, aiShipLess, aiShipMore;
             Style::Box listedBox, recordBox, roundsLess, roundsMore, prepLess, prepMore, stallLess, stallMore, permadeathBox;
+            Style::Box demoBox, joinDemoBox;     // "Record a demo" (roadmap AV)
+            std::string replayPath;              // the demo that plays with the run (roadmap AU)
             Style::Box hazardBoxes[Environment::KIND_COUNT];
             // The ships (roadmap 3.9): bans or a list; the pool's types, the list's layouts.
             Style::Box shipsLess, shipsMore;
@@ -292,6 +296,13 @@ namespace Duels
             OpenHangar(Pending::Host, start);
         }
 
+        void PlayReplay(const std::string &path)
+        {
+            g.replayPath = path;
+            Log("Lobby: the replay of %s begins with the run", path.c_str());
+            OpenHangar(Pending::Replay, true);
+        }
+
         static void RenderHost()
         {
             Style::Dialog(HX, HY, HW, HH, "HOST DUEL");
@@ -337,6 +348,8 @@ namespace Duels
             CheckAt(g.listedBox, lx, y, !g.listed, "Private: only who has its code can join");
             y += 32.f;
             CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
+            y += 32.f;
+            CheckAt(g.demoBox, lx, y, Demo::RecordingOn(), "Record a demo (in demos\\, for REPLAYS)");
             y += 40.f;
             Paragraph(FONT, lx, y, lw, g.vsAi && StartsWithoutHangar()
                                            ? "START begins the run and the match against the AI, on this computer: no room, "
@@ -453,6 +466,7 @@ namespace Duels
             else if (g.password.box.Contains(x, y)) Focus(&g.password);
             else if (g.listedBox.Contains(x, y)) g.listed = !g.listed;
             else if (g.recordBox.Contains(x, y)) n.record = !n.record;
+            else if (g.demoBox.Contains(x, y)) Demo::SetRecordingOn(!Demo::RecordingOn());
             else if (g.roundsLess.Contains(x, y) && n.rounds > 1) n.rounds = n.rounds % 2 == 0 ? n.rounds - 1 : n.rounds - 2;
             else if (g.roundsMore.Contains(x, y) && n.rounds < 15) n.rounds = n.rounds % 2 == 0 ? n.rounds + 1 : n.rounds + 2;
             else if (g.prepLess.Contains(x, y) && n.prepSeconds > 30) n.prepSeconds = std::max(30, (n.prepSeconds - 1) / 15 * 15);
@@ -728,6 +742,7 @@ namespace Duels
             Text(FONT, lx + 160.f, fy, "The room's password, if it has one:", light);
             RenderField(g.joinPassword, lx + 160.f, fy + 18.f, 260.f);
             if (!g.message.empty()) Paragraph(FONT, dx, by - 40.f, dw, g.message, red);
+            CheckAt(g.joinDemoBox, lx, by + 6.f, Demo::RecordingOn(), "Record a demo (in demos\\, for REPLAYS)");
             ButtonAt(g.cancel, JX + JW - 30.f - 190.f - 12.f - 130.f, by, 130.f, 34.f, "CANCEL");
             ButtonAt(g.choose, JX + JW - 30.f - 190.f, by, 190.f, 34.f, "START");
         }
@@ -756,6 +771,7 @@ namespace Duels
             }
             if (g.code.box.Contains(x, y)) Focus(&g.code);
             else if (g.joinPassword.box.Contains(x, y)) Focus(&g.joinPassword);
+            else if (g.joinDemoBox.Contains(x, y)) Demo::SetRecordingOn(!Demo::RecordingOn());
             else if (g.refresh.Contains(x, y) && !Net::Search().Busy()) Refresh();
             else if (g.pagePrev.Contains(x, y) && g.page > 0) --g.page;
             else if (g.pageNext.Contains(x, y)) ++g.page;   // kept to the pages there are when drawn
@@ -992,6 +1008,19 @@ namespace Duels
                 Console::Feed("A match against " + Ai::Name() + " (FTL's AI, on this computer)");
                 return;
             }
+            if (g.pending == Pending::Replay)
+            {
+                // Once FTL's first message box is gone (it takes its answer only while paused, and a replay doesn't
+                // pause), or a second without one.
+                bool boxOpen = G_->GetWorld()->commandGui->choiceBox.bOpen;
+                if (boxOpen || (!FirstBoxAnswered() && WallMs() < g.runSinceMs + 1000.0)) return;
+                g.pending = Pending::None;
+                std::string message;
+                bool started = Demo::StartReplay(g.replayPath, message);
+                Log("Lobby: the replay with the run: %s", message.c_str());
+                if (!started) Console::Feed("The replay can't start: " + message);
+                return;
+            }
             if (!g.attempting)
             {
                 g.attempting = true;
@@ -1057,6 +1086,13 @@ namespace Duels
             else if (what == "cancel" && IsOpen()) Close();
             else if (what == "start") return ClickStart(message);
             else if (what == "refresh" && g.open == Window::Join) Refresh();
+            else if (what == "demo" && IsOpen())
+            {
+                // demo: the open window's "Record a demo", as a click on it (roadmap AV).
+                Demo::SetRecordingOn(!Demo::RecordingOn());
+                message = std::string("Record a demo: ") + (Demo::RecordingOn() ? "on" : "off");
+                return true;
+            }
             else if (what == "ai" && args.size() > 2 && g.open == Window::Host)
             {
                 // ai on|off: the opponent, FTL's AI or another player.

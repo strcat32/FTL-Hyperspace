@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Demos (roadmap 5.1; docs/design/demos.md in the FTL: Duels repository): a match recorded as the timed stream of the
 // game messages the two games exchange (what Net::Send sends and the listener receives), and our own ship's full
@@ -25,6 +26,7 @@ namespace Duels
         static const uint8_t KIND_FULL_STATE = 1;   // the recorder's own state without the vision (never sent)
         static const uint8_t KIND_MARKER = 2;       // MARK_*
         static const uint8_t MARK_HEADER = 0, MARK_END = 1;
+        static const uint8_t MARK_STATUS = 2;       // the match's status as it changes (BB): ranked (u8), why not (str)
 
         // A new match's connection (not a return after a lost one): a file opens, if demos are on (duels.cfg
         // record_demos, on by default; the `demo` verb). The end of the connection or leaving closes it.
@@ -38,8 +40,27 @@ namespace Duels
         // Our own ship's state as the opponent would get it with all in sight (DuelsMatch.cpp writes it after the one
         // that goes, with Vision::FullScope).
         void FullState(const Writer &w);
+        // The match's status (roadmap BB): ranked, or unranked and why; a recording keeps each change (MARK_STATUS), for
+        // its replay's line at the top and the demo browser.
+        void NoteStatus(bool ranked, const std::string &why);
 
         std::string Status();
+        // "Record a demo" (roadmap AV: HOST DUEL and JOIN DUEL): the next matches recorded or not, kept in duels.cfg
+        // (record_demos).
+        bool RecordingOn();
+        void SetRecordingOn(bool on);
+        // The demo browser (roadmap AU, DuelsReplayList.cpp): the demos in demos\ and what each one is, read from it.
+        struct DemoInfo
+        {
+            std::string file, path;
+            std::string problem;                 // why it can't be played ("" if it can)
+            uint32_t startUtc = 0;               // the match's start
+            std::string hostName, guestName;
+            std::string hostShip, guestShip;     // the blueprints of their first loadouts
+            int ranked = -1;                     // the match's last status (BB): 1, 0, -1 not known
+            double lengthMs = 0.0;
+        };
+        std::vector<DemoInfo> ListDemos();
         // Test verb: demo (its state), demo on|off (record the next matches or not), demo stop (close the file now).
         bool RunVerb(const Command &cmd, std::string &message);
 
@@ -59,6 +80,32 @@ namespace Duels
         // the records whose time has come are played.
         void Pace(int &steps, float &share, double stepMs);
         void BeforeWorldStep(double stepMs);
+
+        // A replay as its screen shows it (roadmap AW: DuelsReplayUi.cpp; BB: DuelsHud.cpp). At the demo's end it stays
+        // on its last moment, paused.
+        struct ReplayView
+        {
+            bool active = false;
+            bool paused = false, seeking = false, ended = false;
+            double positionMs = 0.0, lengthMs = 0.0, speed = 1.0;
+            std::string hostName, guestName;
+            bool recorderHost = true;
+            int ranked = -1;              // the recorded match's status: 1 ranked, 0 unranked, -1 not known (an older demo)
+            std::string unrankedWhy;
+        };
+        ReplayView GetReplayView();
+        // Its controls (the replay verbs do the same): play or pause (at its end: from the start again), stop (back to
+        // the start, paused, as a media player's stop), to a time of the demo, back or on by ms, the speed one up (1),
+        // one down (-1) or round (0: 1/2, 1, 2, 4, 8, 1/2, ...). The start is the demo's first state of our ship (the
+        // ships are fitted then); no seek goes further back.
+        void ReplayPlayPause();
+        void ReplayStop();
+        // True while a replay starts again by itself (stop, a seek back): the lost connection and the new one that this
+        // is in Net's replay mode stay out of the feed (DuelsMatch.cpp, DuelsRounds.cpp).
+        bool ReplayRestarting();
+        void ReplaySeekTo(double ms);
+        void ReplayStep(double ms);
+        void ReplaySpeedStep(int direction);
         // Test verb: replay <file> | replay pause | replay resume | replay stop | replay speed 0.5|1|2|4|8 |
         // replay seek <s>|+<s>|-<s> | replay (its state).
         bool RunReplayVerb(const Command &cmd, std::string &message);

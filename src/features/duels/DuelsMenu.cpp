@@ -2,6 +2,7 @@
 #include "Duels.h"
 #include "DuelsConfig.h"
 #include "DuelsLobby.h"
+#include "DuelsReplayList.h"
 #include "DuelsMatch.h"
 #include "DuelsMenu.h"
 #include "DuelsStyle.h"
@@ -50,7 +51,7 @@ namespace Duels
             size_t guideLastTop = 0;              // the top row of the last page
             bool guideLoaded = false;
             Style::Box ok, guideButton, check, up, down, close, field;
-            Style::Box panelHost, panelJoin, panelName, panelGuide;   // the title screen's panel
+            Style::Box panelHost, panelJoin, panelReplays, panelName, panelGuide;   // the title screen's panel
         };
 
         static MenuState g;
@@ -454,7 +455,7 @@ namespace Duels
         // takes the empty left side.
         // ---------------------------------------------------------------------------------------------------------
 
-        static const float PX = 70.f, PY = 330.f, PW = 380.f, PH = 222.f;
+        static const float PX = 70.f, PY = 330.f, PW = 380.f, PH = 286.f;
 
         // FTL's menu shows its title screen: not the hangar, the options, the stats, the credits or a question.
         static bool OnTitle()
@@ -472,7 +473,7 @@ namespace Duels
             box.y = y;
             box.w = w;
             box.h = h;
-            bool hover = box.Contains(g.mouseX, g.mouseY) && g.open == Window::None && !Lobby::IsOpen();
+            bool hover = box.Contains(g.mouseX, g.mouseY) && g.open == Window::None && !Lobby::IsOpen() && !ReplayList::IsOpen();
             Style::Button(x, y, w, h, label, font, hover ? Style::Look::Hover : Style::Look::Idle);
         }
 
@@ -481,6 +482,7 @@ namespace Duels
             Style::Dialog(PX, PY, PW, PH, "FTL: DUELS", false);
             BigButton(g.panelHost, PX + 30.f, PY + 30.f, PW - 60.f, 50.f, "HOST DUEL", 63);
             BigButton(g.panelJoin, PX + 30.f, PY + 94.f, PW - 60.f, 50.f, "JOIN DUEL", 63);
+            BigButton(g.panelReplays, PX + 30.f, PY + 158.f, PW - 60.f, 50.f, "REPLAYS", 63);
             float y = PY + PH - 50.f;
             CSurface::GL_SetColor(Rgb(206, 210, 216));
             freetype::easy_print(TEXT, PX + 30.f, y + 7.f, "You: " + Match::ScreenName(Match::PlayerName()));
@@ -492,6 +494,7 @@ namespace Duels
         {
             if (g.panelHost.Contains(x, y)) Lobby::OpenHost();
             else if (g.panelJoin.Contains(x, y)) Lobby::OpenJoin();
+            else if (g.panelReplays.Contains(x, y)) ReplayList::Open();
             else if (g.panelName.Contains(x, y)) OpenName(false);
             else if (g.panelGuide.Contains(x, y)) OpenGuide(Window::None);
             else return false;
@@ -512,9 +515,10 @@ namespace Duels
             if (title) RenderPanel();
             else
             {
-                g.panelHost.w = g.panelJoin.w = g.panelName.w = g.panelGuide.w = 0.f;   // not there: no clicks
+                g.panelHost.w = g.panelJoin.w = g.panelReplays.w = g.panelName.w = g.panelGuide.w = 0.f;   // not there: no clicks
             }
             Lobby::Render();
+            ReplayList::Render();
             switch (g.open)
             {
             case Window::Name: RenderName(); break;
@@ -528,7 +532,7 @@ namespace Duels
         // One of our windows is open (ours or the lobby's): FTL's menu gets no input.
         bool IsOpen()
         {
-            return g.open != Window::None || Lobby::IsOpen();
+            return g.open != Window::None || Lobby::IsOpen() || ReplayList::IsOpen();
         }
 
         bool MouseMove(int x, int y)
@@ -536,6 +540,7 @@ namespace Duels
             g.mouseX = x;
             g.mouseY = y;
             Lobby::MouseMove(x, y);
+            ReplayList::MouseMove(x, y);
             return IsOpen();
         }
 
@@ -543,6 +548,7 @@ namespace Duels
         {
             if (g.open == Window::None)
             {
+                if (ReplayList::MouseClick(x, y)) return true;
                 if (Lobby::MouseClick(x, y)) return true;
                 if (OnTitle() && ClickPanel(x, y)) return true;
             }
@@ -594,7 +600,7 @@ namespace Duels
 
         bool KeyDown(int key)
         {
-            if (g.open == Window::None) return Lobby::KeyDown(key);
+            if (g.open == Window::None) return ReplayList::KeyDown(key) || Lobby::KeyDown(key);
             switch (g.open)
             {
             case Window::Name:
@@ -622,13 +628,14 @@ namespace Duels
             else if (args.size() >= 2 && args[1] == "tutorial") OpenTutorial();
             else if (args.size() >= 2 && args[1] == "guide") OpenGuide(Window::None);
             else if (args.size() >= 2 && args[1] == "close") Close();
+            else if (args.size() >= 2 && args[1] == "replays") return ReplayList::RunVerb(args, message);
             else if (args.size() >= 2)
             {
                 // The lobby's: host, join, choose, cancel, code, password, start.
                 if (Lobby::RunVerb(args, message)) return true;
                 if (message.empty())
                 {
-                    message = "usage: menu name|tutorial|guide|close|host|join|choose|cancel|code <code|@file>|password <password>|start";
+                    message = "usage: menu name|tutorial|guide|close|replays ...|host|join|choose|cancel|code <code|@file>|password <password>|start";
                 }
                 return false;
             }

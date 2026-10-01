@@ -177,6 +177,11 @@ namespace Duels
             // screen's STAY, roadmap 3.5 part 5).
             if (s.phase == Rounds::Phase::MatchOver) add("LOBBY", "lobby", true, false);
             else add("FORFEIT", "forfeit", s.canForfeit, true);
+            // A replay can't be played (roadmap AW): its actions are there, off.
+            if (Net::Replaying())
+            {
+                for (Action &action : actions) action.enabled = false;
+            }
             g_win.actions.swap(actions);
         }
 

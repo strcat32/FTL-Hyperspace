@@ -1,9 +1,14 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsDemo.h"
 #include "DuelsHud.h"
+#include "DuelsMatch.h"
 #include "DuelsNet.h"
+#include "DuelsRounds.h"
 #include "DuelsScreen.h"
 #include "DuelsTrace.h"
+
+#include <vector>
 
 #include <algorithm>
 #include <cstdio>
@@ -160,17 +165,45 @@ namespace Duels
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
-        // Debug mode in sight (roadmap T): a red "DEBUG MODE!" at the top middle, above the jump and ship buttons, in
-        // both players' games (either one's debug mode gives both the test commands; such a match is unranked).
-        static void RenderDebugMode()
+        // The line at the top middle, above the jump and ship buttons: a replay (roadmap AW: "REPLAY  Host vs Guest",
+        // gold), the match's status (BB: RANKED in green, UNRANKED in grey; in a replay the recorded match's), and debug
+        // mode (roadmap T: a red "DEBUG MODE!" in both players' games; either one's debug mode gives both the test
+        // commands, and such a match is unranked).
+        static void RenderStatusLine()
         {
+            struct Part
+            {
+                std::string text;
+                GL_Color colour;
+            };
+            std::vector<Part> parts;
+            const GL_Color gold(1.f, 0.84f, 0.3f, 1.f), green(0.55f, 1.f, 0.5f, 1.f), grey(0.75f, 0.75f, 0.75f, 1.f);
+            Demo::ReplayView replay = Demo::GetReplayView();
+            if (replay.active)
+            {
+                parts.push_back({"REPLAY  " + Match::ScreenName(replay.hostName) + " vs " + Match::ScreenName(replay.guestName), gold});
+                if (replay.ranked >= 0) parts.push_back({replay.ranked ? "RANKED" : "UNRANKED", replay.ranked ? green : grey});
+            }
+            else if (Rounds::InMatch())
+            {
+                std::string why;
+                bool ranked = Rounds::Ranked(why);
+                parts.push_back({ranked ? "RANKED" : "UNRANKED", ranked ? green : grey});
+            }
+            if (GetState().debug) parts.push_back({"DEBUG MODE!", GL_Color(1.f, 0.2f, 0.15f, 1.f)});
+            if (parts.empty()) return;
             const int font = 12;
-            const std::string text = "DEBUG MODE!";
-            float width = (float)freetype::easy_measureWidth(font, text);
-            const float x = 640.f, y = 1.f;
-            CSurface::GL_DrawRect(x - width / 2.f - 6.f, y, width + 12.f, 15.f, GL_Color(0.f, 0.f, 0.f, 0.7f));
-            CSurface::GL_SetColor(GL_Color(1.f, 0.2f, 0.15f, 1.f));
-            freetype::easy_printCenter(font, x, y, text);
+            const float gap = 18.f, y = 1.f;
+            float total = gap * (float)(parts.size() - 1);
+            for (const Part &part : parts) total += (float)freetype::easy_measureWidth(font, part.text);
+            float x = 640.f - total / 2.f;
+            CSurface::GL_DrawRect(x - 6.f, y, total + 12.f, 15.f, GL_Color(0.f, 0.f, 0.f, 0.7f));
+            for (const Part &part : parts)
+            {
+                CSurface::GL_SetColor(part.colour);
+                freetype::easy_print(font, x, y, part.text);
+                x += (float)freetype::easy_measureWidth(font, part.text) + gap;
+            }
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
@@ -199,7 +232,7 @@ namespace Duels
 
         void Render()
         {
-            if (GetState().debug && InGame()) RenderDebugMode();
+            if (InGame()) RenderStatusLine();
             if (g_net.on && InGame()) RenderNetStats();
             if (WallMs() < g_fontTestUntil) RenderFontTest();
         }

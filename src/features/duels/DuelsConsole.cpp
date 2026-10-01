@@ -112,6 +112,11 @@ namespace Duels
             AddFeed(from + ": " + text, true);
         }
 
+        void ClearFeed()
+        {
+            g_console.feed.clear();
+        }
+
         bool IsOpen()
         {
             return g_console.open;

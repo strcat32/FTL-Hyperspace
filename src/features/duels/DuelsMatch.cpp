@@ -2968,6 +2968,15 @@ namespace Duels
             Console::Chat(Net::PeerName(), text);
         }
 
+        void ReplayChat(const std::string &name, const uint8_t *data, size_t size)
+        {
+            Reader r(data, size);
+            std::string text = CleanChat(r.Str());
+            if (!r.Ok() || text.empty()) return;
+            Log("Match: replay: chat from %s: %s", name.c_str(), text.c_str());
+            Console::Chat(name, text);
+        }
+
         class Listener : public Net::Listener
         {
         public:
@@ -2993,8 +3002,9 @@ namespace Duels
                 // No pause in a duel, from the first preparation on (rules, section 1): the store and the menus
                 // would pause this game.
                 GetState().noPause = true;
-                Headline(Net::Replaying() ? "A replay: " + Net::PeerName() + " as the opponent"
-                         : Net::IsHost() ? Net::PeerName() + " joined your duel" : "You joined " + Net::PeerName() + "'s duel");
+                if (Demo::ReplayRestarting()) Log("Match: the replay starts again");
+                else Headline(Net::Replaying() ? "A replay: " + Net::PeerName() + " as the opponent"
+                              : Net::IsHost() ? Net::PeerName() + " joined your duel" : "You joined " + Net::PeerName() + "'s duel");
                 // The host's settings count for both; the guest has the default until they come.
                 LoadXpSetting();
                 g_xpMatch = Net::IsHost() ? g_xpSetting : XP_DEFAULT;
@@ -3007,7 +3017,7 @@ namespace Duels
                 // Test commands can change ships, so both players see a debug duel for what it is. Either player's
                 // debug mode gives both the test commands, and such a match is never ranked (roadmap T).
                 bool ours = GetState().debug, theirs = Net::PeerDebug();
-                if (ours || theirs)
+                if ((ours || theirs) && !Net::Replaying())   // a replay's match is the recorded one (its line says)
                 {
                     Headline(std::string("DEBUG DUEL: test commands are on (") + (ours ? "yours on" : "yours off") + ", " +
                              Net::PeerName() + "'s " + (theirs ? "on" : "off") + "); the match is unranked");
@@ -3033,7 +3043,8 @@ namespace Duels
             {
                 // The player still here wins when the other is gone (rules, section 3); the match flow says so. The
                 // opponent's ship leaves (it used to stay as an FTL enemy, and its artillery went on firing).
-                Headline("Disconnected: " + reason);
+                if (Demo::ReplayRestarting()) Log("Match: disconnected: %s", reason.c_str());
+                else Headline("Disconnected: " + reason);
                 FlushShotLog();
                 Demo::End("disconnected: " + reason);
                 Rounds::OnDisconnected(opponentGone);
@@ -3176,8 +3187,9 @@ namespace Duels
                     Boarding::OnFrame();
                 }
                 ShipManager *ship = G_->GetShipManager(0);
-                // The FTL drive charges in a match's fight only, from empty at its start (running away, roadmap AD).
-                if (ship && !Rounds::EscapeAllowed())
+                // The FTL drive charges in a match's fight only, from empty at its start (running away, roadmap AD); in a
+                // replay never (the recorder's states don't carry its charge).
+                if (ship && (!Rounds::EscapeAllowed() || Net::Replaying()))
                 {
                     ship->jump_timer.first = 0.f;
                     m.driveChargingSince = -1.0;
@@ -3194,6 +3206,13 @@ namespace Duels
             }
             Rounds::OnFrame(now);
             TrackShots(now);
+            // The match's status as it changes, for the demo (roadmap BB).
+            if (Demo::Recording())
+            {
+                std::string why;
+                bool ranked = Rounds::Ranked(why);
+                Demo::NoteStatus(ranked, why);
+            }
         }
 
         const std::string &PlayerName()

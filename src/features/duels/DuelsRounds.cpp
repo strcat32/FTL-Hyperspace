@@ -3,6 +3,7 @@
 #include "DuelsConfig.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
+#include "DuelsDemo.h"
 #include "DuelsEnvironment.h"
 #include "DuelsMatchUi.h"
 #include "DuelsMatch.h"
@@ -18,6 +19,7 @@
 #include "DuelsWire.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
@@ -255,9 +257,34 @@ namespace Duels
             return player == HOST ? GUEST : HOST;
         }
 
+        // A replay (roadmap 5.1, AW): nobody is "you"; each player goes by the recorded name, and the screen shows the
+        // recorder's side.
+        static bool You(uint8_t player)
+        {
+            return player == g.me && !Net::Replaying();
+        }
+
+        static uint8_t Viewer()
+        {
+            if (!Net::Replaying()) return g.me;
+            return Demo::GetReplayView().recorderHost ? HOST : GUEST;
+        }
+
+        static std::string Upper(std::string text)
+        {
+            for (char &c : text) c = (char)std::toupper((unsigned char)c);
+            return text;
+        }
+
         static std::string Who(uint8_t player)
         {
             if (player == NOBODY) return "nobody";
+            if (Net::Replaying())
+            {
+                Demo::ReplayView v = Demo::GetReplayView();
+                const std::string &name = player == HOST ? v.hostName : v.guestName;
+                return name.empty() ? (player == HOST ? std::string("the host") : std::string("the guest")) : name;
+            }
             if (player == g.me) return "you";
             std::string name = g.local ? Ai::Name() : Net::PeerName();
             return name.empty() ? "the opponent" : name;
@@ -686,12 +713,12 @@ namespace Duels
                 uint8_t banner = BannerOf(d, i);
                 std::string type = Ships::TypeName(d.bans[i].type);
                 if (d.bans[i].byServer) Announce("Time is up: the " + type + " is banned for " + Who(banner));
-                else Announce(banner == g.me ? "You ban the " + type : Who(banner) + " bans the " + type);
+                else Announce(You(banner) ? "You ban the " + type : Who(banner) + " bans the " + type);
             }
             g.bansShown = d.bans.size();
             // (The choice's window shows whose ban it is; the console's player learns it here.)
             uint8_t turn = BansDone(d) ? NOBODY : BannerOf(d, d.bans.size());
-            if (turn == g.me && g.turnShown != g.me) Log("Rounds: our ban ('ban <type>', %d s)", (int)(BAN_MS / 1000.0));
+            if (turn == g.me && g.turnShown != g.me && !Net::Replaying()) Log("Rounds: our ban ('ban <type>', %d s)", (int)(BAN_MS / 1000.0));
             g.turnShown = turn;
             if (!d.offer.empty() && g.offerShown != d.offer.size())
             {
@@ -761,10 +788,13 @@ namespace Duels
             const Data &d = g.data;
             Environment::End();
             Match::NewFight();
-            if (d.round == 1) TakeChosenShip();
+            // A replay (roadmap AW): our ship is the recorder's, as its loadout and states make it; nothing to choose,
+            // repair, pay or buy here.
+            bool replay = Net::Replaying();
+            if (d.round == 1 && !replay) TakeChosenShip();
             if (d.round == 1 && g.local && !d.ships[GUEST].empty()) Ai::TakeShip(d.ships[GUEST]);   // its pick
-            Refit::Restore(d.settings.permadeath);
-            if (g.scrapRound != d.round)
+            if (!replay) Refit::Restore(d.settings.permadeath);
+            if (g.scrapRound != d.round && !replay)
             {
                 g.scrapRound = d.round;
                 Refit::GiveScrap(d.round == 1, d.scrap);
@@ -775,7 +805,7 @@ namespace Duels
             g.taken = Damage();
             g.peerTaken = 0.f;
             g.peerLevels[0] = g.peerLevels[1] = 1.f;
-            Refit::OpenShop(d.round, d.shop);
+            if (!replay) Refit::OpenShop(d.round, d.shop);
             if (g.local) Ai::OnPrep(d.round, d.scrap, d.shop, d.settings.permadeath);
             // The match begins: the Duels window (the room's code, the waiting) makes way; DUELS opens it again (AM).
             if (d.round == 1 && ::Duels::Window::IsOpen()) ::Duels::Window::Close();
@@ -872,16 +902,21 @@ namespace Duels
                 result.winner == NOBODY ? "nobody" : result.winner == HOST ? "host" : "guest", (unsigned)result.reason,
                 result.dealt[HOST], result.dealt[GUEST], Points(d, HOST).c_str(), Points(d, GUEST).c_str());
             std::string text = "Round " + std::to_string(d.results.size()) + ": ";
-            text += result.winner == NOBODY ? "a draw" : result.winner == g.me ? "you win it" : Who(them) + " wins it";
+            text += result.winner == NOBODY ? "a draw" : You(result.winner) ? "you win it" : Who(result.winner) + " wins it";
+            bool replay = Net::Replaying();
             if (result.reason == REASON_ESCAPED)
             {
                 // Running away (roadmap AD): the runner is gone, the other takes half a point.
-                if (result.winner == g.me) MatchUi::Splash("ENEMY ESCAPED", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "jumpLeave");
+                uint8_t runner = Other(result.winner);
+                if (replay) MatchUi::Splash(Upper(Who(runner)) + " ESCAPED", MatchUi::WHITE, 2500.0, "jumpLeave");
+                else if (result.winner == g.me) MatchUi::Splash("ENEMY ESCAPED", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "jumpLeave");
                 else MatchUi::Splash("ESCAPED", MatchUi::WHITE, 2500.0, "jumpLeave");
                 text = "Round " + std::to_string(d.results.size()) + ": " +
-                       (result.winner == g.me ? Who(them) + " ran away, half a point for you" : std::string("you ran away, half a point for ") + Who(them));
+                       (replay ? Who(runner) + " ran away, half a point for " + Who(result.winner)
+                        : result.winner == g.me ? Who(them) + " ran away, half a point for you" : std::string("you ran away, half a point for ") + Who(them));
             }
             else if (result.winner == NOBODY) MatchUi::Splash("DRAW", MatchUi::WHITE, 2500.0, "jumpReady");
+            else if (replay) MatchUi::Splash(Upper(Who(result.winner)) + " WINS", result.winner == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "achievement");
             else if (result.winner == g.me) MatchUi::Splash("YOU WIN", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "achievement");
             else MatchUi::Splash("YOU LOSE", g.me == HOST ? MatchUi::BLUE : MatchUi::RED, 2500.0, "powerUpFail");
             Announce(text + " (" + ReasonText(result.reason) + "). Points " + PointsLine(d, g.me, them));
@@ -898,8 +933,12 @@ namespace Duels
                 Points(d, HOST).c_str(), Points(d, GUEST).c_str(), d.score[HOST], d.score[GUEST], (unsigned)d.results.size());
             uint8_t them = Other(g.me);
             std::string text = "Match over: ";
-            text += d.matchWinner == NOBODY ? "a draw" : d.matchWinner == g.me ? "you win" : Who(d.matchWinner) + " wins";
+            text += d.matchWinner == NOBODY ? "a draw" : You(d.matchWinner) ? "you win" : Who(d.matchWinner) + " wins";
             if (d.matchWinner == NOBODY) MatchUi::Splash("MATCH DRAWN", MatchUi::WHITE, 4000.0, "jumpReady");
+            else if (Net::Replaying())
+            {
+                MatchUi::Splash(Upper(Who(d.matchWinner)) + " WINS", d.matchWinner == HOST ? MatchUi::RED : MatchUi::BLUE, 4000.0, "victory");
+            }
             else if (d.matchWinner == g.me) MatchUi::Splash("MATCH WON", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 4000.0, "victory");
             else MatchUi::Splash("MATCH LOST", g.me == HOST ? MatchUi::BLUE : MatchUi::RED, 4000.0, "powerUpFail");
             Announce(text + ", " + PointsLine(d, g.me, them) + " (" + ReasonText(d.matchReason) + ")");
@@ -1143,7 +1182,7 @@ namespace Duels
                 {
                     d.ready[player] = true;
                     g.dirty = true;
-                    Announce(player == g.me ? std::string("You are ready") : Who(player) + " is ready");
+                    Announce(You(player) ? std::string("You are ready") : Who(player) + " is ready");
                 }
                 break;
             case EV_UNREADY:
@@ -1151,7 +1190,7 @@ namespace Duels
                 {
                     d.ready[player] = false;
                     g.dirty = true;
-                    Announce(player == g.me ? std::string("You are not ready any more") : Who(player) + " is not ready any more");
+                    Announce(You(player) ? std::string("You are not ready any more") : Who(player) + " is not ready any more");
                 }
                 break;
             case EV_DEFEAT:
@@ -1192,7 +1231,7 @@ namespace Duels
                     d.drawEnd = -1.0;
                     g.lastOffer[player] = now;
                     g.dirty = true;
-                    Announce(player == g.me ? std::string("You offer a draw for the ") + (arg == DRAW_MATCH ? "match" : "round")
+                    Announce(You(player) ? std::string("You offer a draw for the ") + (arg == DRAW_MATCH ? "match" : "round")
                                             : Who(player) + " offers a draw for the " + (arg == DRAW_MATCH ? "match" : "round") +
                                                   (arg == DRAW_MATCH ? ": accept in the Duels window" : ": the DRAW button accepts"));
                 }
@@ -1203,7 +1242,7 @@ namespace Duels
                 {
                     ClearDraw();
                     g.dirty = true;
-                    Announce(player == g.me ? std::string("You take back your draw offer") : Who(player) + " takes back the draw offer");
+                    Announce(You(player) ? std::string("You take back your draw offer") : Who(player) + " takes back the draw offer");
                 }
                 break;
             case EV_BAN:
@@ -1557,7 +1596,8 @@ namespace Duels
                 else
                 {
                     RoundCleanup();
-                    Announce("The match ended: the connection is lost");
+                    if (Demo::ReplayRestarting()) Log("Rounds: the replay starts again");
+                    else Announce("The match ended: the connection is lost");
                 }
             }
             Match::NewFight();
@@ -1755,6 +1795,11 @@ namespace Duels
 
         bool Escape(std::string &message)
         {
+            if (Net::Replaying())
+            {
+                message = "a replay: nobody runs away from it";
+                return false;
+            }
             if (!EscapeAllowed())
             {
                 message = "running away is for a match's fight";
@@ -2185,13 +2230,26 @@ namespace Duels
             }
         }
 
+        // Why a match isn't ranked, "" when it is: debug mode, against the AI, not recorded.
+        static std::string UnrankedReasons(const Settings &s)
+        {
+            std::string reasons = GetState().debug ? "debug mode" : "";
+            if (g.local) reasons += std::string(reasons.empty() ? "" : ", ") + "against the AI";
+            if (!s.record) reasons += std::string(reasons.empty() ? "" : ", ") + "not recorded";
+            return reasons;
+        }
+
+        bool Ranked(std::string &why)
+        {
+            why = UnrankedReasons(g.active ? g.data.settings : g.settings);
+            return why.empty();
+        }
+
         // The settings as the Duels window's rows (AS): always five short lines.
         static std::vector<std::string> SettingsRows(const Settings &s)
         {
             std::vector<std::string> rows;
-            std::string reasons = GetState().debug ? "debug mode" : "";
-            if (g.local) reasons += std::string(reasons.empty() ? "" : ", ") + "against the AI";
-            if (!s.record) reasons += std::string(reasons.empty() ? "" : ", ") + "not recorded";
+            std::string reasons = UnrankedReasons(s);
             if (s.free)
             {
                 rows = {"A free fight (no rounds)", "", ""};
@@ -2300,10 +2358,16 @@ namespace Duels
             s.round = d.round;
             s.rounds = d.settings.rounds;
             s.free = d.settings.free;
-            s.me = g.me;
+            s.me = Viewer();
             s.names[g.me] = Match::ScreenName(Match::PlayerName());
             s.names[them] = g.local ? Match::ScreenName(Ai::Name())
                                     : Net::PeerName().empty() ? std::string("Opponent") : Match::ScreenName(Net::PeerName());
+            if (Net::Replaying())
+            {
+                // A replay (roadmap AW): the recorded players' names.
+                s.names[HOST] = Match::ScreenName(Who(HOST));
+                s.names[GUEST] = Match::ScreenName(Who(GUEST));
+            }
             s.points[HOST] = Points(d, HOST);
             s.points[GUEST] = Points(d, GUEST);
             s.opponentReady = d.ready[them];

@@ -85,6 +85,8 @@ namespace Duels
         // star map stays shut); EscapeAllowed: this is its fight and our ship isn't down; DriveReady: FTL's own terms
         // for a jump (the drive charged, the engines and piloting working); Escape: the jump, as the JUMP button's.
         bool InMatch();
+        // Whether this match is ranked (roadmap BB), and why not: debug mode, against the AI, not recorded.
+        bool Ranked(std::string &why);
         bool EscapeAllowed();
         bool DriveReady();
         bool Escape(std::string &message);

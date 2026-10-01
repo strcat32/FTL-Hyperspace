@@ -79,6 +79,8 @@ namespace Duels
         void ReplayOwnShot(const uint8_t *data, size_t size);
         void ReplayOwnResult(const uint8_t *data, size_t size);
         void ReplayOwnShotDowned(const uint8_t *data, size_t size);
+        // Its own chat lines (MSG_CHAT as it sent them), under its name.
+        void ReplayChat(const std::string &name, const uint8_t *data, size_t size);
         // A ship our game doesn't decide but follows: the opponent's copy (ship 1, once built), and in a replay our ship
         // too, once the recorder's states drive it.
         bool IsDriven(int shipId);

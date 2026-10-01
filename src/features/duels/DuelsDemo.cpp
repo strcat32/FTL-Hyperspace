@@ -2,6 +2,7 @@
 #include "Duels.h"
 #include "DuelsBoarding.h"
 #include "DuelsConfig.h"
+#include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsDemo.h"
 #include "DuelsDrones.h"
@@ -54,6 +55,8 @@ namespace Duels
             std::vector<uint8_t> pending;
             uint64_t records = 0, rawBytes = 0, fileBytes = 0;
             uint32_t sent = 0, received = 0, fullStates = 0;
+            int statusRanked = -1;          // the match's status as last recorded (BB)
+            std::string statusWhy;
         };
 
         static DemoState g;
@@ -73,14 +76,19 @@ namespace Duels
             std::vector<DemoRecord> records;
             size_t next = 0;
             double startMs = 0.0;            // the demo's start, on the replay's clock
+            double firstMs = 0.0;            // its first state of our ship (ms in the demo): no seek goes further back
             bool paused = false;
             double speed = 1.0;              // 0.5, 1, 2, 4 or 8
             double seekTo = -1.0;            // running ahead to this time (ms in the demo); -1: not seeking
             bool pauseAfterSeek = false;
+            bool ended = false;              // at its end: it stays on its last moment, paused
+            int ranked = -1;                 // the recorded match's status (BB): 1, 0, -1 not known
+            std::string unrankedWhy;
             uint32_t delivered = 0, ownLoadouts = 0, ownStates = 0, held = 0;
         };
 
         static ReplayState g_replay;
+        static bool g_restarting = false;   // StartReplay for a seek back: the feed stays quiet
 
         static bool Enabled()
         {
@@ -200,6 +208,8 @@ namespace Duels
             g.pending.clear();
             g.records = g.rawBytes = g.fileBytes = 0;
             g.sent = g.received = g.fullStates = 0;
+            g.statusRanked = -1;
+            g.statusWhy.clear();
             std::fwrite(MAGIC, 1, sizeof(MAGIC), file);
             uint8_t head[3] = {(uint8_t)(FORMAT & 0xff), (uint8_t)(FORMAT >> 8), COMPRESSION_DEFLATE};
             std::fwrite(head, 1, sizeof(head), file);
@@ -233,6 +243,18 @@ namespace Duels
             Log("Demo: saved %s (%s; %llu records, %u sent, %u received, %u full states; %.0f kB, %.0f kB in the file, %.0f s)",
                 g.path.c_str(), why.c_str(), (unsigned long long)g.records, g.sent, g.received, g.fullStates, g.rawBytes / 1024.0,
                 g.fileBytes / 1024.0, (WallMs() - g.startMs) / 1000.0);
+        }
+
+        void NoteStatus(bool ranked, const std::string &why)
+        {
+            if (!g.file || (g.statusRanked == (ranked ? 1 : 0) && g.statusWhy == why)) return;
+            g.statusRanked = ranked ? 1 : 0;
+            g.statusWhy = why;
+            Writer w;
+            w.Bool(ranked);
+            w.Str(why);
+            Record(g.host ? FROM_HOST : FROM_GUEST, KIND_MARKER, MARK_STATUS, w.data.data(), w.data.size());
+            Log("Demo: the match is %s%s", ranked ? "ranked" : "unranked", why.empty() ? "" : (" (" + why + ")").c_str());
         }
 
         void Sent(uint8_t type, const uint8_t *data, size_t size)
@@ -282,7 +304,8 @@ namespace Duels
             return (uint32_t)data[pos] | ((uint32_t)data[pos + 1] << 8) | ((uint32_t)data[pos + 2] << 16) | ((uint32_t)data[pos + 3] << 24);
         }
 
-        static bool ReadDemo(const std::string &path, ReplayState &out, std::string &message)
+        // A demo file's records (any version of the game's), the first the header.
+        static bool ReadRecords(const std::string &path, std::vector<DemoRecord> &records, std::string &message)
         {
             FILE *file = std::fopen(path.c_str(), "rb");
             if (!file)
@@ -333,7 +356,7 @@ namespace Duels
                 }
                 inflateEnd(&z);
             }
-            out.records.clear();
+            records.clear();
             size_t pos = 0;
             while (pos + 11 <= data.size())
             {
@@ -347,13 +370,19 @@ namespace Duels
                 if (pos + size > data.size()) break;
                 record.data.assign(data.begin() + pos, data.begin() + pos + size);
                 pos += size;
-                out.records.push_back(std::move(record));
+                records.push_back(std::move(record));
             }
-            if (out.records.empty() || out.records[0].kind != KIND_MARKER || out.records[0].type != MARK_HEADER)
+            if (records.empty() || records[0].kind != KIND_MARKER || records[0].type != MARK_HEADER)
             {
                 message = "the demo has no header";
                 return false;
             }
+            return true;
+        }
+
+        static bool ReadDemo(const std::string &path, ReplayState &out, std::string &message)
+        {
+            if (!ReadRecords(path, out.records, message)) return false;
             Reader header(out.records[0].data);
             uint16_t protocol = header.U16();
             std::string version = header.Str(), build = header.Str(), dataHash = header.Str();
@@ -388,6 +417,77 @@ namespace Duels
                 if (name.size() > 8 && name.compare(name.size() - 8, 8, ".ftldemo") == 0 && name > newest) newest = name;
             }
             return newest.empty() ? path : (fs::path(path) / newest).string();
+        }
+
+        static const uint8_t LIST_MSG_LOADOUT = 17;   // DuelsMatch.cpp: a ship's loadout, its blueprint first
+
+        // What the browser shows of a demo: its header, the first loadout from each side, its last status, its length.
+        static void ReadInfo(DemoInfo &info)
+        {
+            std::vector<DemoRecord> records;
+            if (!ReadRecords(info.path, records, info.problem)) return;
+            Reader header(records[0].data);
+            uint16_t protocol = header.U16();
+            std::string version = header.Str();
+            header.Str();
+            header.Str();
+            header.U8();
+            info.hostName = header.Str();
+            info.guestName = header.Str();
+            info.startUtc = header.U32();
+            if (!header.Ok())
+            {
+                info.problem = "the demo's header is broken";
+                return;
+            }
+            if (protocol != Net::PROTOCOL_VERSION) info.problem = "from version " + version + ": this game plays only its own version's demos";
+            for (const DemoRecord &record : records)
+            {
+                if (record.kind == KIND_MESSAGE && record.type == LIST_MSG_LOADOUT)
+                {
+                    std::string &ship = record.from == FROM_HOST ? info.hostShip : info.guestShip;
+                    if (!ship.empty()) continue;
+                    Reader r(record.data);
+                    std::string blueprint = r.Str();
+                    if (r.Ok()) ship = blueprint;
+                }
+                else if (record.kind == KIND_MARKER && record.type == MARK_STATUS && !record.data.empty())
+                {
+                    info.ranked = record.data[0] != 0 ? 1 : 0;
+                }
+            }
+            info.lengthMs = records.back().ms;
+        }
+
+        std::vector<DemoInfo> ListDemos()
+        {
+            namespace fs = boost::filesystem;
+            std::vector<DemoInfo> list;
+            boost::system::error_code error;
+            for (fs::directory_iterator it(FOLDER, error), end; !error && it != end; it.increment(error))
+            {
+                std::string name = it->path().filename().string();
+                if (name.size() <= 8 || name.compare(name.size() - 8, 8, ".ftldemo") != 0) continue;
+                DemoInfo info;
+                info.file = name;
+                info.path = (fs::path(FOLDER) / name).string();
+                ReadInfo(info);
+                list.push_back(info);
+            }
+            return list;
+        }
+
+        bool RecordingOn()
+        {
+            return Enabled();
+        }
+
+        void SetRecordingOn(bool on)
+        {
+            Enabled();
+            g.enabled = on;
+            if (SettingsFromConfig()) Config::SaveValue("record_demos", on ? "on" : "off");
+            Log("Demo: %s", on ? "the next matches are recorded" : "the next matches aren't recorded");
         }
 
         bool StartReplay(const std::string &path, std::string &message)
@@ -434,6 +534,13 @@ namespace Duels
             }
             Net::SetReplayClock(peerClock);
             Net::SetReplayHostClock(g_replay.recorder == FROM_HOST ? recorderClock : peerClock);
+            // Its start for the controls: before our ship's first state the ships aren't fitted yet.
+            for (const DemoRecord &record : g_replay.records)
+            {
+                if (record.kind != KIND_FULL_STATE || record.from != g_replay.recorder) continue;
+                g_replay.firstMs = record.ms;
+                break;
+            }
             message = "replaying " + path + " (" + std::to_string(g_replay.records.size()) + " records, " +
                       std::to_string((int)(g_replay.records.back().ms / 1000)) + " s), " + opponent + " as the opponent";
             return true;
@@ -451,6 +558,22 @@ namespace Duels
                 // Our ship (the recorder's) follows its own states (stage 3: the ship, its crew and rooms).
                 Match::ReplayOwnState(record.data.data(), record.data.size());
                 ++g_replay.ownStates;
+                return;
+            }
+            if (record.kind == KIND_MARKER)
+            {
+                // The recorded match's status (roadmap BB), for the line at the top.
+                if (record.type == MARK_STATUS)
+                {
+                    Reader r(record.data);
+                    bool ranked = r.Bool();
+                    std::string why = r.Str();
+                    if (r.Ok())
+                    {
+                        g_replay.ranked = ranked ? 1 : 0;
+                        g_replay.unrankedWhy = why;
+                    }
+                }
                 return;
             }
             if (record.kind != KIND_MESSAGE) return;
@@ -489,7 +612,14 @@ namespace Duels
                     else Match::ReplayOwnShotDowned(record.data.data(), record.data.size());
                     ++g_replay.delivered;
                 }
-                else if ((matchFlow && fromHost) || record.type == MSG_CHAT)
+                else if (record.type == MSG_CHAT)
+                {
+                    // Its own chat lines under its name (the opponent's come under theirs, as received).
+                    Match::ReplayChat(g_replay.recorder == FROM_HOST ? g_replay.hostName : g_replay.guestName, record.data.data(),
+                                      record.data.size());
+                    ++g_replay.delivered;
+                }
+                else if (matchFlow && fromHost)
                 {
                     Net::Deliver(record.type, record.data.data(), record.data.size());
                     ++g_replay.delivered;
@@ -554,12 +684,14 @@ namespace Duels
                 g_replay.seekTo = -1.0;
                 g_replay.paused = g_replay.pauseAfterSeek;
             }
-            if (g_replay.active && g_replay.next >= g_replay.records.size())
+            if (g_replay.active && !g_replay.ended && g_replay.next >= g_replay.records.size())
             {
-                g_replay.active = false;
-                Log("Demo: the replay is over (%u messages played, %u held, %u own loadouts, %u own states)", g_replay.delivered,
-                    g_replay.held, g_replay.ownLoadouts, g_replay.ownStates);
-                Net::EndReplay("the replay is over");
+                // It stays on its last moment, paused, with its controls (roadmap AW): from the start, or a seek back.
+                g_replay.ended = true;
+                g_replay.paused = true;
+                g_replay.seekTo = -1.0;
+                Log("Demo: the replay is over (%u messages played, %u held, %u own loadouts, %u own states); it stays on its last moment",
+                    g_replay.delivered, g_replay.held, g_replay.ownLoadouts, g_replay.ownStates);
             }
         }
 
@@ -569,7 +701,8 @@ namespace Duels
             std::ostringstream out;
             double t = WallMs() - g_replay.startMs;
             out << "replay: " << g_replay.path << ", " << (int)(t / 1000.0) << " of " << (int)(g_replay.records.back().ms / 1000) << " s"
-                << (g_replay.paused ? " (paused)" : "") << (g_replay.seekTo >= 0.0 ? " (seeking)" : "") << ", speed " << g_replay.speed
+                << (g_replay.ended ? " (at its end)" : g_replay.paused ? " (paused)" : "") << (g_replay.seekTo >= 0.0 ? " (seeking)" : "")
+                << ", speed " << g_replay.speed
                 << ", record " << g_replay.next << " of " << g_replay.records.size() << ", " << g_replay.delivered << " played, "
                 << g_replay.held << " held";
             return out.str();
@@ -579,21 +712,97 @@ namespace Duels
         static bool Seek(double target, std::string &message)
         {
             double length = g_replay.records.back().ms;
-            target = std::max(0.0, std::min(target, length));
+            target = std::max(std::min(g_replay.firstMs, length), std::min(target, length));
             double position = WallMs() - g_replay.startMs;
-            bool paused = g_replay.paused;
+            bool paused = g_replay.paused && !g_replay.ended;   // from the end: on, playing
             if (target < position)
             {
                 std::string path = g_replay.path;
                 double speed = g_replay.speed;
-                if (!StartReplay(path, message)) return false;
+                g_restarting = true;
+                bool started = StartReplay(path, message);
+                g_restarting = false;
+                if (!started) return false;
                 g_replay.speed = speed;
+                // The feed's lines are from later in the demo; its own come again as it runs there.
+                Console::ClearFeed();
             }
             g_replay.seekTo = target;
             g_replay.pauseAfterSeek = paused;
             g_replay.paused = false;
             message = "replay seeking " + std::to_string((int)(target / 1000.0)) + " s" + (target < position ? " (from the start)" : "");
             return true;
+        }
+
+        ReplayView GetReplayView()
+        {
+            ReplayView v;
+            if (!g_replay.active || g_replay.records.empty()) return v;
+            v.active = true;
+            v.paused = g_replay.paused;
+            v.seeking = g_replay.seekTo >= 0.0;
+            v.ended = g_replay.ended;
+            v.lengthMs = g_replay.records.back().ms;
+            v.positionMs = std::max(0.0, std::min(v.lengthMs, WallMs() - g_replay.startMs));
+            v.speed = g_replay.speed;
+            v.hostName = g_replay.hostName;
+            v.guestName = g_replay.guestName;
+            v.recorderHost = g_replay.recorder == FROM_HOST;
+            v.ranked = g_replay.ranked;
+            v.unrankedWhy = g_replay.unrankedWhy;
+            return v;
+        }
+
+        void ReplayPlayPause()
+        {
+            if (!g_replay.active) return;
+            std::string message;
+            if (g_replay.ended)
+            {
+                // From the start again, playing.
+                if (Seek(0.0, message)) g_replay.pauseAfterSeek = false;
+                return;
+            }
+            if (g_replay.seekTo >= 0.0) g_replay.pauseAfterSeek = !g_replay.pauseAfterSeek;
+            else g_replay.paused = !g_replay.paused;
+        }
+
+        bool ReplayRestarting()
+        {
+            return g_restarting;
+        }
+
+        void ReplayStop()
+        {
+            if (!g_replay.active) return;
+            std::string message;
+            if (Seek(0.0, message)) g_replay.pauseAfterSeek = true;
+        }
+
+        void ReplaySeekTo(double ms)
+        {
+            std::string message;
+            if (g_replay.active) Seek(ms, message);
+        }
+
+        void ReplayStep(double ms)
+        {
+            if (g_replay.active) ReplaySeekTo(std::min(WallMs() - g_replay.startMs, (double)g_replay.records.back().ms) + ms);
+        }
+
+        void ReplaySpeedStep(int direction)
+        {
+            static const double SPEEDS[] = {0.5, 1.0, 2.0, 4.0, 8.0};
+            if (!g_replay.active) return;
+            int index = 1;
+            for (int i = 0; i < 5; ++i)
+            {
+                if (SPEEDS[i] == g_replay.speed) index = i;
+            }
+            if (direction > 0) index = std::min(4, index + 1);
+            else if (direction < 0) index = std::max(0, index - 1);
+            else index = (index + 1) % 5;
+            g_replay.speed = SPEEDS[index];
         }
 
         bool RunReplayVerb(const Command &cmd, std::string &message)
@@ -611,7 +820,7 @@ namespace Duels
                     return false;
                 }
                 // FTL's world stands still (FTL's pause), and the replay's clock with it.
-                g_replay.paused = true;
+                ReplayPlayPause();
                 message = "replay paused";
                 return true;
             }
@@ -622,8 +831,8 @@ namespace Duels
                     message = "no replay is paused";
                     return false;
                 }
-                g_replay.paused = false;
-                message = "replay resumed";
+                message = g_replay.ended ? "replay from the start" : "replay resumed";
+                ReplayPlayPause();
                 return true;
             }
             if (ArgIs(cmd, 1, "speed"))

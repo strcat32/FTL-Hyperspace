@@ -520,6 +520,10 @@ namespace Duels
                 else if (key == "esc") keyDown(SDLK_ESCAPE);
                 else if (key == "up") keyDown(SDLK_UP);
                 else if (key == "down") keyDown(SDLK_DOWN);
+                else if (key == "left") keyDown(SDLK_LEFT);
+                else if (key == "right") keyDown(SDLK_RIGHT);
+                else if (key == "home") keyDown(SDLK_HOME);
+                else if (key == "space") keyDown(SDLK_SPACE);   // the key only (a typed space is a plain " ")
                 else if (key == "pgup") keyDown(SDLK_PAGEUP);
                 else if (key == "pgdn") keyDown(SDLK_PAGEDOWN);
                 else if (key == "enter") textEvent(CEvent::TEXT_CONFIRM);

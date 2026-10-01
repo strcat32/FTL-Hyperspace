@@ -19,6 +19,7 @@
 #include "DuelsRefit.h"
 #include "DuelsNet.h"
 #include "DuelsRooms.h"
+#include "DuelsReplayUi.h"
 #include "DuelsRounds.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
@@ -1144,6 +1145,7 @@ HOOK_METHOD_PRIORITY(CommandGui, MouseMove, -2000, (int mX, int mY) -> void)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::MouseMove -> Begin (DuelsHooks.cpp)\n")
     // Over the Duels window, the game underneath doesn't see the mouse.
     Duels::MatchUi::MouseMove(mX, mY);
+    Duels::ReplayUi::MouseMove(mX, mY);
     if (Duels::Window::MouseMove(mX, mY)) return;
     Duels::View::BeginDecorations();
     super(mX, mY);
@@ -1462,6 +1464,7 @@ HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) ->
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::KeyDown -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Console::KeyDown(this, key)) return;
     if (Duels::Window::KeyDown((int)key)) return;
+    if (Duels::ReplayUi::KeyDown((int)key)) return;   // a replay's keys, and no other reaches the game then
     if (Duels::Rounds::NetPaused() && !menuBox.bOpen && key != SDLK_ESCAPE) return;
     Duels::Refit::SwitchScreensKey((int)key);   // the preparation: the store and the ship's screens switch
     if (Duels::Rounds::InMatch() && key == Settings::GetHotkey("jump") && (int)key > 0)
@@ -1479,6 +1482,7 @@ HOOK_METHOD_PRIORITY(CommandGui, LButtonDown, -2000, (int mX, int mY, bool shift
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::LButtonDown -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Window::LButtonDown(mX, mY)) return;
+    if (Duels::ReplayUi::LButtonDown(mX, mY)) return;
     if (Duels::MatchUi::LButtonDown(mX, mY)) return;
     if (Duels::Refit::SwitchScreensClick(mX, mY)) return;
     if (OrdersHeld(this, mX, mY)) return;
@@ -1527,6 +1531,7 @@ HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> MouseControl::OnRender -> Begin (DuelsHooks.cpp)\n")
     Duels::Hud::Render();
     Duels::MatchUi::Render();
+    Duels::ReplayUi::Render();
     Duels::Window::Render();
     Duels::MatchUi::RenderSplash();
     Duels::Lobby::RenderCover();

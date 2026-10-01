@@ -345,6 +345,17 @@ namespace Duels
             }
         }
 
+        // FTL's crew boxes (our crew's list on the left) hold their crew members, and FTL makes them again only when it
+        // sees its crew change: in a replay (roadmap 5.1) they are made again whenever the replay changes who is on our
+        // side (else they showed the crew members replaced, gone).
+        static void RenewCrewBoxes()
+        {
+            WorldManager *world = G_->GetWorld();
+            if (!world || !world->commandGui) return;
+            world->commandGui->crewControl.ClearCrewBoxes();
+            world->commandGui->crewControl.UpdateCrewBoxes();
+        }
+
         // A crew member for a puppet, in the room its owner is in (room 0 until the first state).
         static void CreateCrew(ShipManager *replica, Puppet &puppet)
         {
@@ -360,6 +371,7 @@ namespace Duels
             puppet.movingToRoom = puppet.movingToSlot = -1;
             ApplySkills(crew, puppet.roster);
             ++SideOf(replica).created;
+            if (replica->iShipId == 0) RenewCrewBoxes();
         }
 
         // A crew drone's puppet is the replica's own drone in that slot while it is out (DuelsDrones.cpp launches it as
@@ -463,6 +475,7 @@ namespace Duels
             }
             side.active = true;
             ++side.rostersApplied;
+            if (replica->iShipId == 0) RenewCrewBoxes();
             Log("Crew: roster applied (%u crew; %u removed from the replica's own)", (unsigned)roster.size(), (unsigned)others.size());
         }
 
@@ -913,6 +926,7 @@ namespace Duels
         {
             BoarderPuppet(g_crew.away[id], id, crew);
             ++g_crew.boarded;
+            RenewCrewBoxes();   // ours (the recorder's) aboard their ship are on our list too
         }
 
         void ReplayAwayGone(uint16_t id)
@@ -923,6 +937,7 @@ namespace Duels
             CrewMember *crew = LiveCrew(replica, found->second);
             if (crew && !crew->bDead) replica->RemoveCrewmember(crew);
             g_crew.away.erase(found);
+            RenewCrewBoxes();
         }
 
         void ReplayGuestAboard(uint16_t id, CrewMember *crew)

@@ -22,6 +22,8 @@ namespace Duels
         // Both go into the console's log too.
         void Feed(const std::string &line);
         void Chat(const std::string &from, const std::string &text);
+        // A replay going back (DuelsDemo.cpp): the feed's lines, from later in the demo, go.
+        void ClearFeed();
 
         bool IsOpen();
 

@@ -8,6 +8,7 @@
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
 #include "DuelsMatchUi.h"
+#include "DuelsReplayUi.h"
 #include "DuelsMenu.h"
 #include "DuelsNet.h"
 #include "DuelsRelay.h"
@@ -649,6 +650,12 @@ namespace Duels
             if (button)
             {
                 if (!MatchUi::ButtonCentre(button, x, y)) { message = std::string("no ") + button + " button on the screen"; return false; }
+            }
+            else if (ArgIs(cmd, 1, "replay"))
+            {
+                // click replay start|back|play|on|speed|line: a replay's control (roadmap AW).
+                std::string control = cmd.args.size() > 2 ? cmd.args[2] : "";
+                if (!ReplayUi::ControlCentre(control, x, y)) { message = "no replay control '" + control + "' on the screen"; return false; }
             }
             else if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y)) { message = "usage: click <x> <y> | click draw|concede|ready"; return false; }
             CApp *app = G_->GetCApp();

@@ -3,6 +3,7 @@
 #include "DuelsHud.h"
 #include "DuelsLobby.h"
 #include "DuelsMatchUi.h"
+#include "DuelsNet.h"
 #include "DuelsRounds.h"
 #include "DuelsShips.h"
 #include "DuelsStyle.h"
@@ -252,13 +253,15 @@ namespace Duels
             {
                 // The panel ends left of the buttons; the time sits right-aligned in it (FTL measures font 24 a little
                 // short), the label at its left.
+                // A replay's controls take this row (roadmap AW): the countdown goes up a row then.
+                float top = FIGHT_TOP - (Net::Replaying() ? 44.f : 0.f);
                 float width = std::max(150.f, Width(12, s.countdownLabel) + 1.3f * Width(24, time) + 40.f);
                 float right = FIGHT_SPLIT - 12.f, left = right - width;
-                Panel(left, FIGHT_TOP - 4.f, width, 38.f);
-                Print(12, left + 10.f, FIGHT_TOP + 9.f, s.countdownLabel, ColourOf(WHITE, 0.9f));
+                Panel(left, top - 4.f, width, 38.f);
+                Print(12, left + 10.f, top + 9.f, s.countdownLabel, ColourOf(WHITE, 0.9f));
                 CSurface::GL_SetColor(colour);
-                freetype::easy_printRightAlign(24, right - 10.f, FIGHT_TOP - 10.f, time);   // its letters 15 px lower, in the middle
-                if (s.paused && !s.pausedText.empty()) Print(10, left + 10.f, FIGHT_TOP + 36.f, s.pausedText, ColourOf(WHITE, 0.85f));
+                freetype::easy_printRightAlign(24, right - 10.f, top - 10.f, time);   // its letters 15 px lower, in the middle
+                if (s.paused && !s.pausedText.empty()) Print(10, left + 10.f, top + 36.f, s.pausedText, ColourOf(WHITE, 0.85f));
             }
         }
 
@@ -303,6 +306,7 @@ namespace Duels
         static void RenderButtons(const Rounds::Summary &s, bool prepLayout)
         {
             g.ready.shown = g.draw.shown = g.concede.shown = false;
+            if (Net::Replaying()) return;   // a replay can't be played (roadmap AW)
             bool running = s.inMatch && s.phase != Rounds::Phase::MatchOver && !s.paused;
             if (!running) return;
             const std::string them = s.names[s.me == 0 ? 1 : 0];
@@ -434,6 +438,11 @@ namespace Duels
             EndScreen &e = g.end;
             e.lobby.shown = e.stay.shown = false;
             if (s.phase != Rounds::Phase::MatchOver) return;
+            if (Net::Replaying())
+            {
+                e.shown = false;   // a replay ends on its own controls (roadmap AW)
+                return;
+            }
             double now = WallMs();
             if (e.overSince < 0.0) e.overSince = now;
             e.shown = !e.dismissed && now - e.overSince >= END_AFTER_MS;
