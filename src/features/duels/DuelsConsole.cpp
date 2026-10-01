@@ -2,6 +2,7 @@
 #include "CommandConsole.h"
 #include "Duels.h"
 #include "DuelsConsole.h"
+#include "DuelsMatchUi.h"
 #include "DuelsTrace.h"
 #include "DuelsWindow.h"
 
@@ -352,8 +353,9 @@ namespace Duels
             const float x = 16.f, bottom = 588.f, lineHeight = 14.f, maxWidth = 318.f;
             double now = WallMs();
             bool typing = g_console.open && g_console.chat && g_console.input;
-            // The Duels window shows the match itself, and the feed would run over its left side.
-            if (!typing && Window::IsOpen()) return;
+            // The Duels window shows the match itself, and the feed would run over its left side; so would it over the
+            // ship choice's window and the end screen.
+            if (!typing && (Window::IsOpen() || MatchUi::Covering())) return;
             std::vector<const Timed*> shown;
             for (auto it = g_console.feed.rbegin(); it != g_console.feed.rend(); ++it)
             {

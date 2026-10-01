@@ -153,6 +153,7 @@ namespace Duels
                 std::vector<uint8_t> bannedBy;  // who banned each: 0 the host, 1 the guest
                 std::vector<bool> byServer;     // time ran out: the server banned it
                 int bansTotal = 0;
+                uint8_t firstBanner = 0;
                 uint8_t banner = 2;             // whose ban it is now (2: nobody's)
                 std::vector<std::string> offer; // the ships to pick from (blueprints), once the bans are done
                 bool picked[2] = {false, false};

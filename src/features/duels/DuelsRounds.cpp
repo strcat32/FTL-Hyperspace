@@ -18,6 +18,7 @@
 #include "DuelsWire.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
@@ -44,6 +45,7 @@ namespace Duels
         // for the player; the bans leave this many types to pick from.
         static const double BAN_MS = 20000.0;
         static const double PICK_MS = 30000.0;
+        static const double REVEAL_MS = 4000.0;          // both ships on screen before round 1's preparation
         static const int OFFER_SIZE = 3;
 
         // The third byte of an event is the round it belongs to; a ban's is its number in the choice instead.
@@ -227,6 +229,7 @@ namespace Duels
             size_t bansShown = 0, offerShown = 0;
             uint8_t pickedShown[2] = {PICK_NONE, PICK_NONE};
             uint8_t turnShown = NOBODY;
+            bool shipsShown = false;
         };
 
         static Local g;
@@ -686,14 +689,15 @@ namespace Duels
                 else Announce(banner == g.me ? "You ban the " + type : Who(banner) + " bans the " + type);
             }
             g.bansShown = d.bans.size();
+            // (The choice's window shows whose ban it is; the console's player learns it here.)
             uint8_t turn = BansDone(d) ? NOBODY : BannerOf(d, d.bans.size());
-            if (turn == g.me && g.turnShown != g.me) Announce("Your ban: 'ban <type>' (" + std::to_string((int)(BAN_MS / 1000.0)) + " s)");
+            if (turn == g.me && g.turnShown != g.me) Log("Rounds: our ban ('ban <type>', %d s)", (int)(BAN_MS / 1000.0));
             g.turnShown = turn;
             if (!d.offer.empty() && g.offerShown != d.offer.size())
             {
                 std::string list;
                 for (size_t i = 0; i < d.offer.size(); ++i) list += (i ? ", " : "") + std::to_string(i + 1) + " " + Ships::Title(d.offer[i]);
-                Announce("Pick your ship: " + list + ": 'pick <n>' (" + std::to_string((int)(PICK_MS / 1000.0)) + " s)");
+                Announce("The ships to pick from: " + list);
             }
             g.offerShown = d.offer.size();
             if (d.picked[g.me] == PICK_OWN && g.pickedShown[g.me] == PICK_NONE && g.ownPick >= 0 && g.ownPick < (int)d.offer.size())
@@ -703,6 +707,14 @@ namespace Duels
             if (d.picked[them] == PICK_OWN && g.pickedShown[them] == PICK_NONE) Announce(Who(them) + " has picked");
             g.pickedShown[HOST] = d.picked[HOST];
             g.pickedShown[GUEST] = d.picked[GUEST];
+            // The reveal: both ships, before round 1's preparation.
+            if (!d.ships[g.me].empty() && !g.shipsShown)
+            {
+                g.shipsShown = true;
+                Log("Rounds: the ships: host %s, guest %s", d.ships[HOST].c_str(), d.ships[GUEST].c_str());
+                Announce("Your ship: the " + Ships::Title(d.ships[g.me]) + (d.picked[g.me] == PICK_SERVER ? " (time was up: drawn for you)" : "") +
+                         ". " + Who(them) + "'s: the " + Ships::Title(d.ships[them]));
+            }
         }
 
         static void EnterChoice()
@@ -711,7 +723,10 @@ namespace Duels
             g.bansShown = g.offerShown = 0;
             g.pickedShown[HOST] = g.pickedShown[GUEST] = PICK_NONE;
             g.turnShown = NOBODY;
+            g.shipsShown = false;
             g.ownPick = -1;
+            // The match begins: the Duels window (the room's code, the waiting) makes way for the choice's (AM).
+            if (::Duels::Window::IsOpen()) ::Duels::Window::Close();
             Log("Rounds: the ship choice: %s; first banner %s", ShipsModeName(d.settings).c_str(), d.firstBanner == HOST ? "host" : "guest");
             if (d.settings.ships == SHIPS_LIST) Announce("Ship choice: each picks one of the host's list");
             else
@@ -726,8 +741,7 @@ namespace Duels
         // console's switch_ship), and the match starts from its levels and crew.
         static void TakeChosenShip()
         {
-            const Data &d = g.data;
-            const std::string &ours = d.ships[g.me], &theirs = d.ships[Other(g.me)];
+            const std::string &ours = g.data.ships[g.me];
             if (ours.empty()) return;
             ShipManager *own = G_->GetShipManager(0);
             WorldManager *world = G_->GetWorld();
@@ -740,9 +754,6 @@ namespace Duels
                 Log("Rounds: our ship for the match: %s (%s)", ours.c_str(), switched ? "switched" : "the switch failed");
                 Refit::OnMatchStart();
             }
-            Log("Rounds: the ships: host %s, guest %s", d.ships[HOST].c_str(), d.ships[GUEST].c_str());
-            Announce("Your ship: the " + Ships::Title(ours) + (d.picked[g.me] == PICK_SERVER ? " (time was up: the server's pick)" : "") +
-                     ". " + Who(Other(g.me)) + "'s: the " + Ships::Title(theirs));
         }
 
         static void EnterPrep()
@@ -997,7 +1008,7 @@ namespace Duels
             SetPhase(Phase::Choice, Now() + (d.offer.empty() ? BAN_MS : PICK_MS));
         }
 
-        // Both have picked: the ships are known to both games, and the first preparation begins with them.
+        // Both have picked: both games learn both ships and show them; the first preparation begins with them.
         static void Reveal()
         {
             Data &d = g.data;
@@ -1006,7 +1017,8 @@ namespace Duels
                 int pick = g.picks[player] >= 0 && g.picks[player] < (int)d.offer.size() ? g.picks[player] : 0;
                 d.ships[player] = d.offer.empty() ? std::string() : d.offer[pick];
             }
-            StartRound(1);
+            d.phaseEnd = Now() + REVEAL_MS;
+            g.dirty = true;
         }
 
         static void AddBan(uint8_t type, bool byServer)
@@ -1276,7 +1288,8 @@ namespace Duels
             switch (d.phase)
             {
             case Phase::Choice:
-                if (now >= d.phaseEnd) ChoiceTimeout();
+                if (now >= d.phaseEnd && !d.ships[HOST].empty()) StartRound(1);   // the reveal is over
+                else if (now >= d.phaseEnd) ChoiceTimeout();
                 break;
             case Phase::Prep:
                 if (now >= d.phaseEnd || (d.ready[HOST] && d.ready[GUEST])) SetPhase(Phase::Starting, -1.0);
@@ -1386,6 +1399,16 @@ namespace Duels
             g.settings = settings;
         }
 
+        // The host's draws (the shops, the environments, the ship choice): from the system clock's nanoseconds (the game's
+        // own milliseconds since its start came out nearly the same at every test's connection, and so did the draws).
+        static uint32_t NewSeed()
+        {
+            uint64_t ticks = (uint64_t)std::chrono::system_clock::now().time_since_epoch().count();
+            uint32_t seed = (uint32_t)(ticks ^ (ticks >> 32)) ^ (uint32_t)(WallMs() * 1000.0);
+            Log("Rounds: the match's draws from seed %08x", seed);
+            return seed;
+        }
+
         void OnConnected()
         {
             if (Net::Resumed() && g.data.phase != Phase::None && g.data.phase != Phase::MatchOver)
@@ -1414,7 +1437,7 @@ namespace Duels
             Environment::ClearBeacon();
             g.active = true;
             g.me = Net::IsHost() ? HOST : GUEST;
-            g.random.seed((uint32_t)WallMs() ^ (uint32_t)(Net::MatchSeed() & 0xffffffffu));
+            g.random.seed(NewSeed() ^ (uint32_t)(Net::MatchSeed() & 0xffffffffu));
             Refit::OnMatchStart();
             if (g.me != HOST) return;   // the host's match state comes
             g.data = Data();
@@ -1438,7 +1461,7 @@ namespace Duels
             g.active = true;
             g.local = true;
             g.me = HOST;
-            g.random.seed((uint32_t)WallMs());
+            g.random.seed(NewSeed());
             Refit::OnMatchStart();
             g.data = Data();
             g.data.settings = g.settings;
@@ -2055,6 +2078,7 @@ namespace Duels
                     out << ", offer";
                     for (size_t i = 0; i < d.offer.size(); ++i) out << " [" << i + 1 << " " << d.offer[i] << "]";
                     out << ", picked: host " << (d.picked[HOST] ? "yes" : "no") << ", guest " << (d.picked[GUEST] ? "yes" : "no");
+                    if (!d.ships[HOST].empty()) out << ", the ships: host " << d.ships[HOST] << ", guest " << d.ships[GUEST];
                 }
                 out << ", " << (int)std::ceil(left) << " s left, types left " << Ships::TypesText(TypesLeft(d));
                 return out.str();
@@ -2162,6 +2186,7 @@ namespace Duels
                 c.byServer.push_back(d.bans[i].byServer);
             }
             c.bansTotal = BansTotal(d);
+            c.firstBanner = d.firstBanner;
             c.banner = d.phase == Phase::Choice && !BansDone(d) ? BannerOf(d, d.bans.size()) : NOBODY;
             c.offer = d.offer;
             c.picked[HOST] = d.picked[HOST] != PICK_NONE;
@@ -2171,9 +2196,10 @@ namespace Duels
             c.ships[GUEST] = d.ships[GUEST];
             if (d.phase == Phase::Choice)
             {
-                s.state = c.banner == NOBODY ? std::string("ship choice: the pick")
-                                             : "ship choice: ban " + std::to_string(d.bans.size() + 1) + " of " + std::to_string(c.bansTotal) +
-                                                   (c.banner == g.me ? ", yours" : ", " + Who(c.banner) + "'s");
+                s.state = !c.ships[HOST].empty() ? std::string("ship choice: the ships are known")
+                          : c.banner == NOBODY  ? std::string("ship choice: the pick")
+                                                : "ship choice: ban " + std::to_string(d.bans.size() + 1) + " of " + std::to_string(c.bansTotal) +
+                                                      (c.banner == g.me ? ", yours" : ", " + Who(c.banner) + "'s");
             }
             s.score = ScoreLine();
             if (!d.settings.free && d.phase != Phase::MatchOver)
@@ -2243,7 +2269,8 @@ namespace Duels
             }
             else if (d.phase == Phase::Choice && d.phaseEnd >= 0.0)
             {
-                s.countdownLabel = c.banner == g.me ? "Your ban" : c.banner != NOBODY ? "Their ban" : c.picked[g.me] ? "Their pick" : "Your pick";
+                s.countdownLabel = !c.ships[HOST].empty() ? "Round 1 in" : c.banner == g.me ? "Your ban" : c.banner != NOBODY ? "Their ban"
+                                   : c.picked[g.me] ? "Their pick" : "Your pick";
                 s.countdownMs = FromHost(d.phaseEnd) - now;
             }
             else if (d.phase == Phase::Prep && d.phaseEnd >= 0.0)

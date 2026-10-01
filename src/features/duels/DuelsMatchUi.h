@@ -24,6 +24,8 @@ namespace Duels
         // The buttons take their clicks before the game does; true when one did.
         bool LButtonDown(int x, int y);
         void MouseMove(int x, int y);
+        // A window of its own covers the game: the ship choice's (roadmap 3.9) or the end screen.
+        bool Covering();
 
         // A splash across the middle of the screen: big letters in a colour for a moment, with one of FTL's sounds
         // (sounds.xml names, "" for none); withNames adds both players' names under it, in red and blue.

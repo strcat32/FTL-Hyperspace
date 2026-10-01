@@ -8,6 +8,7 @@
 #include "DuelsTrace.h"
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <random>
 
@@ -97,7 +98,9 @@ namespace Duels
             if (g.blueprint.empty())
             {
                 std::vector<std::string> ships = PlayerShips();
-                std::mt19937 random((uint32_t)WallMs());
+                // (The system clock: the game's own milliseconds since its start repeat from run to run.)
+                uint64_t ticks = (uint64_t)std::chrono::system_clock::now().time_since_epoch().count();
+                std::mt19937 random((uint32_t)(ticks ^ (ticks >> 32)));
                 g.blueprint = ships.empty() ? std::string("PLAYER_SHIP_HARD") : ships[random() % ships.size()];
             }
             // FTL's own ship AI flies it (a duel before it had the opponent's replaced by its owner's game).

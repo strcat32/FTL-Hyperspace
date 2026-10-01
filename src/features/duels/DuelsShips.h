@@ -33,5 +33,14 @@ namespace Duels
         std::string TypesText(uint16_t types);
         // "Kestrel A": the type's name and the layout's letter.
         std::string Title(const std::string &blueprint);
+
+        // For the choice's window: the ship's image in FTL's hangar (customizeUI/miniship_<img>.png, 191 x 121); its
+        // weapons and drones ("Dual Lasers, Artemis; Combat I"), its systems with their levels ("Shields 1, engines 2,
+        // weapons 3, cloaking 1"; the ones every ship has left out) and its crew ("3 crew: 2 engi, 1 human").
+        std::string Image(const std::string &blueprint);
+        std::string Arms(const std::string &blueprint);
+        std::string Systems(const std::string &blueprint);
+        std::string Augments(const std::string &blueprint);   // "Crystal Vengeance", "" for none
+        std::string CrewText(const std::string &blueprint);
     }
 }
