@@ -1466,6 +1466,7 @@ HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
     Duels::MatchUi::Render();
     Duels::Window::Render();
     Duels::MatchUi::RenderSplash();
+    Duels::Lobby::RenderCover();
     Duels::Hud::EndFrame();
     if (!Duels::Console::Render()) return super();
     PrintHelper *printer = PrintHelper::GetInstance();

@@ -21,8 +21,9 @@ namespace Duels
         std::string Describe();
 
         // Saves the next frame as a 24-bit BMP, read from the frame buffer (graphics_read_pixels), so it works with
-        // the window covered or the computer locked; the log says when it is written.
-        void RequestCapture(const std::string &path);
+        // the window covered or the computer locked; the log says when it is written. With frames > 1, that many
+        // frames in a row, each its own file (<name>_00.bmp, <name>_01.bmp, ...: a flash of a frame shows).
+        void RequestCapture(const std::string &path, int frames = 1);
 
         // The name at the top right ("FTL:Duels <version>" instead of Hyperspace's "HS-<version>") and in the window
         // title.

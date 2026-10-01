@@ -103,6 +103,11 @@ namespace Duels
             uint8_t env = 0;        // Environment::Mode
             uint8_t hazards = 0;    // the kinds MODE_AUTO may roll
             bool record = true;     // public recording (off: unranked)
+            // The ships (roadmap 3.9): 0 each player's own (FTL's hangar; the console's, for tests), 1 bans from the
+            // pool's types and a pick, 2 a pick from the list (blueprints, exact layouts).
+            uint8_t ships = 1;
+            uint16_t pool = 0x3ff;
+            std::vector<std::string> list;
         };
         NextDuel GetNextDuel();
         bool SetNextDuel(const NextDuel &next, std::string &message);

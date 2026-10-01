@@ -26,6 +26,16 @@ namespace Duels
         static int g_frameW = 1280, g_frameH = 720;
 
         static std::string g_capturePath;
+        // A burst: the next frames, one file each (<base>_00.bmp, <base>_01.bmp, ...).
+        static std::string g_burstBase;
+        static int g_burstLeft = 0, g_burstIndex = 0;
+
+        static std::string BurstName()
+        {
+            char suffix[16];
+            snprintf(suffix, sizeof(suffix), "_%02d.bmp", g_burstIndex);
+            return g_burstBase + suffix;
+        }
 
         void SetHiRes(bool on) { g_hiRes = on; }
         bool HiRes() { return g_hiRes; }
@@ -47,9 +57,19 @@ namespace Duels
             return buffer;
         }
 
-        void RequestCapture(const std::string &path)
+        void RequestCapture(const std::string &path, int frames)
         {
-            g_capturePath = path;
+            g_burstLeft = 0;
+            if (frames <= 1)
+            {
+                g_capturePath = path;
+                return;
+            }
+            bool bmp = path.size() > 4 && path.compare(path.size() - 4, 4, ".bmp") == 0;
+            g_burstBase = bmp ? path.substr(0, path.size() - 4) : path;
+            g_burstIndex = 0;
+            g_burstLeft = frames;
+            g_capturePath = BurstName();
         }
 
         // graphics_read_pixels returns RGBA rows from the bottom up, the order BMP files store them in.
@@ -101,6 +121,13 @@ namespace Duels
             bool saved = read && WriteBmp(path, width, height, rgba);
             Log("screenshot %s: %dx%d from %s, %s", path.c_str(), width, height, source,
                 saved ? "saved" : read ? "could not write the file" : "could not read the pixels");
+            if (g_burstLeft > 1)
+            {
+                --g_burstLeft;
+                ++g_burstIndex;
+                g_capturePath = BurstName();
+            }
+            else g_burstLeft = 0;
         }
 
         static void BeginRender(CApp *app)

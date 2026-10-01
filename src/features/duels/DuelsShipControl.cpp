@@ -1232,13 +1232,15 @@ namespace Duels
     static bool DoScreenshot(const Command &cmd, std::string &message)
     {
         std::string path = Raw(cmd, 1);
-        if (path.empty())
+        int frames = 1;
+        if (path.empty() || (cmd.args.size() > 2 && (!ArgInt(cmd, 2, frames) || frames < 1 || frames > 120)))
         {
-            message = "usage: screenshot <file.bmp>";
+            message = "usage: screenshot <file.bmp> [frames, up to 120: one file each]";
             return false;
         }
-        Screen::RequestCapture(path);
-        message = "saving the next frame as " + path;
+        Screen::RequestCapture(path, frames);
+        message = frames > 1 ? "saving the next " + std::to_string(frames) + " frames as " + path.substr(0, path.size() - 4) + "_NN.bmp"
+                             : "saving the next frame as " + path;
         return true;
     }
 

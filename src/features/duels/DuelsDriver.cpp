@@ -230,7 +230,7 @@ namespace Duels
         static const std::set<std::string> verbs = {
             "console", "debug", "host", "join", "leave", "lobby", "name", "net", "netstats", "note", "quit", "relay", "say",
             "screenshot", "status", "stop", "trace", "tracepower", "version", "window", "xp",
-            "match", "ready", "forfeit", "concede", "draw"};
+            "match", "ready", "forfeit", "concede", "draw", "ban", "pick"};
         return verbs.count(verb) != 0;
     }
 

@@ -1355,8 +1355,10 @@ namespace Duels
             if (!text.empty() && Environment::ParseHazards(text, hazards)) s.hazards = hazards;
             text = Config::Value("match_record");
             if (text == "on" || text == "off") s.record = text == "on";
+            // A player's match chooses its ships by bans unless the host set it otherwise (a test scenario starts from
+            // each player's own ship, the hangar's).
             text = Config::Value("match_ships");
-            if (text == "own" || text == "bans" || text == "list") s.ships = text == "own" ? SHIPS_OWN : text == "bans" ? SHIPS_BANS : SHIPS_LIST;
+            s.ships = text == "own" ? SHIPS_OWN : text == "list" ? SHIPS_LIST : SHIPS_BANS;
             uint16_t pool;
             if (Ships::ParseTypes(Config::Value("match_pool"), pool)) s.pool = pool;
             std::vector<std::string> list;
@@ -1915,6 +1917,9 @@ namespace Duels
             next.env = s.env;
             next.hazards = s.hazards;
             next.record = s.record;
+            next.ships = s.ships;
+            next.pool = s.pool;
+            next.list = s.list;
             return next;
         }
 
@@ -1926,6 +1931,23 @@ namespace Duels
                 message = "the match is on: its settings are the host's from the start";
                 return false;
             }
+            // The ships: a pool to ban from needs a type, a list a ship (roadmap 3.9).
+            if (next.ships == SHIPS_BANS && !(next.pool & Ships::ALL_TYPES))
+            {
+                message = "Tick at least one ship type for the bans.";
+                return false;
+            }
+            std::vector<std::string> list;
+            for (const std::string &ship : next.list)
+            {
+                std::string blueprint;
+                if (Ships::ParseShip(ship, blueprint) && std::find(list.begin(), list.end(), blueprint) == list.end()) list.push_back(blueprint);
+            }
+            if (next.ships == SHIPS_LIST && list.empty())
+            {
+                message = "Tick at least one ship for the list.";
+                return false;
+            }
             Settings &s = g.settings;
             s.rounds = (uint8_t)std::max(1, std::min(99, next.rounds));
             s.prepSeconds = (uint16_t)std::max(0, std::min(3600, next.prepSeconds));
@@ -1934,13 +1956,16 @@ namespace Duels
             s.env = next.env < Environment::MODE_COUNT ? next.env : (uint8_t)Environment::MODE_AUTO;
             s.hazards = next.hazards;
             s.record = next.record;
+            s.ships = next.ships < SHIPS_MODES ? next.ships : (uint8_t)SHIPS_BANS;
+            s.pool = next.pool & Ships::ALL_TYPES ? next.pool & Ships::ALL_TYPES : Ships::ALL_TYPES;
+            if (!list.empty()) s.list = list;
             s.free = false;
             SaveSettings();
             message = "best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) + " s preparation, anti-stall " +
                       (s.stallSeconds ? std::to_string(s.stallSeconds) + " s" : std::string("off")) + ", permanent death " +
                       (s.permadeath ? "on" : "off") + ", environment " + Environment::ModeName(s.env) +
                       (s.env == Environment::MODE_AUTO ? " (" + Environment::HazardsName(s.hazards) + ")" : "") +
-                      (s.record ? ", recorded" : ", not recorded (unranked)");
+                      (s.record ? ", recorded" : ", not recorded (unranked)") + ", ships: " + ShipsModeName(s);
             return true;
         }
 

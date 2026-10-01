@@ -9,6 +9,7 @@
 #include "DuelsNet.h"
 #include "DuelsRelay.h"
 #include "DuelsRounds.h"
+#include "DuelsShips.h"
 #include "DuelsStyle.h"
 #include "DuelsTrace.h"
 #include "DuelsWindow.h"
@@ -69,6 +70,10 @@ namespace Duels
             Style::Box playerBox, aiBox, aiShipLess, aiShipMore;
             Style::Box listedBox, recordBox, roundsLess, roundsMore, prepLess, prepMore, stallLess, stallMore, permadeathBox;
             Style::Box hazardBoxes[Environment::KIND_COUNT];
+            // The ships (roadmap 3.9): bans or a list; the pool's types, the list's layouts.
+            Style::Box shipsLess, shipsMore;
+            Style::Box typeBoxes[Ships::TYPE_COUNT];
+            Style::Box layoutBoxes[Ships::TYPE_COUNT][3];
             Style::Box cancel, choose;
 
             // The Join window's list: the relays asked, the ones filtered out, the room picked (its relay and code), the
@@ -93,8 +98,12 @@ namespace Duels
 
             // FTL's first message box at a run's start: its choice taken until the box is gone.
             bool inRun = false;
-            double closeBoxUntilMs = 0.0, nextBoxKeyMs = 0.0;
+            double closeBoxUntilMs = 0.0, nextBoxKeyMs = 0.0, runSinceMs = 0.0;
             int boxKeys = 0;
+            // START without the hangar (roadmap 3.9, AL): the screen is covered from the click until that box is gone
+            // (the hangar would show for its one frame, then the box and FTL's PAUSED for another).
+            bool cover = false;
+            double coverUntilMs = 0.0;
 
             // LOBBY: FTL's main menu asked for, then the room list there.
             bool toMenu = false, listOnMenu = false;
@@ -192,14 +201,31 @@ namespace Duels
             g.open = Window::None;
         }
 
-        // CHOOSE SHIP: the room waits for the run, and FTL's hangar opens (as its NEW GAME opens it).
-        static void OpenHangar(Pending pending)
+        // CHOOSE SHIP: the room waits for the run, and FTL's hangar opens (as its NEW GAME opens it). START (roadmap 3.9:
+        // the match chooses the ships): the run begins at once, the hangar's START as soon as it opens, with whatever ship
+        // it has as a stand-in until the reveal (nobody sees it fight).
+        static void OpenHangar(Pending pending, bool start)
         {
             g.pending = pending;
             g.sawHangar = false;
             Close();
             CApp *app = G_->GetCApp();
-            if (app) app->menu.shipBuilder.Open();
+            if (!app) return;
+            app->menu.shipBuilder.Open();
+            if (start)
+            {
+                app->menu.shipBuilder.Finish();
+                g.cover = true;
+                g.coverUntilMs = WallMs() + 5000.0;
+                Log("Lobby: START: the run begins without the hangar (a stand-in ship until the ship choice)");
+            }
+        }
+
+        // The match chooses its ships (roadmap 3.9): START instead of CHOOSE SHIP. A guest always starts so: the host's
+        // match chooses (its own ship, the hangar's, is a console's setting for tests).
+        static bool StartsWithoutHangar()
+        {
+            return g.open == Window::Join || (!g.vsAi && g.next.ships != 0);
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -253,15 +279,16 @@ namespace Duels
                 // Against FTL's AI (roadmap 3.6): no room; the match begins with the run.
                 Log("Lobby: choose a ship; the match against the AI (%s) begins with the run: %s",
                     AiShipBlueprint().empty() ? "a random ship" : AiShipBlueprint().c_str(), message.c_str());
-                OpenHangar(Pending::Ai);
+                OpenHangar(Pending::Ai, false);
                 return;
             }
             // The room opens at the first relay of the list that answers (part 4).
+            bool start = StartsWithoutHangar();
             g.attemptRelays = Net::RelayList();
-            Log("Lobby: choose a ship; the room '%s' (%s%s) opens with the run, at the first of %u relay(s) that answers: %s",
-                g.roomName.c_str(), g.roomListed ? "listed" : "unlisted", g.roomPassword.empty() ? "" : ", with a password",
-                (unsigned)g.attemptRelays.size(), message.c_str());
-            OpenHangar(Pending::Host);
+            Log("Lobby: %s; the room '%s' (%s%s) opens with the run, at the first of %u relay(s) that answers: %s",
+                start ? "START" : "choose a ship", g.roomName.c_str(), g.roomListed ? "listed" : "unlisted",
+                g.roomPassword.empty() ? "" : ", with a password", (unsigned)g.attemptRelays.size(), message.c_str());
+            OpenHangar(Pending::Host, start);
         }
 
         static void RenderHost()
@@ -304,9 +331,13 @@ namespace Duels
             y += 40.f;
             Paragraph(FONT, lx, y, lw, g.vsAi ? "CHOOSE SHIP opens FTL's hangar. Its START begins the run and the match against "
                                                 "the AI, on this computer: no room, nothing over the network."
-                                              : "CHOOSE SHIP opens FTL's hangar. Its START begins the run and opens the room. Its "
-                                                "code is in the Duels window (DUELS at the top): the other player joins with it, or "
-                                                "finds a room that isn't private in JOIN DUEL's list.", soft);
+                                              : StartsWithoutHangar()
+                                                    ? "START begins the run and opens the room. Its code is in the Duels window (DUELS "
+                                                      "at the top): the other player joins with it, or finds a room that isn't private "
+                                                      "in JOIN DUEL's list. The ships are chosen when both are in."
+                                                    : "CHOOSE SHIP opens FTL's hangar. Its START begins the run and opens the room. Its "
+                                                      "code is in the Duels window (DUELS at the top): the other player joins with it, or "
+                                                      "finds a room that isn't private in JOIN DUEL's list.", soft);
 
             // The match.
             float rx = HX + 410.f, rw = HW - 410.f - 30.f;
@@ -346,12 +377,67 @@ namespace Duels
                           gold);
             }
             else Paragraph(FONT, rx, y, rw, "The anti-ship battery comes from round 5 on.", soft);
+            y += 26.f;
+
+            // The ships (roadmap 3.9): bans from the ticked types, then a pick of the three left; or a pick from the list,
+            // its ships ticked by layout. (Each player's own, the hangar's, is the console's, for tests.)
+            if (!g.vsAi)
+            {
+                Text(TEXT, rx, y + 6.f, "Ships", light);
+                float bx = rx + 70.f;
+                ButtonAt(g.shipsLess, bx, y, 30.f, 28.f, "<");
+                CSurface::GL_SetColor(n.ships == 0 ? gold : white);
+                freetype::easy_printCenter(TEXT, bx + 30.f + 105.f, y + 6.f,
+                                           n.ships == 1 ? "Bans, then a pick" : n.ships == 2 ? "A pick from a list" : "Their own (console)");
+                ButtonAt(g.shipsMore, bx + 30.f + 210.f, y, 30.f, 28.f, ">");
+                y += 36.f;
+                const float column = rw / 2.f, rowH = 27.f;
+                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
+                {
+                    float cx = rx + (type / 5) * column, cy = y + (type % 5) * rowH;
+                    if (n.ships == 2)
+                    {
+                        // The type's name, then a toggle for each of its layouts: gold when the list has it.
+                        Text(FONT, cx, cy + 4.f, Ships::TypeName(type), light);
+                        std::vector<std::string> variants = Ships::Variants(type);
+                        for (int layout = 0; layout < 3; ++layout)
+                        {
+                            Style::Box &box = g.layoutBoxes[type][layout];
+                            box = Style::Box();
+                            if (layout >= (int)variants.size()) continue;
+                            bool on = std::find(n.list.begin(), n.list.end(), variants[layout]) != n.list.end();
+                            box.x = cx + 82.f + layout * 28.f;
+                            box.y = cy;
+                            box.w = 24.f;
+                            box.h = 22.f;
+                            const GL_Color goldBody = Rgb(255, 214, 90);
+                            Style::Button(box.x, box.y, box.w, box.h, std::string(1, (char)('A' + layout)), FONT,
+                                          Hover(box) ? Style::Look::Hover : Style::Look::Idle, on && !Hover(box) ? &goldBody : nullptr);
+                        }
+                        g.typeBoxes[type] = Style::Box();
+                    }
+                    else
+                    {
+                        CheckAt(g.typeBoxes[type], cx, cy, (n.pool >> type) & 1, Ships::TypeName(type));
+                        for (Style::Box &box : g.layoutBoxes[type]) box = Style::Box();
+                    }
+                }
+            }
+            else
+            {
+                g.shipsLess = g.shipsMore = Style::Box();
+                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
+                {
+                    g.typeBoxes[type] = Style::Box();
+                    for (Style::Box &box : g.layoutBoxes[type]) box = Style::Box();
+                }
+            }
 
             // The buttons.
             float by = HY + HH - 58.f;
             if (!g.message.empty()) Paragraph(FONT, HX + 30.f, by + 8.f, 380.f, g.message, Rgb(255, 140, 120));
             ButtonAt(g.cancel, HX + HW - 30.f - 190.f - 12.f - 130.f, by, 130.f, 34.f, "CANCEL");
-            ButtonAt(g.choose, HX + HW - 30.f - 190.f, by, 190.f, 34.f, "CHOOSE SHIP");
+            ButtonAt(g.choose, HX + HW - 30.f - 190.f, by, 190.f, 34.f, StartsWithoutHangar() ? "START" : "CHOOSE SHIP");
         }
 
         static void ClickHost(int x, int y)
@@ -373,6 +459,15 @@ namespace Duels
             else if (g.stallLess.Contains(x, y) && n.stallSeconds > 0) n.stallSeconds = n.stallSeconds <= 120 ? 0 : (n.stallSeconds - 1) / 60 * 60;
             else if (g.stallMore.Contains(x, y) && n.stallSeconds < 600) n.stallSeconds = n.stallSeconds < 120 ? 120 : n.stallSeconds / 60 * 60 + 60;
             else if (g.permadeathBox.Contains(x, y)) n.permadeath = !n.permadeath;
+            else if (g.shipsLess.Contains(x, y) || g.shipsMore.Contains(x, y))
+            {
+                // Bans or a list (the console's "their own" goes to either). A first list holds every type's layout A.
+                n.ships = n.ships == 1 ? 2 : 1;
+                if (n.ships == 2 && n.list.empty())
+                {
+                    for (int type = 0; type < Ships::TYPE_COUNT; ++type) n.list.push_back(Ships::TypeBlueprint(type));
+                }
+            }
             else if (g.cancel.Contains(x, y))
             {
                 Close();
@@ -384,6 +479,18 @@ namespace Duels
                 for (uint8_t kind : HAZARDS)
                 {
                     if (g.hazardBoxes[kind].Contains(x, y)) n.hazards ^= (uint8_t)(1 << kind);
+                }
+                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
+                {
+                    if (g.typeBoxes[type].Contains(x, y)) n.pool ^= (uint16_t)(1 << type);
+                    std::vector<std::string> variants = Ships::Variants(type);
+                    for (int layout = 0; layout < 3 && layout < (int)variants.size(); ++layout)
+                    {
+                        if (!g.layoutBoxes[type][layout].Contains(x, y)) continue;
+                        auto found = std::find(n.list.begin(), n.list.end(), variants[layout]);
+                        if (found != n.list.end()) n.list.erase(found);
+                        else n.list.push_back(variants[layout]);
+                    }
                 }
             }
         }
@@ -491,9 +598,9 @@ namespace Duels
                 }
                 g.roomCode = code;
                 g.attemptRelays = Net::RelayList();
-                Log("Lobby: choose a ship; the room %s is joined with the run (looked for at %u relay(s))%s", code.c_str(),
+                Log("Lobby: START; the room %s is joined with the run (looked for at %u relay(s))%s", code.c_str(),
                     (unsigned)g.attemptRelays.size(), g.roomPassword.empty() ? "" : " (with a password)");
-                OpenHangar(Pending::Join);
+                OpenHangar(Pending::Join, true);
                 return;
             }
             Net::FoundRoom room;
@@ -515,9 +622,9 @@ namespace Duels
             }
             g.roomCode = room.code;
             g.attemptRelays = {room.relay};
-            Log("Lobby: choose a ship; the room %s ('%s', %s's) at %s is joined with the run", room.code.c_str(), room.roomName.c_str(),
+            Log("Lobby: START; the room %s ('%s', %s's) at %s is joined with the run", room.code.c_str(), room.roomName.c_str(),
                 room.hostName.c_str(), room.relay.name.c_str());
-            OpenHangar(Pending::Join);
+            OpenHangar(Pending::Join, true);
         }
 
         static void RenderJoin()
@@ -621,7 +728,7 @@ namespace Duels
             RenderField(g.joinPassword, lx + 160.f, fy + 18.f, 260.f);
             if (!g.message.empty()) Paragraph(FONT, dx, by - 40.f, dw, g.message, red);
             ButtonAt(g.cancel, JX + JW - 30.f - 190.f - 12.f - 130.f, by, 130.f, 34.f, "CANCEL");
-            ButtonAt(g.choose, JX + JW - 30.f - 190.f, by, 190.f, 34.f, "CHOOSE SHIP");
+            ButtonAt(g.choose, JX + JW - 30.f - 190.f, by, 190.f, 34.f, "START");
         }
 
         static void ClickJoin(int x, int y)
@@ -780,7 +887,8 @@ namespace Duels
                 Log("Lobby: %s: %s", host ? "no room opened" : "not joined", why.c_str());
                 Console::Feed((host ? "No room opened: " : "Not joined: ") + why);
             }
-            ::Duels::Window::Open();   // the room's code, the opponent, or why not
+            // The room's code while it waits, or why not; a guest's match begins at once (its window would flash).
+            if (host || !ok) ::Duels::Window::Open();
         }
 
         void ToLobby()
@@ -794,6 +902,21 @@ namespace Duels
         bool FirstBoxAnswered()
         {
             return g.inRun && g.boxKeys > 0;
+        }
+
+        void RenderCover()
+        {
+            if (!g.cover) return;
+            if (WallMs() > g.coverUntilMs)
+            {
+                g.cover = false;
+                Log("Lobby: the cover goes (time)");
+                return;
+            }
+            CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, Rgb(6, 8, 12));
+            CSurface::GL_SetColor(Rgb(226, 230, 236));
+            freetype::easy_printCenter(24, 640.f, 330.f, "STARTING THE DUEL");   // font 24: its letters 15 px lower
+            CSurface::GL_SetColor(COLOR_WHITE);
         }
 
         bool TakeMenuRequest()
@@ -819,6 +942,7 @@ namespace Duels
                 g.closeBoxUntilMs = WallMs() + 10000.0;
                 g.nextBoxKeyMs = 0.0;
                 g.boxKeys = 0;
+                g.runSinceMs = WallMs();
             }
             g.inRun = inRun;
             if (inRun && WallMs() < g.closeBoxUntilMs)
@@ -838,6 +962,12 @@ namespace Duels
                     Log("Lobby: FTL's first message box closed (%d key%s)", g.boxKeys, g.boxKeys == 1 ? "" : "s");
                     g.closeBoxUntilMs = 0.0;
                 }
+            }
+            // The cover goes once the box is gone (or none came in a second).
+            if (g.cover && inRun && !G_->GetWorld()->commandGui->choiceBox.bOpen && (g.boxKeys > 0 || WallMs() > g.runSinceMs + 1000.0))
+            {
+                g.cover = false;
+                Log("Lobby: the run is in: the cover goes");
             }
 
             if (g.pending == Pending::None) return;

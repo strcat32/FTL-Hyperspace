@@ -33,6 +33,9 @@ namespace Duels
         // box goes then; a match against the AI has no pause from that moment, as FTL answers boxes only in a pause).
         void OnFrame();
         bool FirstBoxAnswered();
+        // START without the hangar (roadmap 3.9, AL): a dark screen from the click until that box is gone (FTL would
+        // show its hangar for a frame, then the box and its PAUSED for another). Over everything, in the menu and the run.
+        void RenderCover();
 
         // Test verbs, through "menu": host, join (the windows), choose (their CHOOSE SHIP), cancel, code <code|@file>
         // and password <password> (the fields), refresh and pick <code|@file> (the list: a click on that room's row),
