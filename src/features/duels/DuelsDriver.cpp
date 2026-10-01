@@ -7,6 +7,7 @@
 #include "DuelsFair.h"
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
+#include "DuelsMatchUi.h"
 #include "DuelsMenu.h"
 #include "DuelsNet.h"
 #include "DuelsRelay.h"
@@ -642,8 +643,14 @@ namespace Duels
             // click <x> <y>: a left click there through the game's whole input (the Duels window, the match's
             // buttons, then FTL), in its 1280 x 720 coordinates, for tests of the buttons; in the main menu, through
             // the menu's (ours over FTL's).
-            int x, y;
-            if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y)) { message = "usage: click <x> <y>"; return false; }
+            // click draw|concede|ready: the middle of that match button, wherever its layout puts it (roadmap AY).
+            int x = 0, y = 0;
+            const char *button = ArgIs(cmd, 1, "draw") ? "draw" : ArgIs(cmd, 1, "concede") ? "concede" : ArgIs(cmd, 1, "ready") ? "ready" : nullptr;
+            if (button)
+            {
+                if (!MatchUi::ButtonCentre(button, x, y)) { message = std::string("no ") + button + " button on the screen"; return false; }
+            }
+            else if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y)) { message = "usage: click <x> <y> | click draw|concede|ready"; return false; }
             CApp *app = G_->GetCApp();
             if (app && app->menu.bOpen)
             {

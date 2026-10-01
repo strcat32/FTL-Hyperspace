@@ -24,8 +24,11 @@ namespace Duels
         static const float PANEL_CENTRE = 445.f, PANEL_TOP = 50.f, PANEL_MAX_WIDTH = 164.f;
         static const float PREP_CENTRE = 1105.f, PREP_TOP = 430.f;      // the preparation: right of the store
         // The fight: between the weapons bar and the enemy window, above the drone systems (clear of the feed at the
-        // bottom left): the countdown ends at FIGHT_SPLIT, the buttons start there.
+        // bottom left): the countdown ends at FIGHT_SPLIT. Its DRAW and CONCEDE are under the crew's save-position
+        // buttons (roadmap AY).
         static const float FIGHT_SPLIT = 604.f, FIGHT_TOP = 574.f;
+        static const float CREW_BUTTONS_GAP = 6.f;                      // under the save-position buttons, and between ours
+        static const float CREW_BUTTON_FRAME = 5.f;                     // FTL's base around each of those buttons, past its hitbox
         static const float SPLASH_MIDDLE = 250.f;                       // the splashes' middle line
         static const double ARMED_MS = 3000.0;                          // "Sure?" on Concede
         static const float BUTTON_H = 28.f;                             // FTL's button look (DuelsStyle.cpp)
@@ -84,6 +87,7 @@ namespace Duels
             ChoiceScreen choice;
             Box ready, draw, concede;
             double concedeArmedUntil = 0.0;
+            std::string crewButtonsLogged;  // where DRAW and CONCEDE went last (logged when it changes)
             SplashState splash;
             std::string beepLabel;          // the countdown last beeped for this label and whole second
             int beepSecond = -1;
@@ -264,7 +268,7 @@ namespace Duels
         // ---------------------------------------------------------------------------------------------------------
 
         static void Button(Box &box, float x, float y, float w, const std::string &label, bool enabled, bool highlight,
-                           const GL_Color &highlightColour)
+                           const GL_Color &highlightColour, int font = 12)
         {
             box.x = x;
             box.y = y;
@@ -274,7 +278,26 @@ namespace Duels
             // FTL's button: its light body, yellow under the mouse, grey when off; a highlight colours the body.
             bool hover = enabled && box.Contains(g.mouseX, g.mouseY);
             Style::Look look = !enabled ? Style::Look::Off : hover ? Style::Look::Hover : Style::Look::Idle;
-            Style::Button(x, y, w, BUTTON_H, label, 12, look, highlight && enabled && !hover ? &highlightColour : nullptr);
+            Style::Button(x, y, w, BUTTON_H, label, font, look, highlight && enabled && !hover ? &highlightColour : nullptr);
+        }
+
+        // The fight's DRAW and CONCEDE (roadmap AY): under the crew's save-position buttons, one above the other, as
+        // wide as the two of those together (with the frames FTL draws around them); they go down with them as the crew
+        // list grows. With no crew listed FTL puts those buttons off the screen: ours stay where the list would begin.
+        static void UnderCrewButtons(float &x, float &y, float &w)
+        {
+            x = 19.f;
+            y = 152.f;
+            w = 69.f;
+            WorldManager *world = G_->GetWorld();
+            CommandGui *gui = world ? world->commandGui : nullptr;
+            if (!gui) return;
+            const Globals::Rect &save = gui->crewControl.saveStations.hitbox;
+            const Globals::Rect &back = gui->crewControl.returnStations.hitbox;
+            if (save.x < 0 || back.x < 0 || save.w <= 0 || back.w <= 0 || save.y < 0 || save.y > 720) return;
+            x = (float)save.x - CREW_BUTTON_FRAME;
+            w = (float)(back.x + back.w - save.x) + 2.f * CREW_BUTTON_FRAME;
+            y = (float)std::max(save.y + save.h, back.y + back.h) + CREW_BUTTON_FRAME + CREW_BUTTONS_GAP;
         }
 
         static void RenderButtons(const Rounds::Summary &s, bool prepLayout)
@@ -297,7 +320,18 @@ namespace Duels
             }
             else if (s.phase == Rounds::Phase::Starting || s.phase == Rounds::Phase::Fight)
             {
-                float x = FIGHT_SPLIT, y = FIGHT_TOP;
+                float x, y, w;
+                UnderCrewButtons(x, y, w);
+                char where[80];
+                snprintf(where, sizeof(where), "%.0f,%.0f width %.0f", x, y, w);
+                if (g.crewButtonsLogged != where)
+                {
+                    g.crewButtonsLogged = where;
+                    Log("MatchUi: DRAW and CONCEDE under the crew's buttons at %s", where);
+                }
+                // FTL's button letters when "CONCEDE" fits the width inside the button's frame (5 px a side and a margin),
+                // else FTL's smaller letters for both.
+                int font = Width(12, "CONCEDE") + 16.f <= w ? 12 : 10;
                 // A draw offer (AH): ours keeps the button pressed down while it stands (a click takes it back, AT); the
                 // other player's makes it "DRAW?", flashing (a click accepts). No text under it: the chat log has it.
                 bool blink = (long long)(WallMs() / 400.0) % 2 == 0;
@@ -305,15 +339,15 @@ namespace Duels
                 {
                     g.draw.x = x;
                     g.draw.y = y;
-                    g.draw.w = 110.f;
+                    g.draw.w = w;
                     g.draw.h = BUTTON_H;
                     g.draw.shown = true;
-                    Style::Button(x, y, 110.f, BUTTON_H, "DRAW", 12, Style::Look::Pressed);
+                    Style::Button(x, y, w, BUTTON_H, "DRAW", font, Style::Look::Pressed);
                 }
-                else Button(g.draw, x, y, 110.f, s.drawToAnswer ? "DRAW?" : "DRAW", s.canOfferRoundDraw || s.drawToAnswer,
-                            s.drawToAnswer && blink, goldBody);
+                else Button(g.draw, x, y, w, s.drawToAnswer ? "DRAW?" : "DRAW", s.canOfferRoundDraw || s.drawToAnswer,
+                            s.drawToAnswer && blink, goldBody, font);
                 bool armed = WallMs() < g.concedeArmedUntil;
-                Button(g.concede, x + 116.f, y, 94.f, armed ? "SURE?" : "CONCEDE", s.canConcede, armed, redBody);
+                Button(g.concede, x, y + BUTTON_H + CREW_BUTTONS_GAP, w, armed ? "SURE?" : "CONCEDE", s.canConcede, armed, redBody, font);
             }
         }
 
@@ -799,6 +833,15 @@ namespace Duels
         bool Covering()
         {
             return InGame() && (g.choice.shown || g.end.shown);
+        }
+
+        bool ButtonCentre(const std::string &name, int &x, int &y)
+        {
+            const Box *box = name == "draw" ? &g.draw : name == "concede" ? &g.concede : name == "ready" ? &g.ready : nullptr;
+            if (!box || !box->shown) return false;
+            x = (int)(box->x + box->w / 2.f);
+            y = (int)(box->y + box->h / 2.f);
+            return true;
         }
 
         bool LButtonDown(int x, int y)

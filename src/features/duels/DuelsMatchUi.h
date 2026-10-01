@@ -24,6 +24,8 @@ namespace Duels
         // The buttons take their clicks before the game does; true when one did.
         bool LButtonDown(int x, int y);
         void MouseMove(int x, int y);
+        // Tests ("click draw|concede|ready"): the middle of that match button as last drawn; false when it isn't shown.
+        bool ButtonCentre(const std::string &name, int &x, int &y);
         // A window of its own covers the game: the ship choice's (roadmap 3.9) or the end screen.
         bool Covering();
 
