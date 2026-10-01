@@ -981,8 +981,8 @@ namespace Duels
             uint16_t seq = ++g_match.stateSeq;
             WriteOwnState(w, ship, now, seq, false);
             Net::Send(MSG_STATE, w, false);
-            // A demo has our ship with all in sight (roadmap 5.1).
-            if (Demo::Recording())
+            // Our ship with all in sight: for a demo (roadmap 5.1), and kept for the swap after the match (BA: the other
+            // game may record), recorded or not.
             {
                 Vision::FullScope full;
                 Writer record;
@@ -3075,6 +3075,10 @@ namespace Duels
                 Demo::Received(type, reader.Position(), reader.Remaining());
                 switch (type)
                 {
+                case Demo::MSG_DEMO_STATES:
+                case Demo::MSG_DEMO_SAVED:
+                    Demo::OnSwapMessage(type, reader);
+                    break;
                 case MSG_CHAT:
                     ReceiveChat(reader.Str());
                     break;
@@ -3183,6 +3187,12 @@ namespace Duels
             View::SetDuelOpponent((g_match.replicaReady || Ai::ShipStands()) && G_->GetShipManager(1) != nullptr);
             // A match against the AI runs in this game alone (roadmap 3.6): the frame without the network's part.
             if (!Net::IsConnected() && !Rounds::IsLocal()) return;
+            // The swap of full states after the match (roadmap BA, part 2): from the match's end, a piece a frame.
+            if (Net::IsConnected() && !Net::Replaying())
+            {
+                if (Rounds::GetPhase() == Rounds::Phase::MatchOver) Demo::StartSwap();
+                Demo::SwapFrame(now);
+            }
 
             MatchState &m = g_match;
             if (InGame())

@@ -109,8 +109,11 @@ namespace Duels
             bool cover = false;
             double coverUntilMs = 0.0;
 
-            // LOBBY: FTL's main menu asked for, then the room list there.
+            // LOBBY: FTL's main menu asked for, then the room list there; first the swap of full states after the match
+            // (the demos' both sides, BA): "SAVING THE REPLAY", 10 s at most.
             bool toMenu = false, listOnMenu = false;
+            bool saving = false;
+            double savingUntilMs = 0.0;
         };
 
         static LobbyState g;
@@ -908,7 +911,24 @@ namespace Duels
             if (host || !ok) ::Duels::Window::Open();
         }
 
+        static void LeaveToLobby();
+
         void ToLobby()
+        {
+            if (g.saving) return;
+            if (Demo::SwapBusy())
+            {
+                g.saving = true;
+                g.savingUntilMs = WallMs() + 10000.0;
+                g.cover = true;
+                g.coverUntilMs = g.savingUntilMs + 1000.0;
+                Log("Lobby: LOBBY waits for the swap of full states after the match");
+                return;
+            }
+            LeaveToLobby();
+        }
+
+        static void LeaveToLobby()
         {
             Match::Leave();
             g.toMenu = true;
@@ -932,7 +952,7 @@ namespace Duels
             }
             CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, Rgb(6, 8, 12));
             CSurface::GL_SetColor(Rgb(226, 230, 236));
-            freetype::easy_printCenter(24, 640.f, 330.f, "STARTING THE DUEL");   // font 24: its letters 15 px lower
+            freetype::easy_printCenter(24, 640.f, 330.f, g.saving ? "SAVING THE REPLAY" : "STARTING THE DUEL");   // font 24: its letters 15 px lower
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
@@ -947,6 +967,14 @@ namespace Duels
         {
             CApp *app = G_->GetCApp();
             if (!app) return;
+            // LOBBY once the swap of full states is done (or 10 s on).
+            if (g.saving && (!Demo::SwapBusy() || WallMs() > g.savingUntilMs))
+            {
+                Log("Lobby: %s", Demo::SwapBusy() ? "the swap of full states isn't done after 10 s: LOBBY all the same" : "the swap of full states is done");
+                g.saving = false;
+                g.cover = false;
+                LeaveToLobby();
+            }
             if (g.listOnMenu && app->menu.bOpen && !app->menu.shipBuilder.bOpen)
             {
                 g.listOnMenu = false;
@@ -980,8 +1008,8 @@ namespace Duels
                     g.closeBoxUntilMs = 0.0;
                 }
             }
-            // The cover goes once the box is gone (or none came in a second).
-            if (g.cover && inRun && !G_->GetWorld()->commandGui->choiceBox.bOpen && (g.boxKeys > 0 || WallMs() > g.runSinceMs + 1000.0))
+            // The cover goes once the box is gone (or none came in a second); the one for the swap stays until LOBBY.
+            if (g.cover && !g.saving && inRun && !G_->GetWorld()->commandGui->choiceBox.bOpen && (g.boxKeys > 0 || WallMs() > g.runSinceMs + 1000.0))
             {
                 g.cover = false;
                 Log("Lobby: the run is in: the cover goes");

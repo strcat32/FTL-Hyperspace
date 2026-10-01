@@ -13,7 +13,7 @@ namespace Duels
     namespace Net
     {
         static const uint16_t DEFAULT_PORT = 47620;
-        static const uint16_t PROTOCOL_VERSION = 13;   // bump whenever a message changes
+        static const uint16_t PROTOCOL_VERSION = 14;   // bump whenever a message changes
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;
@@ -171,6 +171,7 @@ namespace Duels
         // (the recorder's own clock when it hosted).
         double HostToLocalTime(double hostTime);
         double RttMs();
+        size_t PendingReliable();   // reliable messages sent and not acknowledged yet
 
         // Test conditions for our outgoing packets: fixed delay, random jitter (+/-) and loss in percent.
         // Setting the same on both sides simulates a symmetric connection.

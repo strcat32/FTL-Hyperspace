@@ -15,6 +15,7 @@
 namespace Duels
 {
     class Writer;
+    class Reader;
     struct Command;
 
     namespace Demo
@@ -27,6 +28,12 @@ namespace Duels
         static const uint8_t KIND_MARKER = 2;       // MARK_*
         static const uint8_t MARK_HEADER = 0, MARK_END = 1;
         static const uint8_t MARK_STATUS = 2;       // the match's status as it changes (BB): ranked (u8), why not (str)
+        static const uint8_t MARK_SWAP = 3;         // the other's full states came after the match (BA): how far their
+                                                    // demo's start is after ours (f64 ms), how many (u32)
+        // The swap after a match (BA, part 2): MSG_DEMO_STATES (reliable, either way, once the match is over) carries our
+        // full states in pieces: the deflated length (u32), the raw length (u32), the piece's place (u32), our demo's
+        // start on our clock (f64; -1 without a demo), the bytes. MSG_DEMO_SAVED (reliable): all of the other's came.
+        static const uint8_t MSG_DEMO_STATES = 43, MSG_DEMO_SAVED = 44;
 
         // A new match's connection (not a return after a lost one): a file opens, if demos are on (duels.cfg
         // record_demos, on by default; the `demo` verb). The end of the connection or leaving closes it.
@@ -39,8 +46,17 @@ namespace Duels
         void Sent(uint8_t type, const uint8_t *data, size_t size);
         void Received(uint8_t type, const uint8_t *data, size_t size);
         // Our own ship's state as the opponent would get it with all in sight (DuelsMatch.cpp writes it after the one
-        // that goes, with Vision::FullScope).
+        // that goes, with Vision::FullScope), recorded or not: it is kept for the swap after the match.
         void FullState(const Writer &w);
+        // The swap after a match (roadmap BA, part 2; the user, 2026-10-01): when a match is over the two games send each
+        // other their full states (nothing is hidden then), and each adds the other's to its demo at the times they went
+        // (on its own clock), so that each player's own demo has both sides. Match::OnFrame starts it at the match's end
+        // and sends its pieces, one a frame; the listener hands its messages here.
+        void StartSwap();
+        void SwapFrame(double now);
+        void OnSwapMessage(uint8_t type, Reader &r);
+        // Ours not all with the other game yet, or theirs not all here (LOBBY waits for it, 10 s at most).
+        bool SwapBusy();
         // The match's status (roadmap BB): ranked, or unranked and why; a recording keeps each change (MARK_STATUS), for
         // its replay's line at the top and the demo browser.
         void NoteStatus(bool ranked, const std::string &why);
@@ -62,7 +78,8 @@ namespace Duels
             double lengthMs = 0.0;
         };
         std::vector<DemoInfo> ListDemos();
-        // Test verb: demo (its state), demo on|off (record the next matches or not), demo stop (close the file now).
+        // Test verb: demo (its state), demo on|off (record the next matches or not), demo stop (close the file now),
+        // demo hold on|off (the swap's pieces wait: LOBBY's wait for the other game, in tests).
         bool RunVerb(const Command &cmd, std::string &message);
 
         // Replay (roadmap 5.1, docs/design/demos.md, stages 1-5): a demo played back in this game, in Net's replay mode.

@@ -1116,6 +1116,7 @@ namespace Duels
         double ReplayHostClock() { return g_session.replayHostClock; }
         double HostToLocalTime(double hostTime) { return g_session.replay ? hostTime - g_session.replayHostClock : PeerToLocalTime(hostTime); }
         double RttMs() { return g_session.link.RttMs(); }
+        size_t PendingReliable() { return g_session.link.PendingReliable(); }
 
         void SetMatchToken(uint64_t token) { g_session.matchToken = token; }
         bool Resumed() { return g_session.resumed; }
