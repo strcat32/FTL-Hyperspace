@@ -12,6 +12,7 @@
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
 #include "DuelsFair.h"
+#include "DuelsVision.h"
 #include "DuelsHacking.h"
 #include "DuelsAi.h"
 #include "DuelsMatch.h"
@@ -239,6 +240,7 @@ namespace Duels
         static void ResetMatch()
         {
             MatchState &m = g_match;
+            Vision::Reset();
             m.loadoutSent = false;
             m.replicaReady = false;
             m.peerReady = false;
@@ -788,6 +790,8 @@ namespace Duels
         {
             ShipManager *ship = G_->GetShipManager(0);
             if (!ship) return;
+            // What the opponent can see of our ship now (roadmap 4.5).
+            Vision::Update();
             Writer w;
             w.F64(now);
             w.U16(++g_match.stateSeq);
@@ -2160,10 +2164,11 @@ namespace Duels
             {
                 ShipManager *ship = G_->GetShipManager(shipId);
                 if (!ship) continue;
-                std::string signature = Signature(ship);
+                // Our ship's row says what the opponent sees of it (roadmap 4.5): the analysis compares only that.
+                std::string signature = Signature(ship) + "," + (shipId == 0 ? Vision::Signature() : std::string("-"));
                 if (signature == m.lastSignature[shipId]) continue;
                 m.lastSignature[shipId] = signature;
-                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms,crew_anim,bays,cloak,hack,mind");
+                if (!m.syncCsv.IsOpen()) m.syncCsv.Open("duels_sync.csv", "wall_ms,clock_offset_ms,ship,hull,shields,systems,weapons,drones,crew,crew_rooms,rooms,crew_anim,bays,cloak,hack,mind,vision");
                 Row row;
                 row << now << Net::LocalToPeerTime(0.0) << (shipId == 0 ? "own" : "replica") << signature;
                 m.syncCsv.WriteRow(row.str());
@@ -2700,7 +2705,7 @@ namespace Duels
                 << m.holdTimeouts << ", replica's last hull point kept " << m.hullKept << ", crystal shards lost before crossing "
                 << m.shardsLost << ", frames the replica's artillery was held back " << m.artilleryHeld << ", " << Drones::Status() << ", " << Crew::Status() << ", " << Rooms::Status()
                 << ", " << Bays::Status() << ", " << Hacking::Status() << ", " << Mind::Status() << ", " << Boarding::Status() << ", " << CrewXpStatus() << " (skill gains " << g_xpGains << " counted "
-                << g_xpCounted << "), " << Fair::Status();
+                << g_xpCounted << "), " << Fair::Status() << ", " << Vision::Status();
             return out.str();
         }
     }

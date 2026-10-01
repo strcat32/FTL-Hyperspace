@@ -92,6 +92,8 @@ namespace Duels
         bool HidesWarning(const WarningMessage *message);
 
         bool Active();
+        // The kind of the fight's environment now (NONE outside a fight, or with none).
+        uint8_t ActiveKind();
         std::string Status();
     }
 }

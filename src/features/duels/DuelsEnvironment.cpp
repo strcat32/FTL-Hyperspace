@@ -714,6 +714,11 @@ namespace Duels
             return g.active;
         }
 
+        uint8_t ActiveKind()
+        {
+            return g.active ? g.plan.kind : (uint8_t)NONE;
+        }
+
         bool HidesWarning(const WarningMessage *message)
         {
             if (!g.active || !message) return false;
