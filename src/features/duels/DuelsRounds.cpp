@@ -1605,21 +1605,49 @@ namespace Duels
         // The Duels window (DuelsWindow.cpp)
         // ---------------------------------------------------------------------------------------------------------
 
-        static std::string SettingsText(const Settings &s)
+        // A time in the settings: "5 min", or "45 s".
+        static std::string Duration(int seconds)
         {
-            // Why the match is unranked, every reason (debug mode, no public recording, the AI).
-            std::string reasons = GetState().debug ? "debug mode is on" : "";
+            return seconds % 60 == 0 ? std::to_string(seconds / 60) + " min" : std::to_string(seconds) + " s";
+        }
+
+        // A result's reason in a few words, for the Duels window's row.
+        static const char *ShortReason(uint8_t reason)
+        {
+            switch (reason)
+            {
+            case REASON_BOTH: return "both ships down";
+            case REASON_STALL: return "stalemate";
+            case REASON_LEFT: return "player left";
+            case REASON_SCORE: return "damage score";
+            case REASON_ESCAPED: return "ran away";
+            default: return ReasonText(reason);
+            }
+        }
+
+        // The settings as the Duels window's rows (AS): always five short lines.
+        static std::vector<std::string> SettingsRows(const Settings &s)
+        {
+            std::vector<std::string> rows;
+            std::string reasons = GetState().debug ? "debug mode" : "";
             if (g.local) reasons += std::string(reasons.empty() ? "" : ", ") + "against the AI";
             if (!s.record) reasons += std::string(reasons.empty() ? "" : ", ") + "not recorded";
-            const std::string unranked = reasons.empty() ? "" : "; unranked: " + reasons;
-            if (s.free) return std::string("a free fight (no rounds)") + unranked;
-            std::string text = "best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
-                               " s preparation, permanent death " + (s.permadeath ? "on" : "off");
-            if (s.stallSeconds > 0) text += ", no progress for " + std::to_string(s.stallSeconds / 60) + " min ends a round";
-            if (s.env == Environment::MODE_OFF || (s.env == Environment::MODE_AUTO && s.hazards == 0)) text += ", no hazards";
-            else if (s.env != Environment::MODE_AUTO) text += std::string(", every fight in ") + Environment::KindName(s.env - 1);
-            else if (s.hazards != Environment::DEFAULT_HAZARDS) text += ", hazards: " + Environment::HazardsName(s.hazards);
-            return text + unranked;
+            if (s.free)
+            {
+                rows = {"A free fight (no rounds)", "", ""};
+            }
+            else
+            {
+                rows.push_back("Best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) + " s preparation");
+                rows.push_back(std::string("Permanent death ") + (s.permadeath ? "on" : "off"));
+                rows.push_back(s.stallSeconds > 0 ? "No progress for " + Duration(s.stallSeconds) + " ends a round" : "No time limit without progress");
+            }
+            if (s.env == Environment::MODE_OFF || (s.env == Environment::MODE_AUTO && s.hazards == 0)) rows.push_back("No hazards");
+            else if (s.env != Environment::MODE_AUTO) rows.push_back(std::string("Every fight near ") + Environment::KindName(s.env - 1));
+            else if (s.hazards == Environment::DEFAULT_HAZARDS) rows.push_back("Hazards by chance from round 3");
+            else rows.push_back("Hazards from round 3: " + Environment::HazardsName(s.hazards));
+            rows.push_back(reasons.empty() ? "Ranked" : "Unranked: " + reasons);
+            return rows;
         }
 
         Summary GetSummary()
@@ -1630,11 +1658,11 @@ namespace Duels
             s.inMatch = d.phase != Phase::None && (g.active || d.phase == Phase::MatchOver);
             if (!s.inMatch)
             {
-                s.settings = "The next duel you host: " + SettingsText(g.settings) + ".";
+                s.rules = SettingsRows(g.settings);
                 return s;
             }
             uint8_t them = Other(g.me);
-            s.settings = SettingsText(d.settings);
+            s.rules = SettingsRows(d.settings);
             s.state = (d.settings.free ? std::string("free fight") : "round " + std::to_string(d.round) + " of " +
                                                                         std::to_string(d.settings.rounds)) +
                       ": " + PhaseName(d.phase);
@@ -1646,19 +1674,30 @@ namespace Duels
             s.score = ScoreLine();
             if (!d.settings.free && d.phase != Phase::MatchOver)
             {
-                s.environment = d.env.kind == Environment::NONE
-                                    ? std::string("This round's fight: open space, no hazard")
-                                    : std::string("This round's fight: near ") + Environment::KindName(d.env.kind) + " (" +
-                                          Environment::KindShort(d.env.kind) + ")";
+                s.fight = d.env.kind == Environment::NONE ? std::string("This round: open space")
+                                                          : std::string("This round: near ") + Environment::KindName(d.env.kind);
             }
+            int won = 0, lost = 0, drawn = 0;
             for (size_t i = 0; i < d.results.size(); ++i)
             {
                 const Result &result = d.results[i];
+                if (result.winner == NOBODY) ++drawn;
+                else if (result.winner == g.me) ++won;
+                else ++lost;
                 std::string line = "Round " + std::to_string(i + 1) + ": ";
                 line += result.winner == NOBODY ? "a draw" : result.winner == g.me ? "you won" : "you lost";
                 line += std::string(" (") + ReasonText(result.reason) + "; damage dealt " + Number(result.dealt[g.me]) + " : " +
                         Number(result.dealt[them]) + ")";
                 s.results.push_back(line);
+            }
+            s.tally = d.results.empty() ? std::string("Rounds: none decided yet")
+                                        : "Rounds: " + std::to_string(won) + " won, " + std::to_string(lost) + " lost, " +
+                                              std::to_string(drawn) + " drawn";
+            if (!d.results.empty())
+            {
+                const Result &last = d.results.back();
+                s.lastRound = std::string("Last round: ") + (last.winner == NOBODY ? "a draw" : last.winner == g.me ? "you won" : "you lost") +
+                              " (" + ShortReason(last.reason) + ")";
             }
             bool running = g.active && d.phase != Phase::MatchOver;
             s.ready = d.ready[g.me];

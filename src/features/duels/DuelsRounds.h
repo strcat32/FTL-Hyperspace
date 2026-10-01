@@ -109,11 +109,16 @@ namespace Duels
         struct Summary
         {
             bool inMatch = false;           // a match runs, or has just ended
-            std::string settings;           // "best of 5 rounds, 60 s preparation, permanent death on"
+            // The window's rows (AS): each a short line, the same rows whatever the match.
+            std::vector<std::string> rules; // the settings (the next duel's outside a match): "Best of 5 rounds, 60 s
+                                            // preparation", "Permanent death on", "No progress for 5 min ends a round",
+                                            // "No hazards", "Ranked" (or "Unranked: " and why)
             std::string state;              // "round 2 of 5: fight"
-            std::string score;              // "rounds won 1 : 0, damage score 34.0 : 12.0"
-            std::string environment;        // "This round's fight: near a sun (solar flares every 28-34 s)"
-            std::vector<std::string> results;
+            std::string score;              // "points 1 : 0, damage score 34.0 : 12.0"
+            std::string fight;              // "This round: near a sun"
+            std::string tally;              // "Rounds: 2 won, 1 lost, 0 drawn"
+            std::string lastRound;          // "Last round: you won (ship destroyed)"
+            std::vector<std::string> results;   // each round's, in full (the end screen)
             bool canReady = false, ready = false;
             bool canConcede = false, canOfferRoundDraw = false, canOfferMatchDraw = false, canForfeit = false;
             bool drawToAnswer = false;      // the opponent offers a draw

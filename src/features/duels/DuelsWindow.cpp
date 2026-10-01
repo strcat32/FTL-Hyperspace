@@ -60,6 +60,7 @@ namespace Duels
         static const float WIDTH = 760.f, HEIGHT = 600.f, TOP = 100.f, PAD = 20.f;
         static const float BAND_H = 58.f, ACTION_H = 34.f;
         static const int FONT = 10, TEXT = 12, BIG = 24;
+        static const float ROW_H = 15.f;   // a row of the left column (font 10)
         static const std::string TITLE = "FTL: DUELS";
 
         // The icons Duels draws in the weapon and drone bays (tools/make-bay-icons.py), and what they stand for.
@@ -78,13 +79,15 @@ namespace Duels
                                         {"drone_hull", "Hull repair"},     {"drone_repair", "System repair"},
                                         {"drone_battle", "Anti-personnel"}, {"drone_boarder", "Boarding"}};
 
-        static const char *const HOW_TO_WIN =
-            "A round won is 1 point, a drawn round half a point for each player. Win more points than the opponent can "
-            "still reach; with points equal at the end, the higher damage score wins. A round is won by destroying the "
-            "other ship or its whole crew; if both go down at once, the round's "
-            "damage score decides. A player who jumps away (the FTL drive charged) gives the other half a point. Each "
-            "round begins with a timed preparation: repairs, the round's scrap, the shop and upgrades (only then). If "
-            "neither ship's hull or crew reaches a new low for a while, the lows decide the round.";
+        // How to win, in short points of one line each (AS; the rules are in docs/design/game-rules.md).
+        static const char *const HOW_TO_WIN[] = {
+            "A round: destroy their ship or their whole crew",
+            "A round won: 1 point; a draw: half a point each",
+            "Jumping away gives them half a point",
+            "Most points wins; equal points: damage score",
+            "Before each round: repairs, scrap, shop",
+            "A stalemate: the lowest hull and crew decide",
+        };
 
         static bool InGame()
         {
@@ -311,61 +314,56 @@ namespace Duels
         }
 
         // The left column: the match (who, where, the settings, its state and results) and how to win; returns its end.
+        // Every row is one line, cut to fit, and the rows are the same whatever the match (AS: a long line pushed "How
+        // to win" out of the window).
         static float RenderMatchColumn(const Rounds::Summary &s, float x, float y, float w)
         {
             const GL_Color white = Rgb(255, 255, 255), soft = Rgb(206, 210, 216), gold = Rgb(255, 235, 170);
+            auto row = [&](const std::string &text, GL_Color colour)
+            {
+                if (!text.empty()) Text(FONT, x, y, Fit(FONT, text, w), colour);
+                y += ROW_H;
+            };
             y += Style::Label(x, y, "THE MATCH") + 8.f;
             std::string opponent = Net::IsConnected() ? Net::PeerName() : Rounds::IsLocal() ? Ai::Name() : "";
+            std::string code = Net::RelayCode();
             if (Rounds::IsLocal())
             {
-                Text(FONT, x, y, "Opponent: " + Match::ScreenName(opponent), gold);
-                y += 15.f;
-                Text(FONT, x, y, "FTL's AI, on this computer", soft);
-                y += 17.f;
+                row("Opponent: " + Match::ScreenName(opponent), gold);
+                row("FTL's AI, on this computer", soft);
             }
             else if (opponent.empty() && Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
             {
                 // The room waits for its guest (HOST DUEL, or the console's host relay).
-                Text(FONT, x, y, "Room " + Net::RelayCode() + " is open", gold);
-                y += 15.f;
-                y += Paragraph(FONT, x, y, w, "Waiting for a guest: give the other player the code, or they find the room in JOIN "
-                                              "DUEL's list if it is listed.", soft) + 6.f;
+                row("Room " + code + " is open: waiting for a guest", gold);
+                row("Give them the code (or JOIN DUEL's list)", soft);
             }
             else if (opponent.empty() && Net::GetPhase() == Net::Phase::Joining)
             {
-                y += Paragraph(FONT, x, y, w, "Joining the room" + (Net::RelayCode().empty() ? std::string() : " " + Net::RelayCode()) + "...",
-                               gold) + 6.f;
+                row("Joining the room" + (code.empty() ? std::string() : " " + code) + "...", gold);
+                row("", soft);
             }
             else if (opponent.empty())
             {
-                y += Paragraph(FONT, x, y, w, "Not in a duel. Host or join one from the main menu, or from the console (Tab): host "
-                                              "relay, lobby, join <code>.", soft) + 6.f;
+                row("Not in a duel: host or join one in the menu", soft);
+                row("The next duel you host:", soft);
             }
             else
             {
-                Text(FONT, x, y, "Opponent: " + Match::ScreenName(opponent), gold);
-                y += 15.f;
-                Text(FONT, x, y, Net::UsesRelay() ? "Room: " + Net::RelayCode() : "Direct connection", soft);
-                y += 17.f;
+                row("Opponent: " + Match::ScreenName(opponent), gold);
+                row(Net::UsesRelay() ? "Room " + code : "Direct connection", soft);
             }
-            y += Paragraph(FONT, x, y, w, "Settings: " + s.settings, soft) + 5.f;
-            if (s.inMatch)
-            {
-                Text(FONT, x, y, "Now: " + s.state, white);
-                y += 15.f;
-                if (!s.score.empty())
-                {
-                    Text(FONT, x, y, std::string(1, (char)toupper(s.score[0])) + s.score.substr(1), white);
-                    y += 15.f;
-                }
-                if (!s.environment.empty()) y += Paragraph(FONT, x, y, w, s.environment, white) + 2.f;
-                size_t first = s.results.size() > 5 ? s.results.size() - 5 : 0;
-                for (size_t i = first; i < s.results.size(); ++i) y += Paragraph(FONT, x + 10.f, y, w - 10.f, s.results[i], soft) + 1.f;
-                if (!s.drawText.empty()) y += Paragraph(FONT, x, y, w, s.drawText, gold) + 2.f;
-            }
-            y += 12.f;
+            for (const std::string &rule : s.rules) row(rule, soft);
+            y += 6.f;
+            row(s.inMatch ? "Now: " + s.state : "", white);
+            row(s.inMatch && !s.score.empty() ? std::string(1, (char)toupper(s.score[0])) + s.score.substr(1) : "", white);
+            row(s.fight, white);
+            row(s.inMatch ? s.tally : "", white);
+            row(s.lastRound, soft);
+            row(s.drawText, gold);
+            y += 10.f;
             y += Style::Label(x, y, "HOW TO WIN") + 8.f;
-            y += Paragraph(FONT, x, y, w, HOW_TO_WIN, soft);
+            for (const char *point : HOW_TO_WIN) row(std::string("- ") + point, soft);
             return y;
         }
 

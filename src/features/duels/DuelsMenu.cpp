@@ -155,8 +155,8 @@ namespace Duels
                              g.nameInput ? g.nameInput->pos : 0, true, false);
             float note = top + 104.f;
             if (!g.nameError.empty()) Text(FONT, left, note, g.nameError, Rgb(255, 140, 120));
-            else Paragraph(FONT, left, note, w - 60.f, "Kept in duels.cfg (the console's name command changes it). Until the Steam login comes, "
-                                                   "a duel is unranked.", Rgb(190, 196, 204));
+            else Paragraph(FONT, left, note, w - 60.f, "Kept in duels.cfg (the console's name command changes it). Unranked until "
+                                                   "the Steam login comes.", Rgb(190, 196, 204));
             ButtonAt(g.ok, x + w - 30.f - 120.f, y + h - 56.f, 120.f, "OK");
         }
 
@@ -164,27 +164,25 @@ namespace Duels
         // The tutorial box
         // ---------------------------------------------------------------------------------------------------------
 
+        // A duel in short points of one line each (AS).
         static const char *const TUTORIAL[] = {
-            "1. Host a duel or join one: HOST DUEL and JOIN DUEL here in the menu. The room list shows the open rooms; "
-            "a room code joins one that isn't listed.",
-            "2. Choose your ship in FTL's hangar and start. The duel begins when both players are in.",
-            "3. Each round begins with a preparation: the ship is repaired, the round's scrap arrives, and the shop, "
-            "the upgrades, the crew and the equipment are open. Press READY when you are done.",
-            "4. Then the fight. Destroy the other ship or its whole crew: a point. A drawn round gives each player half a "
-            "point, and a player who jumps away with a charged FTL drive gives the other half a point.",
-            "5. Whoever can't be caught on points any more wins the match. The DUELS button at the top of the game has "
-            "the match, how to win, the icons and the buttons.",
+            "- HOST DUEL or JOIN DUEL here in the menu (a code joins any room)",
+            "- Pick your ship in the hangar and start",
+            "- Before each round: repairs, scrap, the shop; then READY",
+            "- A round: destroy their ship or their whole crew for a point",
+            "- A draw: half a point each; jumping away: half for them",
+            "- Most points wins the match",
+            "- The DUELS button: the match, how to win, the icons",
         };
 
         static void RenderTutorial()
         {
-            const float w = 720.f, h = 520.f, x = (1280.f - w) / 2.f, y = 110.f;
+            const float w = 720.f, h = 380.f, x = (1280.f - w) / 2.f, y = 170.f;
             Style::Dialog(x, y, w, h, "FTL: DUELS");
             float left = x + 30.f, top = y + 24.f, width = w - 60.f;
             top += Style::Label(left, top, "A DUEL, IN SHORT") + 14.f;
-            for (const char *paragraph : TUTORIAL) top += Paragraph(TEXT, left, top, width, paragraph, Rgb(226, 230, 236)) + 12.f;
-            Paragraph(FONT, left, top + 4.f, width, "The players' guide has every button and console command. Test duels on "
-                                                    "this computer, a relay of your own and the settings are in it too.",
+            for (const char *point : TUTORIAL) top += Paragraph(TEXT, left, top, width, point, Rgb(226, 230, 236)) + 10.f;
+            Paragraph(FONT, left, top + 8.f, width, "More in the players' guide: every button and command, tests on this computer.",
                       Rgb(190, 196, 204));
 
             // "Don't show this again": the box and its label (a click on either).
