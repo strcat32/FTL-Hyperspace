@@ -8,9 +8,11 @@
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsAi.h"
+#include "DuelsBays.h"
 #include "DuelsRounds.h"
 #include "DuelsScript.h"
 #include "DuelsRefit.h"
+#include "DuelsShips.h"
 #include "DuelsTrace.h"
 #include "DuelsWindow.h"
 #include "DuelsWire.h"
@@ -38,7 +40,13 @@ namespace Duels
         // the round's start) restarts the timer; when it runs out, the lows decide, and a lead under 10 is a draw.
         static const float STALL_STEP = 0.02f;
         static const float STALL_DRAW_LEAD = 10.f;
+        // The ship choice (roadmap 3.9; rules, section 4): a ban's time and the pick's, then the server bans or picks
+        // for the player; the bans leave this many types to pick from.
+        static const double BAN_MS = 20000.0;
+        static const double PICK_MS = 30000.0;
+        static const int OFFER_SIZE = 3;
 
+        // The third byte of an event is the round it belongs to; a ban's is its number in the choice instead.
         enum EventType : uint8_t
         {
             EV_READY = 1,        // done preparing
@@ -49,7 +57,25 @@ namespace Duels
             EV_DRAW_ANSWER = 6,  // arg: 1 accepted, 0 declined
             EV_UNREADY = 7,      // Ready taken back (the preparation goes on to its end)
             EV_ESCAPE = 8,       // we jumped away with a charged FTL drive (roadmap AD)
-            EV_DRAW_BACK = 9     // our draw offer taken back (roadmap AT)
+            EV_DRAW_BACK = 9,    // our draw offer taken back (roadmap AT)
+            EV_BAN = 10,         // arg: a ship type (DuelsShips.h), banned in our turn (roadmap 3.9)
+            EV_PICK = 11         // arg: the offered ship's index
+        };
+
+        // How the ships are chosen (roadmap 3.9).
+        enum ShipsMode : uint8_t
+        {
+            SHIPS_OWN = 0,       // each player's own, from FTL's hangar
+            SHIPS_BANS = 1,      // bans in turn from a pool of types, then each picks one of the three left
+            SHIPS_LIST = 2,      // each picks one from the host's list (exact layouts)
+            SHIPS_MODES = 3
+        };
+
+        enum PickState : uint8_t
+        {
+            PICK_NONE = 0,
+            PICK_OWN = 1,        // the player picked
+            PICK_SERVER = 2      // time ran out: the server picked for them
         };
 
         enum Reason : uint8_t
@@ -90,6 +116,16 @@ namespace Duels
             // Public recording (roadmap 3.5): the server records the match (roadmap 4.2, 5.1); a match is ranked only
             // when it is recorded, so switching it off makes the match unranked.
             bool record = true;
+            // The ships (roadmap 3.9): the way they are chosen, the types the bans start from, the host's list.
+            uint8_t ships = SHIPS_OWN;
+            uint16_t pool = Ships::ALL_TYPES;
+            std::vector<std::string> list;
+        };
+
+        struct ShipBan
+        {
+            uint8_t type = 0;
+            bool byServer = false;      // time ran out: the server banned it for the player
         };
 
         struct Result
@@ -123,6 +159,14 @@ namespace Duels
             Environment::Plan env;          // this round's fight: its environment and the seed of its schedule
             uint8_t matchWinner = NOBODY;
             uint8_t matchReason = REASON_NONE;
+            // The ship choice (Phase::Choice): who bans first (the bans go in turn), the bans so far, the ships offered
+            // once they are done, whether each player has picked (what, the host's game keeps to itself until the
+            // reveal), and each player's ship from the reveal on.
+            uint8_t firstBanner = HOST;
+            std::vector<ShipBan> bans;
+            std::vector<std::string> offer;
+            uint8_t picked[2] = {PICK_NONE, PICK_NONE};
+            std::string ships[2];
         };
 
         // The damage our own ship takes in a round, counted by this game (the owner decides about its ship).
@@ -175,6 +219,14 @@ namespace Duels
             bool drawAnswered = false;
             double lastSecondsShown = -1.0;
             std::mt19937 random;            // host: the shops' stock
+
+            // The ship choice: the picks (host: both, by the offer's index; until the reveal only the host's game knows
+            // them), ours, and what of the choice this game has announced so far.
+            int picks[2] = {-1, -1};
+            int ownPick = -1;
+            size_t bansShown = 0, offerShown = 0;
+            uint8_t pickedShown[2] = {PICK_NONE, PICK_NONE};
+            uint8_t turnShown = NOBODY;
         };
 
         static Local g;
@@ -237,6 +289,7 @@ namespace Duels
             case Phase::Ending: return "the round is ending";
             case Phase::RoundOver: return "round over";
             case Phase::MatchOver: return "match over";
+            case Phase::Choice: return "ship choice";
             default: return "no match";
             }
         }
@@ -265,6 +318,61 @@ namespace Duels
         static uint16_t ScrapFor(int round)
         {
             return (uint16_t)(6 * (15 + 6 * (round - 1)) + (round == 1 ? 10 : 0));
+        }
+
+        // The ship choice (roadmap 3.9): a match's, unless each player brings their own ship (or it is a free fight).
+        static bool ChoosesShips(const Settings &s)
+        {
+            return !s.free && s.ships != SHIPS_OWN;
+        }
+
+        static int TypeCount(uint16_t types)
+        {
+            int count = 0;
+            for (int type = 0; type < Ships::TYPE_COUNT; ++type) count += (types >> type) & 1;
+            return count;
+        }
+
+        // The bans: as many as leave three types of the pool (rules, section 4: seven of ten); none for a list.
+        static int BansTotal(const Data &d)
+        {
+            if (d.settings.ships != SHIPS_BANS) return 0;
+            return std::max(0, TypeCount(d.settings.pool & Ships::ALL_TYPES) - OFFER_SIZE);
+        }
+
+        static bool BansDone(const Data &d)
+        {
+            return (int)d.bans.size() >= BansTotal(d);
+        }
+
+        // Whose ban the one at this index is: the first banner's, then in turn (with an odd number of bans the first
+        // banner has one more).
+        static uint8_t BannerOf(const Data &d, size_t index)
+        {
+            return index % 2 == 0 ? d.firstBanner : Other(d.firstBanner);
+        }
+
+        // The pool's types not banned yet.
+        static uint16_t TypesLeft(const Data &d)
+        {
+            uint16_t left = d.settings.pool & Ships::ALL_TYPES;
+            for (const ShipBan &ban : d.bans) left &= (uint16_t)~(1u << ban.type);
+            return left;
+        }
+
+        static std::string ShipsModeName(const Settings &s)
+        {
+            switch (s.ships)
+            {
+            case SHIPS_BANS: return "bans from " + Ships::TypesText(s.pool) + ", then a pick";
+            case SHIPS_LIST:
+            {
+                std::string list;
+                for (const std::string &ship : s.list) list += (list.empty() ? "" : ", ") + Ships::Title(ship);
+                return "a pick from " + (list.empty() ? std::string("an empty list") : list);
+            }
+            default: return "each player's own";
+            }
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -321,6 +429,23 @@ namespace Duels
             w.U32(d.env.seed);
             w.U8(d.matchWinner);
             w.U8(d.matchReason);
+            w.U8(d.settings.ships);
+            w.U16(d.settings.pool);
+            w.U8((uint8_t)std::min<size_t>(d.settings.list.size(), 255));
+            for (size_t i = 0; i < d.settings.list.size() && i < 255; ++i) w.Str(d.settings.list[i]);
+            w.U8(d.firstBanner);
+            w.U8((uint8_t)std::min<size_t>(d.bans.size(), 255));
+            for (size_t i = 0; i < d.bans.size() && i < 255; ++i)
+            {
+                w.U8(d.bans[i].type);
+                w.Bool(d.bans[i].byServer);
+            }
+            w.U8((uint8_t)std::min<size_t>(d.offer.size(), 255));
+            for (size_t i = 0; i < d.offer.size() && i < 255; ++i) w.Str(d.offer[i]);
+            w.U8(d.picked[HOST]);
+            w.U8(d.picked[GUEST]);
+            w.Str(d.ships[HOST]);
+            w.Str(d.ships[GUEST]);
         }
 
         static bool ReadData(Reader &r, Data &d)
@@ -374,8 +499,28 @@ namespace Duels
             d.env.seed = r.U32();
             d.matchWinner = r.U8();
             d.matchReason = r.U8();
-            return r.Ok() && (uint8_t)d.phase <= (uint8_t)Phase::MatchOver && d.env.kind < Environment::KIND_COUNT &&
-                   d.settings.env < Environment::MODE_COUNT;
+            d.settings.ships = r.U8();
+            d.settings.pool = r.U16();
+            d.settings.list.resize(r.U8());
+            for (std::string &ship : d.settings.list) ship = r.Str();
+            d.firstBanner = r.U8();
+            d.bans.resize(r.U8());
+            bool bansOk = true;
+            for (ShipBan &ban : d.bans)
+            {
+                ban.type = r.U8();
+                ban.byServer = r.Bool();
+                if (ban.type >= Ships::TYPE_COUNT) bansOk = false;
+            }
+            d.offer.resize(r.U8());
+            for (std::string &ship : d.offer) ship = r.Str();
+            d.picked[HOST] = r.U8();
+            d.picked[GUEST] = r.U8();
+            d.ships[HOST] = r.Str();
+            d.ships[GUEST] = r.Str();
+            return r.Ok() && (uint8_t)d.phase <= (uint8_t)Phase::Choice && d.env.kind < Environment::KIND_COUNT &&
+                   d.settings.env < Environment::MODE_COUNT && d.settings.ships < SHIPS_MODES && d.firstBanner <= GUEST &&
+                   bansOk;
         }
 
         static void SendData()
@@ -397,7 +542,7 @@ namespace Duels
             Writer w;
             w.U8(type);
             w.U8(arg);
-            w.U8(g.data.round);
+            w.U8(type == EV_BAN ? (uint8_t)g.data.bans.size() : g.data.round);
             Net::Send(MSG_MATCH_EVENT, w, true);
             ++g.eventsSent;
         }
@@ -527,11 +672,85 @@ namespace Duels
             if (g.local) Ai::OnRoundEnd(ownDown, theirsDown);
         }
 
+        // The ship choice's news since this game last showed it, in the feed: the bans, whose ban it is, the ships to
+        // pick from, the picks (both games alike; the host's game changes the choice, the guest's learns it).
+        static void ChoiceNews()
+        {
+            const Data &d = g.data;
+            uint8_t them = Other(g.me);
+            for (size_t i = g.bansShown; i < d.bans.size(); ++i)
+            {
+                uint8_t banner = BannerOf(d, i);
+                std::string type = Ships::TypeName(d.bans[i].type);
+                if (d.bans[i].byServer) Announce("Time is up: the " + type + " is banned for " + Who(banner));
+                else Announce(banner == g.me ? "You ban the " + type : Who(banner) + " bans the " + type);
+            }
+            g.bansShown = d.bans.size();
+            uint8_t turn = BansDone(d) ? NOBODY : BannerOf(d, d.bans.size());
+            if (turn == g.me && g.turnShown != g.me) Announce("Your ban: 'ban <type>' (" + std::to_string((int)(BAN_MS / 1000.0)) + " s)");
+            g.turnShown = turn;
+            if (!d.offer.empty() && g.offerShown != d.offer.size())
+            {
+                std::string list;
+                for (size_t i = 0; i < d.offer.size(); ++i) list += (i ? ", " : "") + std::to_string(i + 1) + " " + Ships::Title(d.offer[i]);
+                Announce("Pick your ship: " + list + ": 'pick <n>' (" + std::to_string((int)(PICK_MS / 1000.0)) + " s)");
+            }
+            g.offerShown = d.offer.size();
+            if (d.picked[g.me] == PICK_OWN && g.pickedShown[g.me] == PICK_NONE && g.ownPick >= 0 && g.ownPick < (int)d.offer.size())
+            {
+                Announce("You pick the " + Ships::Title(d.offer[g.ownPick]));
+            }
+            if (d.picked[them] == PICK_OWN && g.pickedShown[them] == PICK_NONE) Announce(Who(them) + " has picked");
+            g.pickedShown[HOST] = d.picked[HOST];
+            g.pickedShown[GUEST] = d.picked[GUEST];
+        }
+
+        static void EnterChoice()
+        {
+            const Data &d = g.data;
+            g.bansShown = g.offerShown = 0;
+            g.pickedShown[HOST] = g.pickedShown[GUEST] = PICK_NONE;
+            g.turnShown = NOBODY;
+            g.ownPick = -1;
+            Log("Rounds: the ship choice: %s; first banner %s", ShipsModeName(d.settings).c_str(), d.firstBanner == HOST ? "host" : "guest");
+            if (d.settings.ships == SHIPS_LIST) Announce("Ship choice: each picks one of the host's list");
+            else
+            {
+                Announce("Ship choice: " + std::to_string(BansTotal(d)) + " bans in turn, " + (d.firstBanner == g.me ? std::string("you") : Who(d.firstBanner)) +
+                         " first; then each picks one of the " + std::to_string(std::min(OFFER_SIZE, TypeCount(d.settings.pool))) + " ships left");
+            }
+            ChoiceNews();
+        }
+
+        // The reveal (roadmap 3.9): each game takes its player's ship by FTL's ship switch (Hyperspace's, as its
+        // console's switch_ship), and the match starts from its levels and crew.
+        static void TakeChosenShip()
+        {
+            const Data &d = g.data;
+            const std::string &ours = d.ships[g.me], &theirs = d.ships[Other(g.me)];
+            if (ours.empty()) return;
+            ShipManager *own = G_->GetShipManager(0);
+            WorldManager *world = G_->GetWorld();
+            if (own && world && world->playerShip && own->myBlueprint.blueprintName != ours)
+            {
+                // The weapon and drone bays come with a ship's blueprint as FTL builds the ship (ShipManager::OnInit),
+                // which the switch doesn't call: its blueprint gets them first, and its layout's cut is made.
+                Bays::PrepareBlueprint(G_->GetBlueprints()->GetShipBlueprint(ours, -1));
+                bool switched = world->SwitchShip(ours);
+                Log("Rounds: our ship for the match: %s (%s)", ours.c_str(), switched ? "switched" : "the switch failed");
+                Refit::OnMatchStart();
+            }
+            Log("Rounds: the ships: host %s, guest %s", d.ships[HOST].c_str(), d.ships[GUEST].c_str());
+            Announce("Your ship: the " + Ships::Title(ours) + (d.picked[g.me] == PICK_SERVER ? " (time was up: the server's pick)" : "") +
+                     ". " + Who(Other(g.me)) + "'s: the " + Ships::Title(theirs));
+        }
+
         static void EnterPrep()
         {
             const Data &d = g.data;
             Environment::End();
             Match::NewFight();
+            if (d.round == 1) TakeChosenShip();
             Refit::Restore(d.settings.permadeath);
             if (g.scrapRound != d.round)
             {
@@ -684,6 +903,7 @@ namespace Duels
             Log("Rounds: phase %s, round %u", PhaseName(d.phase), (unsigned)d.round);
             switch (d.phase)
             {
+            case Phase::Choice: EnterChoice(); break;
             case Phase::Prep: EnterPrep(); break;
             case Phase::Starting: EnterStarting(); break;
             case Phase::Ending:   // a ship is down: no more flares or rocks, and no new shots
@@ -729,6 +949,105 @@ namespace Duels
             ClearDraw();
             if (d.settings.free) SetPhase(Phase::Starting, -1.0);
             else SetPhase(Phase::Prep, Now() + d.settings.prepSeconds * 1000.0);
+        }
+
+        // The ships to pick from: the host's list, or each type the bans left, with one of its layouts at random (the
+        // server's, rules section 4).
+        static void MakeOffer()
+        {
+            Data &d = g.data;
+            d.offer.clear();
+            if (d.settings.ships == SHIPS_LIST) d.offer = d.settings.list;
+            else
+            {
+                uint16_t left = TypesLeft(d);
+                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
+                {
+                    std::vector<std::string> variants = Ships::Variants(type);
+                    if (!(left & (1 << type)) || variants.empty()) continue;
+                    d.offer.push_back(variants[std::uniform_int_distribution<size_t>(0, variants.size() - 1)(g.random)]);
+                }
+            }
+            d.phaseEnd = Now() + PICK_MS;
+            g.dirty = true;
+        }
+
+        // Test verb "match firstban host|guest|random": who bans first in the next matches (else the server's draw).
+        static uint8_t g_firstBanner = NOBODY;
+
+        // Before round 1 (roadmap 3.9): the server draws who bans first.
+        static void StartChoice()
+        {
+            Data &d = g.data;
+            d.round = 0;
+            d.firstBanner = g_firstBanner != NOBODY ? g_firstBanner : std::uniform_int_distribution<int>(0, 1)(g.random) ? GUEST : HOST;
+            d.bans.clear();
+            d.offer.clear();
+            d.picked[HOST] = d.picked[GUEST] = PICK_NONE;
+            d.ships[HOST].clear();
+            d.ships[GUEST].clear();
+            g.picks[HOST] = g.picks[GUEST] = -1;
+            if (BansDone(d)) MakeOffer();   // a list, or a pool of three types or fewer
+            if (BansDone(d) && d.offer.empty())
+            {
+                Note("no ships to choose from: each player keeps their own");
+                StartRound(1);
+                return;
+            }
+            SetPhase(Phase::Choice, Now() + (d.offer.empty() ? BAN_MS : PICK_MS));
+        }
+
+        // Both have picked: the ships are known to both games, and the first preparation begins with them.
+        static void Reveal()
+        {
+            Data &d = g.data;
+            for (uint8_t player : {HOST, GUEST})
+            {
+                int pick = g.picks[player] >= 0 && g.picks[player] < (int)d.offer.size() ? g.picks[player] : 0;
+                d.ships[player] = d.offer.empty() ? std::string() : d.offer[pick];
+            }
+            StartRound(1);
+        }
+
+        static void AddBan(uint8_t type, bool byServer)
+        {
+            Data &d = g.data;
+            ShipBan ban;
+            ban.type = type;
+            ban.byServer = byServer;
+            Log("Rounds: ban %u: %s by %s%s", (unsigned)d.bans.size() + 1, Ships::TypeWord(type),
+                BannerOf(d, d.bans.size()) == HOST ? "host" : "guest", byServer ? " (time was up)" : "");
+            d.bans.push_back(ban);
+            g.dirty = true;
+            if (BansDone(d)) MakeOffer();
+            else d.phaseEnd = Now() + BAN_MS;
+        }
+
+        // Time is up (rules, section 4): the server bans a type at random for the player whose ban it is, or picks a
+        // ship at random for each player who hasn't.
+        static void ChoiceTimeout()
+        {
+            Data &d = g.data;
+            if (!BansDone(d))
+            {
+                std::vector<uint8_t> types;
+                uint16_t left = TypesLeft(d);
+                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
+                {
+                    if (left & (1 << type)) types.push_back((uint8_t)type);
+                }
+                if (types.empty()) MakeOffer();
+                else AddBan(types[std::uniform_int_distribution<size_t>(0, types.size() - 1)(g.random)], true);
+                return;
+            }
+            for (uint8_t player : {HOST, GUEST})
+            {
+                if (d.picked[player] != PICK_NONE || d.offer.empty()) continue;
+                g.picks[player] = std::uniform_int_distribution<int>(0, (int)d.offer.size() - 1)(g.random);
+                d.picked[player] = PICK_SERVER;
+                Log("Rounds: time was up: the %s's ship is picked: %s", player == HOST ? "host" : "guest", d.offer[g.picks[player]].c_str());
+            }
+            Reveal();
         }
 
         static void EndMatch(uint8_t winner, uint8_t reason)
@@ -874,6 +1193,24 @@ namespace Duels
                     Announce(player == g.me ? std::string("You take back your draw offer") : Who(player) + " takes back the draw offer");
                 }
                 break;
+            case EV_BAN:
+                // In the player's turn, a type still in the choice (roadmap 3.9).
+                if (d.phase == Phase::Choice && !BansDone(d) && BannerOf(d, d.bans.size()) == player && arg < Ships::TYPE_COUNT &&
+                    (TypesLeft(d) & (1 << arg)))
+                {
+                    AddBan(arg, false);
+                }
+                break;
+            case EV_PICK:
+                if (d.phase == Phase::Choice && BansDone(d) && d.picked[player] == PICK_NONE && arg < d.offer.size())
+                {
+                    g.picks[player] = arg;
+                    d.picked[player] = PICK_OWN;
+                    g.dirty = true;
+                    Log("Rounds: the %s has picked", player == HOST ? "host" : "guest");
+                    if (d.picked[HOST] != PICK_NONE && d.picked[GUEST] != PICK_NONE) Reveal();
+                }
+                break;
             case EV_DRAW_ANSWER:
                 if (d.drawBy == Other(player))
                 {
@@ -938,6 +1275,9 @@ namespace Duels
             Data &d = g.data;
             switch (d.phase)
             {
+            case Phase::Choice:
+                if (now >= d.phaseEnd) ChoiceTimeout();
+                break;
             case Phase::Prep:
                 if (now >= d.phaseEnd || (d.ready[HOST] && d.ready[GUEST])) SetPhase(Phase::Starting, -1.0);
                 break;
@@ -1002,6 +1342,18 @@ namespace Duels
             if (!text.empty() && Environment::ParseHazards(text, hazards)) s.hazards = hazards;
             text = Config::Value("match_record");
             if (text == "on" || text == "off") s.record = text == "on";
+            text = Config::Value("match_ships");
+            if (text == "own" || text == "bans" || text == "list") s.ships = text == "own" ? SHIPS_OWN : text == "bans" ? SHIPS_BANS : SHIPS_LIST;
+            uint16_t pool;
+            if (Ships::ParseTypes(Config::Value("match_pool"), pool)) s.pool = pool;
+            std::vector<std::string> list;
+            std::stringstream ships(Config::Value("match_list"));
+            std::string ship, blueprint;
+            while (std::getline(ships, ship, ','))
+            {
+                if (Ships::ParseShip(ship, blueprint)) list.push_back(blueprint);
+            }
+            if (!list.empty()) s.list = list;
         }
 
         // Kept for the next start; a test scenario leaves duels.cfg as it is (the next test starts from its own).
@@ -1019,6 +1371,11 @@ namespace Duels
             hazards.erase(std::remove(hazards.begin(), hazards.end(), ' '), hazards.end());
             Config::SaveValue("match_hazards", hazards);
             Config::SaveValue("match_record", s.record ? "on" : "off");
+            Config::SaveValue("match_ships", s.ships == SHIPS_BANS ? "bans" : s.ships == SHIPS_LIST ? "list" : "own");
+            Config::SaveValue("match_pool", Ships::TypesText(s.pool));
+            std::string list;
+            for (const std::string &ship : s.list) list += (list.empty() ? "" : ",") + ship;
+            Config::SaveValue("match_list", list);
         }
 
         void Reset()
@@ -1070,7 +1427,8 @@ namespace Duels
                                           : "A match of best of " + std::to_string(g.data.settings.rounds) + " rounds, " +
                                                 std::to_string(g.data.settings.prepSeconds) + " s preparation, permanent death " +
                                                 (g.data.settings.permadeath ? "on" : "off"));
-            StartRound(1);
+            if (ChoosesShips(g.data.settings)) StartChoice();
+            else StartRound(1);
         }
 
         void StartLocal()
@@ -1084,6 +1442,7 @@ namespace Duels
             Refit::OnMatchStart();
             g.data = Data();
             g.data.settings = g.settings;
+            g.data.settings.ships = SHIPS_OWN;   // the AI's ship is chosen in HOST DUEL's window
             g.data.token = 1;
             if (g.data.settings.free) g.data.settings.rounds = 1;
             Announce(g.data.settings.free ? std::string("A free fight against the AI (no rounds)")
@@ -1205,8 +1564,9 @@ namespace Duels
                 if (!r.Ok()) return;
                 ++g.eventsReceived;
                 if (g.me != HOST) return;   // events go to the host
-                // An event of an earlier round (a defeat reported as the round ended) doesn't count in this one.
-                if (round != g.data.round && event != EV_FORFEIT) return;
+                // An event of an earlier round (a defeat reported as the round ended) doesn't count in this one, nor a
+                // ban made for an earlier turn (the server banned for the player as it came).
+                if (event == EV_BAN ? round != g.data.bans.size() : round != g.data.round && event != EV_FORFEIT) return;
                 HostEvent(GUEST, event, arg);
             }
         }
@@ -1223,7 +1583,7 @@ namespace Duels
             if (!g.active || !(g.local || Net::IsConnected())) return;
             Data &d = g.data;
             if (g.local) Ai::OnFrame();
-
+            if (d.phase == Phase::Choice) ChoiceNews();
 
             if (d.phase == Phase::Fight && !g.fightBegun && d.fightStart >= 0.0 && now >= FromHost(d.fightStart)) BeginFight();
             if (g.fightBegun && (d.phase == Phase::Fight || d.phase == Phase::Ending)) CountDamage();
@@ -1369,7 +1729,8 @@ namespace Duels
 
         bool IsVerb(const std::string &verb)
         {
-            return verb == "match" || verb == "ready" || verb == "forfeit" || verb == "concede" || verb == "draw" || verb == "escape";
+            return verb == "match" || verb == "ready" || verb == "forfeit" || verb == "concede" || verb == "draw" || verb == "escape" ||
+                   verb == "ban" || verb == "pick";
         }
 
         static bool SettingsVerb(const Command &cmd, std::string &message)
@@ -1398,6 +1759,16 @@ namespace Duels
             {
                 message = "the match is on: its settings are the host's from the start (change them before 'host')";
                 return false;
+            }
+            // Test verb: who bans first in the ship choice (else the server draws it).
+            if (ArgIs(cmd, 1, "firstban"))
+            {
+                if (ArgIs(cmd, 2, "host")) g_firstBanner = HOST;
+                else if (ArgIs(cmd, 2, "guest")) g_firstBanner = GUEST;
+                else if (ArgIs(cmd, 2, "random")) g_firstBanner = NOBODY;
+                else { message = "usage: match firstban host|guest|random"; return false; }
+                message = std::string("the first ban: ") + (g_firstBanner == HOST ? "the host's" : g_firstBanner == GUEST ? "the guest's" : "drawn");
+                return true;
             }
             if (ArgIs(cmd, 1, "free")) s.free = true;
             else if (ArgIs(cmd, 1, "rounds") && cmd.args.size() == 2) s.free = false;
@@ -1452,9 +1823,47 @@ namespace Duels
                 }
                 s.hazards = hazards;
             }
+            else if (ArgIs(cmd, 1, "ships"))
+            {
+                // The ship choice (roadmap 3.9): each player's own (FTL's hangar), bans from the pool, or the host's list.
+                std::vector<std::string> list;
+                bool listOk = ArgIs(cmd, 2, "list") && cmd.raw.size() >= 4;
+                if (listOk)
+                {
+                    std::stringstream ships(cmd.raw[3]);
+                    std::string ship, blueprint;
+                    while (std::getline(ships, ship, ','))
+                    {
+                        if (!Ships::ParseShip(ship, blueprint) || list.size() >= 30) listOk = false;
+                        else if (std::find(list.begin(), list.end(), blueprint) == list.end()) list.push_back(blueprint);
+                    }
+                }
+                if (ArgIs(cmd, 2, "own")) s.ships = SHIPS_OWN;
+                else if (ArgIs(cmd, 2, "bans")) s.ships = SHIPS_BANS;
+                else if (listOk && !list.empty())
+                {
+                    s.ships = SHIPS_LIST;
+                    s.list = list;
+                }
+                else
+                {
+                    message = "usage: match ships own|bans|list <ship>,<ship>... (a ship: kestrel-b, or its blueprint, PLAYER_SHIP_HARD_2)";
+                    return false;
+                }
+            }
+            else if (ArgIs(cmd, 1, "pool"))
+            {
+                uint16_t pool;
+                if (cmd.args.size() < 3 || !Ships::ParseTypes(cmd.args[2], pool))
+                {
+                    message = "usage: match pool all|<type>,<type>... (kestrel, stealth, mantis, engi, federation, slug, rock, zoltan, crystal, lanius)";
+                    return false;
+                }
+                s.pool = pool;
+            }
             else if (cmd.args.size() >= 2)
             {
-                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm|battery | hazards <kinds> | record on|off | free]";
+                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm|battery | hazards <kinds> | record on|off | ships own|bans|list <ships> | pool <types> | free]";
                 return false;
             }
             if (cmd.args.size() >= 2)
@@ -1464,7 +1873,7 @@ namespace Duels
                                  : "next duel: best of " + std::to_string(s.rounds) + " rounds, " + std::to_string(s.prepSeconds) +
                                        " s preparation, permanent death " + (s.permadeath ? "on" : "off") + ", environment " +
                                        Environment::ModeName(s.env) + (s.env == Environment::MODE_AUTO ? " (" + Environment::HazardsName(s.hazards) + ")" : "") +
-                                       (s.record ? ", recorded" : ", not recorded (unranked)");
+                                       (s.record ? ", recorded" : ", not recorded (unranked)") + ", ships: " + ShipsModeName(s);
                 return true;
             }
             message = Status();
@@ -1521,6 +1930,38 @@ namespace Duels
             {
                 message = "no match is running";
                 return false;
+            }
+            if (verb == "ban")
+            {
+                // The ship choice (roadmap 3.9): a type out of the choice, in our turn.
+                int type;
+                if (d.phase != Phase::Choice || BansDone(d)) { message = "no bans now"; return false; }
+                uint8_t banner = BannerOf(d, d.bans.size());
+                if (banner != g.me) { message = "it is " + Who(banner) + "'s ban"; return false; }
+                if (cmd.args.size() < 2 || !Ships::ParseType(cmd.args[1], type))
+                {
+                    message = "usage: ban <type> (kestrel, stealth, mantis, engi, federation, slug, rock, zoltan, crystal, lanius; or 1-10)";
+                    return false;
+                }
+                if (!(TypesLeft(d) & (1 << type))) { message = std::string("the ") + Ships::TypeName(type) + " is out of the choice already"; return false; }
+                OwnEvent(EV_BAN, (uint8_t)type);
+                message = std::string("you ban the ") + Ships::TypeName(type);
+                return true;
+            }
+            if (verb == "pick")
+            {
+                int pick;
+                if (d.phase != Phase::Choice || d.offer.empty()) { message = "no ships to pick from now"; return false; }
+                if (d.picked[g.me] != PICK_NONE) { message = "you have picked your ship"; return false; }
+                if (!ArgInt(cmd, 1, pick) || pick < 1 || pick > (int)d.offer.size())
+                {
+                    message = "usage: pick <1-" + std::to_string(d.offer.size()) + ">";
+                    return false;
+                }
+                g.ownPick = pick - 1;
+                OwnEvent(EV_PICK, (uint8_t)(pick - 1));
+                message = "you pick the " + Ships::Title(d.offer[pick - 1]);
+                return true;
             }
             if (verb == "ready")
             {
@@ -1595,7 +2036,27 @@ namespace Duels
                                                                    std::to_string(s.prepSeconds) + " s preparation, permanent death " +
                                                                    (s.permadeath ? "on" : "off") + ", environment " +
                                                                    Environment::ModeName(s.env))
-                    << (s.record ? ", recorded" : ", not recorded (unranked)");
+                    << (s.record ? ", recorded" : ", not recorded (unranked)") << ", ships: " << ShipsModeName(s);
+                return out.str();
+            }
+            if (d.phase == Phase::Choice)
+            {
+                // The ship choice: the bans so far, whose turn it is, the offer and who has picked (not what).
+                out << "match: ship choice (" << ShipsModeName(d.settings) << "), bans";
+                for (size_t i = 0; i < d.bans.size(); ++i)
+                {
+                    out << " [" << (BannerOf(d, i) == HOST ? "host " : "guest ") << Ships::TypeWord(d.bans[i].type)
+                        << (d.bans[i].byServer ? " (time was up)" : "") << "]";
+                }
+                double left = std::max(0.0, (FromHost(d.phaseEnd) - Now()) / 1000.0);
+                if (!BansDone(d)) out << ", now the " << (BannerOf(d, d.bans.size()) == HOST ? "host" : "guest") << "'s ban";
+                else
+                {
+                    out << ", offer";
+                    for (size_t i = 0; i < d.offer.size(); ++i) out << " [" << i + 1 << " " << d.offer[i] << "]";
+                    out << ", picked: host " << (d.picked[HOST] ? "yes" : "no") << ", guest " << (d.picked[GUEST] ? "yes" : "no");
+                }
+                out << ", " << (int)std::ceil(left) << " s left, types left " << Ships::TypesText(TypesLeft(d));
                 return out.str();
             }
             out << "match: round " << (int)d.round << "/" << (int)d.settings.rounds << (d.settings.free ? " (free fight)" : "")
@@ -1607,6 +2068,7 @@ namespace Duels
             }
             out << ", environment " << Environment::KindName(d.env.kind) << " (setting " << Environment::ModeName(d.settings.env) << ")";
             out << (d.settings.record ? ", recorded" : ", not recorded (unranked)");
+            if (!d.ships[HOST].empty()) out << ", ships " << d.ships[HOST] << " : " << d.ships[GUEST];
             if (Environment::Active()) out << ", " << Environment::Status();
             out << ", our damage taken " << Number(g.taken.Taken()) << " (hull " << g.taken.hullLost << "/" << g.taken.hullPool
                 << ", crew " << Number(g.taken.crewLost) << "/" << Number(g.taken.crewPool) << "), theirs " << Number(g.peerTaken)
@@ -1689,6 +2151,30 @@ namespace Duels
                 s.state = d.matchWinner == NOBODY ? "match over: a draw" : d.matchWinner == g.me ? "match over: you win" : "match over: you lose";
                 s.state += std::string(" (") + ReasonText(d.matchReason) + ")";
             }
+            // The ship choice (roadmap 3.9).
+            Summary::Choice &c = s.choice;
+            c.bans = d.settings.ships == SHIPS_BANS;
+            c.pool = d.settings.pool & Ships::ALL_TYPES;
+            for (size_t i = 0; i < d.bans.size(); ++i)
+            {
+                c.banned.push_back(d.bans[i].type);
+                c.bannedBy.push_back(BannerOf(d, i));
+                c.byServer.push_back(d.bans[i].byServer);
+            }
+            c.bansTotal = BansTotal(d);
+            c.banner = d.phase == Phase::Choice && !BansDone(d) ? BannerOf(d, d.bans.size()) : NOBODY;
+            c.offer = d.offer;
+            c.picked[HOST] = d.picked[HOST] != PICK_NONE;
+            c.picked[GUEST] = d.picked[GUEST] != PICK_NONE;
+            c.ourPick = g.ownPick;
+            c.ships[HOST] = d.ships[HOST];
+            c.ships[GUEST] = d.ships[GUEST];
+            if (d.phase == Phase::Choice)
+            {
+                s.state = c.banner == NOBODY ? std::string("ship choice: the pick")
+                                             : "ship choice: ban " + std::to_string(d.bans.size() + 1) + " of " + std::to_string(c.bansTotal) +
+                                                   (c.banner == g.me ? ", yours" : ", " + Who(c.banner) + "'s");
+            }
             s.score = ScoreLine();
             if (!d.settings.free && d.phase != Phase::MatchOver)
             {
@@ -1754,6 +2240,11 @@ namespace Duels
                 s.pausedText = cutOff ? std::string("Getting back into the match") : "Waiting for " + s.names[them];
                 s.countdownLabel = "Paused";
                 s.countdownMs = waitMs;
+            }
+            else if (d.phase == Phase::Choice && d.phaseEnd >= 0.0)
+            {
+                s.countdownLabel = c.banner == g.me ? "Your ban" : c.banner != NOBODY ? "Their ban" : c.picked[g.me] ? "Their pick" : "Your pick";
+                s.countdownMs = FromHost(d.phaseEnd) - now;
             }
             else if (d.phase == Phase::Prep && d.phaseEnd >= 0.0)
             {

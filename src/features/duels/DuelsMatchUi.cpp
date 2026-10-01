@@ -155,6 +155,7 @@ namespace Duels
             case Rounds::Phase::Ending:
             case Rounds::Phase::RoundOver: phase = "END"; phaseColour = GL_Color(0.62f, 0.72f, 0.88f, 1.f); break;
             case Rounds::Phase::MatchOver: phase = "MATCH OVER"; phaseColour = ColourOf(GOLD, 1.f); break;
+            case Rounds::Phase::Choice: phase = "SHIP CHOICE"; phaseColour = ColourOf(GOLD, 1.f); break;
             default: break;
             }
             if (s.paused)
@@ -162,7 +163,10 @@ namespace Duels
                 phase = "PAUSED";
                 phaseColour = GL_Color(1.f, 0.9f, 0.35f, 1.f);
             }
-            if (!s.free && s.phase != Rounds::Phase::MatchOver) phase = "ROUND " + std::to_string(s.round) + "  " + phase;
+            if (!s.free && s.phase != Rounds::Phase::MatchOver && s.phase != Rounds::Phase::Choice)
+            {
+                phase = "ROUND " + std::to_string(s.round) + "  " + phase;
+            }
             // The phase in the smaller font when it doesn't fit ("ROUND 2  PREPARATION").
             int phaseFont = Width(font, phase) <= PANEL_MAX_WIDTH - 12.f ? font : 10;
 

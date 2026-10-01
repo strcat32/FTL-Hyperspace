@@ -257,6 +257,7 @@ namespace Duels
             case Rounds::Phase::Ending:
             case Rounds::Phase::RoundOver: phase = "END"; colour = GL_Color(0.7f, 0.8f, 0.95f, 1.f); break;
             case Rounds::Phase::MatchOver: phase = "MATCH OVER"; colour = GL_Color(1.f, 0.84f, 0.3f, 1.f); break;
+            case Rounds::Phase::Choice: phase = "SHIP CHOICE"; colour = GL_Color(1.f, 0.84f, 0.3f, 1.f); break;
             default: break;
             }
             if (s.paused)
@@ -264,7 +265,7 @@ namespace Duels
                 phase = "PAUSED";
                 colour = GL_Color(1.f, 0.9f, 0.35f, 1.f);
             }
-            if (s.free || s.phase == Rounds::Phase::MatchOver || s.rounds <= 0) return phase;
+            if (s.free || s.phase == Rounds::Phase::MatchOver || s.phase == Rounds::Phase::Choice || s.rounds <= 0) return phase;
             return "ROUND " + std::to_string(s.round) + " OF " + std::to_string(s.rounds) + "     " + phase;
         }
 

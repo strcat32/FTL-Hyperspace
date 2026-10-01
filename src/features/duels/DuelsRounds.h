@@ -30,7 +30,8 @@ namespace Duels
             Fight = 3,       // the fight (it begins at that moment)
             Ending = 4,      // a ship is down: its explosion runs out, shots already in the air still count
             RoundOver = 5,   // the round's result on screen
-            MatchOver = 6    // the match's result
+            MatchOver = 6,   // the match's result
+            Choice = 7       // before round 1: the ships are chosen, by bans and a pick (roadmap 3.9)
         };
 
         void Reset();
@@ -83,8 +84,9 @@ namespace Duels
         bool DriveReady();
         bool Escape(std::string &message);
 
-        // Player verbs: match [rounds <n>|prep <seconds>|permadeath on|off|free|rounds], ready, forfeit, concede,
-        // draw round|match|yes|no|back (a draw offer stands until it is answered or taken back, or the round ends).
+        // Player verbs: match [rounds <n>|prep <seconds>|permadeath on|off|ships own|bans|list <ships>|pool <types>|
+        // free|rounds], ready, forfeit, concede, draw round|match|yes|no|back (a draw offer stands until it is answered
+        // or taken back, or the round ends), ban <type>, pick <n> (the ship choice).
         bool IsVerb(const std::string &verb);
         bool RunVerb(const Command &cmd, std::string &message);
 
@@ -141,6 +143,22 @@ namespace Duels
             double countdownMs = -1.0;
             bool paused = false;            // the connection is lost: the match waits
             std::string pausedText;         // "Waiting for Captain_Lil" / "Getting back into the match"
+
+            // The ship choice (Phase::Choice, roadmap 3.9).
+            struct Choice
+            {
+                bool bans = false;              // bans, then a pick (else a pick from the host's list)
+                uint16_t pool = 0;              // the types in the bans (bits by Ships' type)
+                std::vector<uint8_t> banned;    // the types banned, in order
+                std::vector<uint8_t> bannedBy;  // who banned each: 0 the host, 1 the guest
+                std::vector<bool> byServer;     // time ran out: the server banned it
+                int bansTotal = 0;
+                uint8_t banner = 2;             // whose ban it is now (2: nobody's)
+                std::vector<std::string> offer; // the ships to pick from (blueprints), once the bans are done
+                bool picked[2] = {false, false};
+                int ourPick = -1;               // the offer's index we picked
+                std::string ships[2];           // each player's ship, from the reveal on
+            } choice;
         };
         Summary GetSummary();
         // A player's action, as its verb: "ready", "ready off", "forfeit", "concede", "draw round", "draw match",
