@@ -54,6 +54,11 @@ namespace Duels
         // no orders until both players are back; the phase, stall and draw timers and the environment wait too.
         void OnConnectionLost();
         bool NetPaused();
+        // A timeout (roadmap BF): both players took one; from its start to its end (on the host's clock) FTL's world
+        // stands still in both games, while orders, power and targets can be set as in FTL's pause; the round's timers and
+        // the environment wait with it. What is left of it (ms, on our clock; 0 when none runs).
+        bool TimeoutPaused();
+        double TimeoutLeftMs();
         void OnDisconnected(bool opponentGone);
         void OnMessage(uint8_t type, Reader &r);
         void OnFrame(double now);
@@ -148,6 +153,10 @@ namespace Duels
             bool opponentReady = false;
             bool weOfferDraw = false;       // our draw offer is open (the round's or the match's)
             bool drawIsMatch = false;       // the open offer is for the match
+            // Timeouts (roadmap BF): one can be offered (in a fight, none open or running, some left this round), ours is
+            // open, theirs is to answer, one runs; how many are left this round.
+            bool canOfferTimeout = false, weOfferTimeout = false, timeoutToAnswer = false, timeoutRunning = false;
+            int timeoutsLeft = 0;
             bool canUnready = false;
             std::string envName;            // the next fight's environment in the preparation ("a sun"), or ""
             // The timer that runs now: its label and the time left (ms); msLeft < 0: none.

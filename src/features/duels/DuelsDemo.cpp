@@ -9,6 +9,7 @@
 #include "DuelsFair.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
+#include "DuelsRounds.h"
 #include "DuelsScript.h"
 #include "DuelsTrace.h"
 #include "DuelsWire.h"
@@ -107,6 +108,7 @@ namespace Duels
             double seekTo = -1.0;            // running ahead to this time (ms in the demo); -1: not seeking
             bool pauseAfterSeek = false;
             bool ended = false;              // at its end: it stays on its last moment, paused
+            double lastRealMs = -1.0;        // real time at the last frame (a recorded timeout passes in it, BF)
             int ranked = -1;                 // the recorded match's status (BB): 1, 0, -1 not known
             std::string unrankedWhy;
             uint32_t delivered = 0, ownLoadouts = 0, ownStates = 0, held = 0;
@@ -1050,10 +1052,9 @@ namespace Duels
             else share = (float)g_replay.speed;
         }
 
-        void BeforeWorldStep(double stepMs)
+        // The records whose time has come.
+        static void PlayDue()
         {
-            if (!g_replay.active || g_replay.paused) return;
-            ReplayClockAdvance(stepMs);
             double t = WallMs() - g_replay.startMs;
             while (g_replay.active && g_replay.next < g_replay.records.size() && g_replay.records[g_replay.next].ms <= t)
             {
@@ -1062,9 +1063,34 @@ namespace Duels
             }
         }
 
+        void BeforeWorldStep(double stepMs)
+        {
+            if (!g_replay.active || g_replay.paused) return;
+            ReplayClockAdvance(stepMs);
+            PlayDue();
+        }
+
         void ReplayFrame(double now)
         {
             if (!g_replay.active) return;
+            // A recorded timeout (roadmap BF): FTL's world stands still, so the replay's clock (its world time) would too.
+            // It passes in real time at the replay's speed instead (a seek jumps to its end), the records coming as it
+            // goes (the players' orders, power and targets in it).
+            const double real = RealMs();
+            const double frameMs = g_replay.lastRealMs >= 0.0 ? std::min(250.0, real - g_replay.lastRealMs) : 0.0;
+            g_replay.lastRealMs = real;
+            if (!g_replay.paused && Rounds::TimeoutPaused())
+            {
+                const double left = Rounds::TimeoutLeftMs();
+                const double step = g_replay.seekTo >= 0.0 ? std::min(left, std::max(0.0, g_replay.seekTo - (now - g_replay.startMs)))
+                                                           : std::min(left, frameMs * g_replay.speed);
+                if (step > 0.0)
+                {
+                    ReplayClockAdvance(step);
+                    PlayDue();
+                    now = WallMs();
+                }
+            }
             // A seek there: on at the speed before it, or paused again.
             if (g_replay.seekTo >= 0.0 && now - g_replay.startMs >= g_replay.seekTo)
             {

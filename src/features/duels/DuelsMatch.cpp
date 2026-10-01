@@ -212,6 +212,7 @@ namespace Duels
             uint16_t peerStateSeq = 0;
             uint8_t peerVision = 0;          // what we see of their ship, as their last state says (roadmap 4.5)
             double lastStateSent = -1.0e9;
+            double lastTrackMs = -1.0;       // TrackShots' last frame (the shots' waits stand still in a pause)
             bool stateDirty = false;
             uint32_t statesApplied = 0;
 
@@ -2619,6 +2620,22 @@ namespace Duels
             }
         }
 
+        static void ShiftShotWaits(double ms)
+        {
+            if (ms <= 0.0) return;
+            for (OutShot &shot : g_match.out)
+            {
+                if (shot.holdStartMs >= 0.0) shot.holdStartMs += ms;
+                if (shot.goneMs >= 0.0) shot.goneMs += ms;
+            }
+            for (InShot &shot : g_match.in)
+            {
+                if (shot.holdStartMs >= 0.0) shot.holdStartMs += ms;
+                if (shot.goneMs >= 0.0) shot.goneMs += ms;
+                if (shot.releasedMs < 0.0) shot.releaseAt += ms;
+            }
+        }
+
         static void TrackShots(double now)
         {
             MatchState &m = g_match;
@@ -3234,7 +3251,14 @@ namespace Duels
                 TraceSync(now);
             }
             Rounds::OnFrame(now);
-            TrackShots(now);
+            // While FTL's world stands still in a live duel (a timeout, roadmap BF; a lost connection) the shots stand
+            // still, and so do their waits for verdicts and their releases: they move on by the frame.
+            if (!Net::Replaying() && (Rounds::TimeoutPaused() || Rounds::NetPaused()) && m.lastTrackMs >= 0.0)
+            {
+                ShiftShotWaits(now - m.lastTrackMs);
+            }
+            else TrackShots(now);
+            m.lastTrackMs = now;
             // The match's status as it changes, for the demo (roadmap BB).
             if (Demo::Recording())
             {

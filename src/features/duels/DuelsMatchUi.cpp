@@ -86,7 +86,7 @@ namespace Duels
             int mouseX = 0, mouseY = 0;
             EndScreen end;
             ChoiceScreen choice;
-            Box ready, draw, concede;
+            Box ready, draw, timeout, concede;
             double concedeArmedUntil = 0.0;
             std::string crewButtonsLogged;  // where DRAW and CONCEDE went last (logged when it changes)
             SplashState splash;
@@ -305,7 +305,7 @@ namespace Duels
 
         static void RenderButtons(const Rounds::Summary &s, bool prepLayout)
         {
-            g.ready.shown = g.draw.shown = g.concede.shown = false;
+            g.ready.shown = g.draw.shown = g.timeout.shown = g.concede.shown = false;
             if (Net::Replaying()) return;   // a replay can't be played (roadmap AW)
             bool running = s.inMatch && s.phase != Rounds::Phase::MatchOver && !s.paused;
             if (!running) return;
@@ -331,11 +331,11 @@ namespace Duels
                 if (g.crewButtonsLogged != where)
                 {
                     g.crewButtonsLogged = where;
-                    Log("MatchUi: DRAW and CONCEDE under the crew's buttons at %s", where);
+                    Log("MatchUi: DRAW, TIMEOUT and CONCEDE under the crew's buttons at %s", where);
                 }
-                // FTL's button letters when "CONCEDE" fits the width inside the button's frame (5 px a side and a margin),
-                // else FTL's smaller letters for both.
-                int font = Width(12, "CONCEDE") + 16.f <= w ? 12 : 10;
+                // FTL's button letters when "TIMEOUT?" fits the width inside the button's frame (5 px a side and a
+                // margin), else FTL's smaller letters for all three.
+                int font = Width(12, "TIMEOUT?") + 16.f <= w ? 12 : 10;
                 // A draw offer (AH): ours keeps the button pressed down while it stands (a click takes it back, AT); the
                 // other player's makes it "DRAW?", flashing (a click accepts). No text under it: the chat log has it.
                 bool blink = (long long)(WallMs() / 400.0) % 2 == 0;
@@ -350,8 +350,21 @@ namespace Duels
                 }
                 else Button(g.draw, x, y, w, s.drawToAnswer ? "DRAW?" : "DRAW", s.canOfferRoundDraw || s.drawToAnswer,
                             s.drawToAnswer && blink, goldBody, font);
+                // A timeout (roadmap BF), under DRAW: offered and taken as a draw is; grey while one runs or none is left.
+                float ty = y + BUTTON_H + CREW_BUTTONS_GAP;
+                if (s.weOfferTimeout)
+                {
+                    g.timeout.x = x;
+                    g.timeout.y = ty;
+                    g.timeout.w = w;
+                    g.timeout.h = BUTTON_H;
+                    g.timeout.shown = true;
+                    Style::Button(x, ty, w, BUTTON_H, "TIMEOUT", font, Style::Look::Pressed);
+                }
+                else Button(g.timeout, x, ty, w, s.timeoutToAnswer ? "TIMEOUT?" : "TIMEOUT", s.canOfferTimeout || s.timeoutToAnswer,
+                            s.timeoutToAnswer && blink, goldBody, font);
                 bool armed = WallMs() < g.concedeArmedUntil;
-                Button(g.concede, x, y + BUTTON_H + CREW_BUTTONS_GAP, w, armed ? "SURE?" : "CONCEDE", s.canConcede, armed, redBody, font);
+                Button(g.concede, x, ty + BUTTON_H + CREW_BUTTONS_GAP, w, armed ? "SURE?" : "CONCEDE", s.canConcede, armed, redBody, font);
             }
         }
 
@@ -846,7 +859,8 @@ namespace Duels
 
         bool ButtonCentre(const std::string &name, int &x, int &y)
         {
-            const Box *box = name == "draw" ? &g.draw : name == "concede" ? &g.concede : name == "ready" ? &g.ready : nullptr;
+            const Box *box = name == "draw" ? &g.draw : name == "timeout" ? &g.timeout : name == "concede" ? &g.concede
+                           : name == "ready" ? &g.ready : nullptr;
             if (!box || !box->shown) return false;
             x = (int)(box->x + box->w / 2.f);
             y = (int)(box->y + box->h / 2.f);
@@ -878,6 +892,7 @@ namespace Duels
             Rounds::Summary s = Rounds::GetSummary();
             if (g.ready.Contains(x, y)) command = s.ready ? "ready off" : "ready";
             else if (g.draw.Contains(x, y)) command = s.drawToAnswer ? "draw yes" : s.weOfferDraw ? "draw back" : "draw round";
+            else if (g.timeout.Contains(x, y)) command = s.timeoutToAnswer ? "timeout yes" : s.weOfferTimeout ? "timeout back" : "timeout";
             else if (g.concede.Contains(x, y))
             {
                 if (WallMs() >= g.concedeArmedUntil)

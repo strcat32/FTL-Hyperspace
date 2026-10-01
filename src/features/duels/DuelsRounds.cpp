@@ -37,6 +37,7 @@ namespace Duels
         static const double ENDING_MS = 3000.0;          // the first ship's explosion; shots in the air still count
         static const double RESULT_MS = 6000.0;          // the round's result on screen before the next preparation
         static const double DRAW_AGAIN_MS = 60000.0;     // after a declined offer, the same player waits this long
+        static const double TIMEOUT_LEAD_MS = 300.0;     // a timeout begins this long after it is taken: both games at once
         static const float HULL_WEIGHT = 0.65f;          // the damage score: hull 0.65, crew 0.35 (rules, section 3)
         static const float SCORE_TIE = 0.05f;            // damage scores closer than this are equal
         // Anti-stall (rules, section 3): a new low of either player's hull or crew health (by more than this share of
@@ -63,7 +64,10 @@ namespace Duels
             EV_ESCAPE = 8,       // we jumped away with a charged FTL drive (roadmap AD)
             EV_DRAW_BACK = 9,    // our draw offer taken back (roadmap AT)
             EV_BAN = 10,         // arg: a ship type (DuelsShips.h), banned in our turn (roadmap 3.9)
-            EV_PICK = 11         // arg: the offered ship's index
+            EV_PICK = 11,        // arg: the offered ship's index
+            EV_TIMEOUT_OFFER = 12,   // we offer a timeout (roadmap BF)
+            EV_TIMEOUT_BACK = 13,    // our timeout offer taken back
+            EV_TIMEOUT_ANSWER = 14   // arg: 1 taken, 0 not
         };
 
         // How the ships are chosen (roadmap 3.9).
@@ -124,6 +128,9 @@ namespace Duels
             uint8_t ships = SHIPS_OWN;
             uint16_t pool = Ships::ALL_TYPES;
             std::vector<std::string> list;
+            // Timeouts (roadmap BF): how many a round (both players together), how long each.
+            uint8_t timeouts = 3;
+            uint16_t timeoutSeconds = 30;
         };
 
         struct ShipBan
@@ -171,6 +178,11 @@ namespace Duels
             std::vector<std::string> offer;
             uint8_t picked[2] = {PICK_NONE, PICK_NONE};
             std::string ships[2];
+            // Timeouts (roadmap BF): who offers one; the one taken, from its start to its end on the host's clock; how
+            // many were taken this round.
+            uint8_t timeoutBy = NOBODY;
+            double timeoutStart = -1.0, timeoutEnd = -1.0;
+            uint8_t timeoutsUsed = 0;
         };
 
         // The damage our own ship takes in a round, counted by this game (the owner decides about its ship).
@@ -198,6 +210,7 @@ namespace Duels
             uint8_t me = HOST;
             Data data;
             bool dirty = false;             // host: the guest needs the match state
+            bool timeoutShown = false;      // the running timeout's splash shown (the fight's comes at its end)
 
             // What this game has done for the phase it shows (both sides do the same things at the same moments).
             Phase appliedPhase = Phase::None;
@@ -476,6 +489,12 @@ namespace Duels
             w.U8(d.picked[GUEST]);
             w.Str(d.ships[HOST]);
             w.Str(d.ships[GUEST]);
+            w.U8(d.settings.timeouts);
+            w.U16(d.settings.timeoutSeconds);
+            w.U8(d.timeoutBy);
+            w.F64(d.timeoutStart);
+            w.F64(d.timeoutEnd);
+            w.U8(d.timeoutsUsed);
         }
 
         static bool ReadData(Reader &r, Data &d)
@@ -548,9 +567,15 @@ namespace Duels
             d.picked[GUEST] = r.U8();
             d.ships[HOST] = r.Str();
             d.ships[GUEST] = r.Str();
+            d.settings.timeouts = r.U8();
+            d.settings.timeoutSeconds = r.U16();
+            d.timeoutBy = r.U8();
+            d.timeoutStart = r.F64();
+            d.timeoutEnd = r.F64();
+            d.timeoutsUsed = r.U8();
             return r.Ok() && (uint8_t)d.phase <= (uint8_t)Phase::Choice && d.env.kind < Environment::KIND_COUNT &&
                    d.settings.env < Environment::MODE_COUNT && d.settings.ships < SHIPS_MODES && d.firstBanner <= GUEST &&
-                   bansOk;
+                   bansOk && d.timeoutBy <= NOBODY;
         }
 
         static void SendData()
@@ -986,6 +1011,45 @@ namespace Duels
             g.data.drawEnd = -1.0;
         }
 
+        // A timeout (roadmap BF) runs: FTL's world stands still from its start to its end (the host's clock, on ours).
+        static bool TimeoutRunning(double now)
+        {
+            const Data &d = g.data;
+            return d.timeoutEnd >= 0.0 && now >= FromHost(d.timeoutStart) && now < FromHost(d.timeoutEnd);
+        }
+
+        // One taken and not over (about to begin, or running): no other one meanwhile.
+        static bool TimeoutTaken(double now)
+        {
+            const Data &d = g.data;
+            return d.timeoutEnd >= 0.0 && now < FromHost(d.timeoutEnd);
+        }
+
+        static int TimeoutsLeft()
+        {
+            const Data &d = g.data;
+            return std::max(0, (int)d.settings.timeouts - (int)d.timeoutsUsed);
+        }
+
+        // The host: the timeout taken begins a moment later in both games; the round's timers and the environment's
+        // schedule wait with it (as after a lost connection: the guest's environment follows the fight's start).
+        static void StartTimeout(double now)
+        {
+            Data &d = g.data;
+            const double length = d.settings.timeoutSeconds * 1000.0;
+            d.timeoutStart = now + TIMEOUT_LEAD_MS;
+            d.timeoutEnd = d.timeoutStart + length;
+            ++d.timeoutsUsed;
+            for (double *time : {&d.phaseEnd, &d.fightStart, &d.stallEnd, &d.drawEnd})
+            {
+                if (*time >= 0.0) *time += length;
+            }
+            Environment::Shift(length);
+            g.dirty = true;
+            Announce("Timeout: " + std::to_string(d.settings.timeoutSeconds) + " s, both ships stand still (orders, power and targets "
+                     "can be set); " + std::to_string(TimeoutsLeft()) + " left this round");
+        }
+
         static void StartRound(uint8_t round)
         {
             Data &d = g.data;
@@ -998,6 +1062,10 @@ namespace Duels
             g.defeatAt[HOST] = g.defeatAt[GUEST] = -1.0;
             g.defeatReason[HOST] = g.defeatReason[GUEST] = REASON_NONE;
             ClearDraw();
+            // Each round has its own timeouts (roadmap BF).
+            d.timeoutBy = NOBODY;
+            d.timeoutStart = d.timeoutEnd = -1.0;
+            d.timeoutsUsed = 0;
             if (d.settings.free) SetPhase(Phase::Starting, -1.0);
             else SetPhase(Phase::Prep, Now() + d.settings.prepSeconds * 1000.0);
         }
@@ -1245,6 +1313,34 @@ namespace Duels
                     Announce(You(player) ? std::string("You take back your draw offer") : Who(player) + " takes back the draw offer");
                 }
                 break;
+            case EV_TIMEOUT_OFFER:
+                // In the fight itself, none open or taken, some left this round (roadmap BF). It stands until it is
+                // answered or taken back; the round's end ends it.
+                if (d.phase == Phase::Fight && g.fightBegun && d.timeoutBy == NOBODY && !TimeoutTaken(now) && TimeoutsLeft() > 0 &&
+                    g.defeatAt[HOST] < 0.0 && g.defeatAt[GUEST] < 0.0)
+                {
+                    d.timeoutBy = player;
+                    g.dirty = true;
+                    Announce(You(player) ? std::string("You offer a timeout") : Who(player) + " offers a timeout: the TIMEOUT button takes it");
+                }
+                break;
+            case EV_TIMEOUT_BACK:
+                if (d.timeoutBy == player)
+                {
+                    d.timeoutBy = NOBODY;
+                    g.dirty = true;
+                    Announce(You(player) ? std::string("You take back your timeout offer") : Who(player) + " takes back the timeout offer");
+                }
+                break;
+            case EV_TIMEOUT_ANSWER:
+                if (d.timeoutBy == Other(player))
+                {
+                    d.timeoutBy = NOBODY;
+                    g.dirty = true;
+                    if (arg && d.phase == Phase::Fight && !TimeoutTaken(now) && TimeoutsLeft() > 0) StartTimeout(now);
+                    else Announce(std::string("The timeout offer was ") + (arg ? "too late" : "declined"));
+                }
+                break;
             case EV_BAN:
                 // In the player's turn, a type still in the choice (roadmap 3.9).
                 if (d.phase == Phase::Choice && !BansDone(d) && BannerOf(d, d.bans.size()) == player && arg < Ships::TYPE_COUNT &&
@@ -1395,6 +1491,12 @@ namespace Duels
             if (!text.empty() && Environment::ParseHazards(text, hazards)) s.hazards = hazards;
             text = Config::Value("match_record");
             if (text == "on" || text == "off") s.record = text == "on";
+            text = Config::Value("match_timeouts");
+            value = std::atoi(text.c_str());
+            if (!text.empty() && value >= 0 && value <= 9) s.timeouts = (uint8_t)value;
+            text = Config::Value("match_timeout_seconds");
+            value = std::atoi(text.c_str());
+            if (!text.empty() && value >= 5 && value <= 120) s.timeoutSeconds = (uint16_t)value;
             // A player's match chooses its ships by bans unless the host set it otherwise (a test scenario starts from
             // each player's own ship, the hangar's).
             text = Config::Value("match_ships");
@@ -1426,6 +1528,8 @@ namespace Duels
             hazards.erase(std::remove(hazards.begin(), hazards.end(), ' '), hazards.end());
             Config::SaveValue("match_hazards", hazards);
             Config::SaveValue("match_record", s.record ? "on" : "off");
+            Config::SaveValue("match_timeouts", std::to_string(s.timeouts));
+            Config::SaveValue("match_timeout_seconds", std::to_string(s.timeoutSeconds));
             Config::SaveValue("match_ships", s.ships == SHIPS_BANS ? "bans" : s.ships == SHIPS_LIST ? "list" : "own");
             Config::SaveValue("match_pool", Ships::TypesText(s.pool));
             std::string list;
@@ -1572,6 +1676,16 @@ namespace Duels
             return g.active && g.pausedSince >= 0.0;
         }
 
+        bool TimeoutPaused()
+        {
+            return g.active && TimeoutRunning(Now());
+        }
+
+        double TimeoutLeftMs()
+        {
+            return TimeoutPaused() ? std::max(0.0, FromHost(g.data.timeoutEnd) - Now()) : 0.0;
+        }
+
         void OnDisconnected(bool opponentGone)
         {
             Net::SetMatchToken(0);
@@ -1616,6 +1730,8 @@ namespace Duels
                     return;
                 }
                 uint8_t drawBefore = g.data.drawBy;
+                uint8_t timeoutBefore = g.data.timeoutBy, roundBefore = g.data.round;
+                double timeoutEndBefore = g.data.timeoutEnd;
                 Phase phaseBefore = g.data.phase;
                 bool readyBefore = g.data.ready[HOST];
                 // The host moved the fight's start on by a pause (a lost connection): the environment's schedule too.
@@ -1636,6 +1752,12 @@ namespace Duels
                 if (drawBefore == HOST && data.drawBy == NOBODY && data.phase == phaseBefore && !g.drawAnswered)
                 {
                     Announce(Who(HOST) + " takes back the draw offer");
+                }
+                // The host's timeout offer (roadmap BF), made or taken back.
+                if (data.timeoutBy == HOST && timeoutBefore != HOST) Announce(Who(HOST) + " offers a timeout: the TIMEOUT button takes it");
+                if (timeoutBefore == HOST && data.timeoutBy == NOBODY && data.timeoutEnd == timeoutEndBefore && data.round == roundBefore)
+                {
+                    Announce(Who(HOST) + " takes back the timeout offer");
                 }
                 if (data.ready[HOST] && !readyBefore && data.phase == Phase::Prep) Announce(Who(HOST) + " is ready");
                 ApplyLocal();
@@ -1685,6 +1807,21 @@ namespace Duels
             }
 
             if (g.me == HOST) HostFrame(now);
+
+            // A timeout's start and end, in both games (roadmap BF).
+            bool timeoutRuns = TimeoutRunning(now);
+            if (timeoutRuns && !g.timeoutShown)
+            {
+                g.timeoutShown = true;
+                Log("Rounds: the timeout begins (%.1f s)", (FromHost(d.timeoutEnd) - now) / 1000.0);
+                MatchUi::Splash("TIMEOUT", MatchUi::GOLD, 2000.0, "powerUpSystem");
+            }
+            else if (!timeoutRuns && g.timeoutShown)
+            {
+                g.timeoutShown = false;
+                Log("Rounds: the timeout is over");
+                if (d.phase == Phase::Fight) MatchUi::Splash("FIGHT!", MatchUi::GOLD, 1300.0, "surgeWarning");
+            }
 
             // The last seconds of the preparation, counted down.
             if (d.phase == Phase::Prep && d.phaseEnd >= 0.0)
@@ -1783,7 +1920,7 @@ namespace Duels
 
         bool EscapeAllowed()
         {
-            return g.active && g.data.phase == Phase::Fight && g.defeatAt[g.me] < 0.0;
+            return g.active && g.data.phase == Phase::Fight && g.defeatAt[g.me] < 0.0 && !TimeoutTaken(Now());
         }
 
         bool DriveReady()
@@ -1819,7 +1956,7 @@ namespace Duels
         bool IsVerb(const std::string &verb)
         {
             return verb == "match" || verb == "ready" || verb == "forfeit" || verb == "concede" || verb == "draw" || verb == "escape" ||
-                   verb == "ban" || verb == "pick";
+                   verb == "ban" || verb == "pick" || verb == "timeout";
         }
 
         static bool SettingsVerb(const Command &cmd, std::string &message)
@@ -1940,6 +2077,18 @@ namespace Duels
                     return false;
                 }
             }
+            else if (ArgIs(cmd, 1, "timeouts"))
+            {
+                // Roadmap BF: how many a round (both players together), and how long each.
+                int count, seconds = s.timeoutSeconds;
+                if (!ArgInt(cmd, 2, count) || count < 0 || count > 9 || (cmd.args.size() > 3 && (!ArgInt(cmd, 3, seconds) || seconds < 5 || seconds > 120)))
+                {
+                    message = "usage: match timeouts <0-9> [<5-120> seconds]";
+                    return false;
+                }
+                s.timeouts = (uint8_t)count;
+                s.timeoutSeconds = (uint16_t)seconds;
+            }
             else if (ArgIs(cmd, 1, "pool"))
             {
                 uint16_t pool;
@@ -1952,7 +2101,7 @@ namespace Duels
             }
             else if (cmd.args.size() >= 2)
             {
-                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm|battery | hazards <kinds> | record on|off | ships own|bans|list <ships> | pool <types> | free]";
+                message = "usage: match [rounds [<n>] | prep <seconds> | stall <seconds> | permadeath on|off | env auto|off|sun|pulsar|asteroids|nebula|storm|battery | hazards <kinds> | record on|off | ships own|bans|list <ships> | pool <types> | timeouts <n> [<seconds>] | free]";
                 return false;
             }
             if (cmd.args.size() >= 2)
@@ -2113,6 +2262,32 @@ namespace Duels
                 if (d.phase != Phase::Starting && d.phase != Phase::Fight) { message = "a round can be conceded in its fight"; return false; }
                 OwnEvent(EV_CONCEDE, 0);
                 message = "you concede this round";
+                return true;
+            }
+            if (verb == "timeout")
+            {
+                // Roadmap BF: timeout | timeout back | timeout yes|no.
+                if (ArgIs(cmd, 1, "back"))
+                {
+                    if (d.timeoutBy != g.me) { message = "no timeout offer of yours to take back"; return false; }
+                    OwnEvent(EV_TIMEOUT_BACK, 0);
+                    message = "timeout offer taken back";
+                    return true;
+                }
+                if (ArgIs(cmd, 1, "yes") || ArgIs(cmd, 1, "no"))
+                {
+                    if (d.timeoutBy != Other(g.me)) { message = "no timeout offer to answer"; return false; }
+                    OwnEvent(EV_TIMEOUT_ANSWER, ArgIs(cmd, 1, "yes") ? 1 : 0);
+                    message = ArgIs(cmd, 1, "yes") ? "timeout taken" : "timeout declined";
+                    return true;
+                }
+                if (cmd.args.size() > 1) { message = "usage: timeout | timeout back | timeout yes|no"; return false; }
+                if (d.phase != Phase::Fight || !g.fightBegun) { message = "a timeout can be offered in a fight"; return false; }
+                if (d.timeoutBy != NOBODY) { message = "a timeout offer is open already"; return false; }
+                if (TimeoutTaken(Now())) { message = "a timeout runs"; return false; }
+                if (TimeoutsLeft() <= 0) { message = "no timeouts left this round"; return false; }
+                OwnEvent(EV_TIMEOUT_OFFER, 0);
+                message = "timeout offered (" + std::to_string(TimeoutsLeft()) + " left this round)";
                 return true;
             }
             if (verb == "draw")
@@ -2353,6 +2528,12 @@ namespace Duels
             s.canOfferMatchDraw = running && noOffer && (d.phase == Phase::Prep || d.phase == Phase::Starting || d.phase == Phase::Fight);
             s.drawToAnswer = running && d.drawBy == them;
             s.weOfferDraw = running && d.drawBy == g.me;
+            const bool timeoutTaken = TimeoutTaken(Now());
+            s.timeoutRunning = running && TimeoutRunning(Now());
+            s.timeoutsLeft = TimeoutsLeft();
+            s.canOfferTimeout = running && d.phase == Phase::Fight && g.fightBegun && d.timeoutBy == NOBODY && !timeoutTaken && s.timeoutsLeft > 0;
+            s.timeoutToAnswer = running && d.timeoutBy == them && !timeoutTaken;
+            s.weOfferTimeout = running && d.timeoutBy == g.me;
             s.drawIsMatch = d.drawScope == DRAW_MATCH;
             s.phase = d.phase;
             s.round = d.round;
@@ -2397,6 +2578,11 @@ namespace Duels
             {
                 s.countdownLabel = "Fight in";
                 s.countdownMs = FromHost(d.phaseEnd) - now;
+            }
+            else if (TimeoutRunning(now))
+            {
+                s.countdownLabel = "Timeout";
+                s.countdownMs = FromHost(d.timeoutEnd) - now;
             }
             else if (d.phase == Phase::Fight && g.fightBegun && d.stallEnd >= 0.0 && FromHost(d.stallEnd) - now < 60000.0)
             {
