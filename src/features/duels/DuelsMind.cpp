@@ -130,8 +130,13 @@ namespace Duels
             int id = Crew::AwayId(crew);
             if (id >= 0)
             {
-                // Ours aboard their ship; under their mind control they don't take our orders.
-                if (crew->bMindControlled) return true;
+                // Ours aboard their ship; under their mind control they don't take our orders (roadmap 3.8: their game
+                // holds them, and told us so with their guest state).
+                if (crew->bMindControlled)
+                {
+                    Log("Mind: our crew member %d aboard their ship is under their mind control: our order waits for its end", id);
+                    return true;
+                }
                 kind = ORDER_MINE;
             }
             else
@@ -199,6 +204,31 @@ namespace Duels
                 message = "our ship has no mind control system";
                 return false;
             }
+            if (what.compare(0, 4, "own ") == 0)
+            {
+                // Our mind control on our own ship's room (roadmap 3.8): the opponent's crew aboard there (guests) are
+                // ours while it lasts.
+                int room = std::atoi(what.c_str() + 4);
+                std::vector<CrewMember*> crew;
+                for (CrewMember *member : own->vCrewList)
+                {
+                    if (member && !member->bDead && member->iShipId != 0 && member->iRoomId == room) crew.push_back(member);
+                }
+                if (crew.empty())
+                {
+                    message = "no opponent's crew in our room " + std::to_string(room);
+                    return false;
+                }
+                if (!mind->CanUse())
+                {
+                    message = "mind control not ready (power " + std::to_string(mind->GetEffectivePower()) + ", lock " +
+                              std::to_string(mind->iLockCount) + ")";
+                    return false;
+                }
+                mind->QueueMindControl(&crew, room, 0);
+                message = "mind control on our room " + std::to_string(room) + " (" + std::to_string(crew.size()) + " of their crew)";
+                return true;
+            }
             if (enemy && what.compare(0, 6, "order ") == 0)
             {
                 // Our orders to the crew our mind control holds (on the enemy's ship: they go to its owner).
@@ -214,7 +244,7 @@ namespace Duels
             }
             if (!enemy || what.compare(0, 5, "room ") != 0)
             {
-                message = !enemy ? "no enemy ship" : "usage: mind room <room> | mind order <room>";
+                message = !enemy ? "no enemy ship" : "usage: mind room <room> | mind own <room> | mind order <room>";
                 return false;
             }
             int room = std::atoi(what.c_str() + 5);
@@ -239,13 +269,33 @@ namespace Duels
             return true;
         }
 
+        bool RepairsForUs(const CrewMember *crew)
+        {
+            ShipManager *own = G_->GetShipManager(0);
+            MindSystem *mind = own ? own->mindSystem : nullptr;
+            if (!crew || !crew->bMindControlled || crew->iShipId == 0 || crew->currentShipId != 0 || !mind) return false;
+            return std::find(mind->controlledCrew.begin(), mind->controlledCrew.end(), crew) != mind->controlledCrew.end();
+        }
+
         std::string Signature(ShipManager *ship)
         {
             MindSystem *mind = ship ? ship->mindSystem : nullptr;
             if (!mind) return "-";
-            // Our control holds puppets (their owner's ids); the replica's holds our crew (our ids): the same ids.
+            // Our control holds puppets and guests (their owner's ids); the replica's holds our crew (our ids), and its
+            // owner's game holds ours aboard their ship (we see them as away crew under their control): the same ids.
             std::vector<int> ids;
-            for (CrewMember *crew : mind->controlledCrew) ids.push_back(ship->iShipId == 0 ? Crew::PuppetId(crew) : Crew::OwnId(crew));
+            for (CrewMember *crew : mind->controlledCrew)
+            {
+                int puppet = Crew::PuppetId(crew);
+                ids.push_back(ship->iShipId == 0 ? (puppet >= 0 ? puppet : Crew::GuestIdOf(crew)) : Crew::OwnId(crew));
+            }
+            if (ship->iShipId == 1)
+            {
+                for (const std::pair<uint16_t, CrewMember*> &entry : Crew::AwayCrew())
+                {
+                    if (entry.second->bMindControlled) ids.push_back(entry.first);
+                }
+            }
             if (ids.empty()) return "idle";
             std::sort(ids.begin(), ids.end());
             std::ostringstream out;

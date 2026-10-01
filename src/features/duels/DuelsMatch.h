@@ -103,7 +103,8 @@ namespace Duels
         void OnOwnProjectile(ProjectileFactory *weapon, Projectile *projectile);
 
         // ShipManager::CheckCrystalAugment (Crystal Vengeance): the replica breaks off no shards of its own (its owner's
-        // game does, and sends them); each shard of ours at the replica goes to the opponent like a shot.
+        // game does, and sends them); each shard of ours at the replica goes to the opponent like a shot. No ship breaks
+        // one off once the round is decided (roadmap O: no new shots).
         bool AllowShards(const ShipManager *ship);
         void OnOwnShard(Projectile *projectile);
 

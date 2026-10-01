@@ -1140,6 +1140,10 @@ namespace Duels
 
         bool AllowShards(const ShipManager *ship)
         {
+            // No new shots once the round is decided (roadmap O), and no Crystal Vengeance shard either: a shot still in
+            // the air that lands after the decision broke one off (step2-augments, 2026-10-01).
+            Rounds::Phase phase = Rounds::GetPhase();
+            if (phase == Rounds::Phase::Ending || phase == Rounds::Phase::RoundOver || phase == Rounds::Phase::MatchOver) return false;
             // The replica's shards come from its owner's game.
             return !ship || ship->iShipId != 1 || !Net::IsConnected() || !g_match.replicaReady;
         }

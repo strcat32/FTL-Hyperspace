@@ -746,6 +746,21 @@ HOOK_METHOD_PRIORITY(MindSystem, InitiateMindControl, -2000, () -> void)
     Duels::Mind::AfterInitiate(this, before);
 }
 
+// A crew member of the opponent's that our mind control holds aboard our ship repairs our systems as ours do (roadmap
+// 3.8): FTL has a mind-controlled crew member sabotage where it stands, aboard either ship. While FTL repairs, it is
+// one of ours.
+HOOK_METHOD_PRIORITY(CrewMember, UpdateRepair, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::UpdateRepair -> Begin (DuelsHooks.cpp)\n")
+    if (!Duels::Mind::RepairsForUs(this)) return super();
+    int shipId = iShipId;
+    iShipId = 0;
+    bMindControlled = false;
+    super();
+    bMindControlled = true;
+    iShipId = shipId;
+}
+
 HOOK_METHOD_PRIORITY(ShipManager, CommandCrewMoveRoom, -2000, (CrewMember *crew, int roomId) -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::CommandCrewMoveRoom -> Begin (DuelsHooks.cpp)\n")

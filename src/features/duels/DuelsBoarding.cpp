@@ -638,7 +638,9 @@ namespace Duels
         bool RefusesAiOrder(const CrewMember *crew)
         {
             if (!g_aiRunning || !crew) return false;
-            if (Crew::IsGuest(crew)) return !const_cast<CrewMember*>(crew)->IsDrone();   // FTL's IsDrone isn't const
+            // A guest our mind control holds is ours for now (roadmap 3.8): our crew AI uses it as FTL uses the crew
+            // its mind control takes (it fights for us, and repairs).
+            if (Crew::IsGuest(crew)) return !crew->bMindControlled && !const_cast<CrewMember*>(crew)->IsDrone();   // FTL's IsDrone isn't const
             return Crew::IsPuppet(crew);
         }
 

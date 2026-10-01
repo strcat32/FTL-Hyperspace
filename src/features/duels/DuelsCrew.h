@@ -80,6 +80,7 @@ namespace Duels
         void AddGuest(uint16_t id, CrewMember *crew);
         CrewMember *Guest(uint16_t id);
         bool IsGuest(const CrewMember *crew);
+        int GuestIdOf(const CrewMember *crew);   // its owner's id, -1 if it is no guest
         void RemoveGuest(uint16_t id);
         // A guest taken back by their teleporter, now on the replica: the puppet for their id (the next roster has
         // them again).

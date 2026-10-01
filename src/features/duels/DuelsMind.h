@@ -41,11 +41,16 @@ namespace Duels
         // ship (DuelsBoarding.cpp), goes to the game that decides about them (true = handled here).
         bool OrderToOwner(ShipManager *ship, CrewMember *crew, int room);
 
-        // Test verb: mind room <room> (our mind control on the enemy's crew in that room), mind order <room> (the crew
-        // it holds go there).
+        // Test verb: mind room <room> (our mind control on the enemy's crew in that room), mind own <room> (on the
+        // opponent's crew aboard our ship in that room, roadmap 3.8), mind order <room> (the crew it holds go there).
         bool RunVerb(const std::string &what, std::string &message);
 
-        // duels_sync.csv: the ids of the crew a ship's mind control holds ("idle" without).
+        // CrewMember::UpdateRepair: a crew member of the opponent's that our mind control holds aboard our ship repairs
+        // our systems as ours do (roadmap 3.8); FTL has a crew member of another ship sabotage there.
+        bool RepairsForUs(const CrewMember *crew);
+
+        // duels_sync.csv: the ids of the crew a ship's mind control holds ("idle" without): on our ship the opponent's
+        // crew (puppets on theirs, guests on ours, by their ids); on the replica ours (aboard either ship, by our ids).
         std::string Signature(ShipManager *ship);
         std::string Status();
     }

@@ -1159,12 +1159,15 @@ namespace Duels
         {
             CrewMember *member = crew[index];
             // task: FTL's CrewTask (0 = manning, 1 = repairing, ...); mans: the system it gives its skill to; slot: where it
-            // stands in its room; station: its saved position (room/slot, the stations FTL's "return" button sends it to)
-            Log("  crew %u %-8s %-12s on ship %d room %2d health %.0f/%.0f task %d mans %s slot %d station %d/%d%s", (unsigned)index,
+            // stands in its room; station: its saved position (room/slot, the stations FTL's "return" button sends it to);
+            // flags: i an intruder, m mind-controlled, f fighting, r repairing (or sabotaging) something, s at a system
+            std::string flags = std::string(member->intruder ? "i" : "") + (member->bMindControlled ? "m" : "") +
+                                (member->bFighting ? "f" : "") + (member->currentRepair ? "r" : "") + (member->currentSystem ? "s" : "");
+            Log("  crew %u %-8s %-12s on ship %d room %2d health %.0f/%.0f task %d mans %s slot %d station %d/%d flags %s%s", (unsigned)index,
                 member->species.c_str(), member->GetName().c_str(), member->currentShipId, member->iRoomId, member->health.first,
                 member->health.second, member->task.taskId,
                 member->bActiveManning && member->currentSystem ? ShipSystem::SystemIdToName(member->currentSystem->iSystemType).c_str() : "-",
-                member->currentSlot.slotId, member->savedPosition.roomId, member->savedPosition.slotId,
+                member->currentSlot.slotId, member->savedPosition.roomId, member->savedPosition.slotId, flags.empty() ? "-" : flags.c_str(),
                 member->fStunTime > 0.f ? (" stunned " + std::to_string((int)std::ceil(member->fStunTime)) + " s").c_str() : "");
         }
         for (Door *door : ship->ship.vDoorList)

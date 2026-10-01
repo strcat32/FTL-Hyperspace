@@ -62,6 +62,7 @@ namespace Duels
             double farSinceMs = -1.0;
             bool placeNow = true;          // a new puppet goes straight to its owner's position
             bool ownerControlled = false;  // under mind control, as the owner last said
+            float normalMax = 0.f;         // its own maximum health while a mind control's boost raises it (0: none)
         };
 
         struct CrewState
@@ -495,10 +496,22 @@ namespace Duels
                     crew->SetRoom(s.room);
                 }
 
+                // A mind control's boost (its levels 2 and 3 raise the health above the maximum, roadmap 3.8): the puppet
+                // has the owner's higher maximum while it is controlled, and its own back after.
+                bool controlled = (s.flags & FLAG_MIND_CONTROLLED) != 0;
+                if ((controlled || crew->bMindControlled) && (float)s.health > crew->health.second)
+                {
+                    if (puppet.normalMax <= 0.f) puppet.normalMax = crew->health.second;
+                    crew->health.second = (float)s.health;
+                }
+                else if (!controlled && !crew->bMindControlled && puppet.normalMax > 0.f)
+                {
+                    crew->health.second = puppet.normalMax;
+                    puppet.normalMax = 0.f;
+                }
                 crew->health.first = std::min((float)s.health, crew->health.second);
                 // The owner's mind control, when it changes there: our own mind control takes and releases puppets here
                 // first (DuelsMind.cpp), and the owner's older states must not undo that.
-                bool controlled = (s.flags & FLAG_MIND_CONTROLLED) != 0;
                 if (controlled != puppet.ownerControlled)
                 {
                     puppet.ownerControlled = controlled;
@@ -753,6 +766,15 @@ namespace Duels
         CrewMember *Guest(uint16_t id)
         {
             return LiveGuest(id);
+        }
+
+        int GuestIdOf(const CrewMember *crew)
+        {
+            for (const std::pair<const uint16_t, CrewMember*> &entry : g_crew.guests)
+            {
+                if (crew && entry.second == crew) return entry.first;
+            }
+            return -1;
         }
 
         bool IsGuest(const CrewMember *crew)

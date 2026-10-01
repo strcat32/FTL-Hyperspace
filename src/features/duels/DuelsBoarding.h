@@ -56,7 +56,8 @@ namespace Duels
         void SetAiRunning(bool running);
         // ShipManager::CommandCrewMoveRoom: the crew AI doesn't move guests or puppets. Guests go where their owner
         // orders them (and fight or sabotage where they are, as FTL's boarders do); puppets follow their owners. A
-        // guest robot (a boarding drone's) takes no orders: the crew AI of the ship it is on moves it, as in FTL.
+        // guest robot (a boarding drone's) takes no orders: the crew AI of the ship it is on moves it, as in FTL. A
+        // guest our mind control holds is ours while it lasts (roadmap 3.8): our crew AI moves it too.
         bool RefusesAiOrder(const CrewMember *crew);
 
         // Hyperspace's crew powers (ActivatedPower; in vanilla FTL only the crystal crew's lockdown): a crew member's
