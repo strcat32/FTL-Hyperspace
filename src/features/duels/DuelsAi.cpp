@@ -5,6 +5,7 @@
 #include "DuelsMatch.h"
 #include "DuelsRounds.h"
 #include "DuelsShipControl.h"
+#include "DuelsShips.h"
 #include "DuelsTrace.h"
 
 #include <algorithm>
@@ -25,7 +26,10 @@ namespace Duels
         struct AiState
         {
             bool active = false;
-            std::string blueprint;       // the AI's ship
+            std::string blueprint;       // the AI's ship ("" until the ship choice gives it one)
+            std::string preferred;       // HOST DUEL's ship for it ("" random): its pick from a host's list
+            double thinkUntil = 0.0;     // the ship choice: its ban or pick comes then
+            std::mt19937 random;
             double startMs = 0.0;        // when the match began
             bool boxSeen = false;        // FTL's first message box came (no pause once it is gone)
             int round = 0;
@@ -94,19 +98,28 @@ namespace Duels
             g = AiState();
             g.active = true;
             g.startMs = WallMs();
-            g.blueprint = blueprint;
-            if (g.blueprint.empty())
+            g.preferred = blueprint;
+            // (The system clock: the game's own milliseconds since its start repeat from run to run.)
+            uint64_t ticks = (uint64_t)std::chrono::system_clock::now().time_since_epoch().count();
+            g.random.seed((uint32_t)(ticks ^ (ticks >> 32)));
+            if (!Rounds::NextChoosesShips())
             {
+                g.blueprint = blueprint;
                 std::vector<std::string> ships = PlayerShips();
-                // (The system clock: the game's own milliseconds since its start repeat from run to run.)
-                uint64_t ticks = (uint64_t)std::chrono::system_clock::now().time_since_epoch().count();
-                std::mt19937 random((uint32_t)(ticks ^ (ticks >> 32)));
-                g.blueprint = ships.empty() ? std::string("PLAYER_SHIP_HARD") : ships[random() % ships.size()];
+                if (g.blueprint.empty()) g.blueprint = ships.empty() ? std::string("PLAYER_SHIP_HARD") : ships[g.random() % ships.size()];
             }
             // FTL's own ship AI flies it (a duel before it had the opponent's replaced by its owner's game).
             GetState().aiOff[1] = false;
-            Log("Ai: a match against FTL's AI in %s (%s)", g.blueprint.c_str(), ShipTitle(g.blueprint).c_str());
+            Log("Ai: a match against FTL's AI in %s", g.blueprint.empty() ? "the ship it picks in the ship choice"
+                                                                          : (g.blueprint + " (" + ShipTitle(g.blueprint) + ")").c_str());
             Rounds::StartLocal();
+        }
+
+        void TakeShip(const std::string &blueprint)
+        {
+            if (!g.active || blueprint.empty() || blueprint == g.blueprint) return;
+            g.blueprint = blueprint;
+            Log("Ai: its ship for the match: %s (%s)", blueprint.c_str(), ShipTitle(blueprint).c_str());
         }
 
         bool Active()
@@ -126,6 +139,7 @@ namespace Duels
 
         std::string Name()
         {
+            if (g.blueprint.empty()) return "AI";
             std::string title = ShipTitle(g.blueprint);
             // "Kestrel Cruiser A": the ship's first word is enough on the screen.
             size_t space = title.find(' ');
@@ -593,11 +607,59 @@ namespace Duels
             return !factory || factory->CountCloneReadyCrew(false) == 0;
         }
 
+        // The ship choice (roadmap 3.9): in its turn the AI bans a type left, at random, and picks a ship of the offer at
+        // random (from a host's list, the ship HOST DUEL's window gave it, if the list has it); each after a moment's
+        // thought, as a player would take one.
+        static void Choose()
+        {
+            Rounds::Summary s = Rounds::GetSummary();
+            const Rounds::Summary::Choice &c = s.choice;
+            bool revealed = !c.ships[0].empty();
+            bool ban = !revealed && c.banner == 1;
+            bool pick = !revealed && c.banner == 2 && !c.offer.empty() && !c.picked[1];
+            if (!ban && !pick)
+            {
+                g.thinkUntil = 0.0;
+                return;
+            }
+            double now = WallMs();
+            if (g.thinkUntil <= 0.0)
+            {
+                g.thinkUntil = now + std::uniform_real_distribution<double>(1200.0, 3000.0)(g.random);
+                return;
+            }
+            if (now < g.thinkUntil) return;
+            g.thinkUntil = 0.0;
+            if (ban)
+            {
+                std::vector<int> open;
+                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
+                {
+                    if (((c.pool >> type) & 1) && std::find(c.banned.begin(), c.banned.end(), type) == c.banned.end()) open.push_back(type);
+                }
+                if (open.empty()) return;
+                int type = open[std::uniform_int_distribution<size_t>(0, open.size() - 1)(g.random)];
+                Log("Ai: it bans the %s", Ships::TypeName(type));
+                Rounds::OpponentBan(type);
+                return;
+            }
+            int index = -1;
+            for (size_t i = 0; i < c.offer.size(); ++i)
+            {
+                if (!g.preferred.empty() && c.offer[i] == g.preferred) index = (int)i;
+            }
+            bool set = index >= 0;
+            if (!set) index = (int)std::uniform_int_distribution<size_t>(0, c.offer.size() - 1)(g.random);
+            Log("Ai: it picks a ship (%s)", set ? "the one set for it" : "at random");
+            Rounds::OpponentPick(index);
+        }
+
         void OnFrame()
         {
             if (!g.active) return;
             Rounds::Phase phase = Rounds::GetPhase();
             ShipManager *ship = G_->GetShipManager(1);
+            if (phase == Rounds::Phase::Choice) Choose();
 
             // No pause, as in a duel (rules, section 1): the rounds run on the clock, and a game paused by the store, a
             // menu or a window without focus would stand still while they go on. From the moment FTL's first message

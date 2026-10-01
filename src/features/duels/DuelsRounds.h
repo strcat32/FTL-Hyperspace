@@ -45,6 +45,11 @@ namespace Duels
         void OpponentReady();
         void OpponentDefeated(bool crewDead);
         void OpponentState(float hullLost, float crewLost, float hullShare, float crewShare);
+        // The ship choice against the AI (roadmap 3.9): whether the next match chooses its ships (the host's settings),
+        // and the AI's ban (a type) and pick (the offer's index), taken as a guest's would be.
+        bool NextChoosesShips();
+        void OpponentBan(int type);
+        void OpponentPick(int index);
         // A lost connection pauses the match (roadmap AA; rules, section 3): FTL's world stands still and the ships take
         // no orders until both players are back; the phase, stall and draw timers and the environment wait too.
         void OnConnectionLost();

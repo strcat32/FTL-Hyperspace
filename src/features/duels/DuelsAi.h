@@ -16,11 +16,14 @@ namespace Duels
     namespace Ai
     {
         // The match against the AI begins (once the run has); its ship: a player ship's blueprint, "" for a random one.
+        // When the match chooses its ships (roadmap 3.9) the AI bans and picks in its turns, at random (from a host's
+        // list it picks the ship given here, if the list has it), and flies its pick (TakeShip, at the reveal).
         void Start(const std::string &blueprint);
+        void TakeShip(const std::string &blueprint);
         bool Active();
         // The match ends (the lobby, a new duel): the AI's ship goes.
         void Stop();
-        // "AI Kestrel": the AI's name on the screen.
+        // "AI Kestrel": the AI's name on the screen ("AI" while its ship isn't chosen).
         std::string Name();
 
         // DuelsRounds.cpp: a round's preparation begins, with the round's scrap and stock (the AI is ready at once; it

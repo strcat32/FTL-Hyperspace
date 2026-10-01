@@ -221,11 +221,11 @@ namespace Duels
             }
         }
 
-        // The match chooses its ships (roadmap 3.9): START instead of CHOOSE SHIP. A guest always starts so: the host's
-        // match chooses (its own ship, the hangar's, is a console's setting for tests).
+        // The match chooses its ships (roadmap 3.9): START instead of CHOOSE SHIP, against a player or the AI. A guest
+        // always starts so: the host's match chooses (its own ship, the hangar's, is a console's setting for tests).
         static bool StartsWithoutHangar()
         {
-            return g.open == Window::Join || (!g.vsAi && g.next.ships != 0);
+            return g.open == Window::Join || g.next.ships != 0;
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -276,10 +276,11 @@ namespace Duels
             }
             if (g.vsAi)
             {
-                // Against FTL's AI (roadmap 3.6): no room; the match begins with the run.
-                Log("Lobby: choose a ship; the match against the AI (%s) begins with the run: %s",
+                // Against FTL's AI (roadmap 3.6): no room; the match begins with the run (its ships chosen in it, 3.9).
+                bool start = StartsWithoutHangar();
+                Log("Lobby: %s; the match against the AI (%s) begins with the run: %s", start ? "START" : "choose a ship",
                     AiShipBlueprint().empty() ? "a random ship" : AiShipBlueprint().c_str(), message.c_str());
-                OpenHangar(Pending::Ai, false);
+                OpenHangar(Pending::Ai, start);
                 return;
             }
             // The room opens at the first relay of the list that answers (part 4).
@@ -303,10 +304,18 @@ namespace Duels
             y += 30.f;
             CheckAt(g.aiBox, lx, y, g.vsAi, "FTL's AI (on this computer, unranked)");
             y += 34.f;
-            if (g.vsAi)
+            if (g.vsAi && g.next.ships == 1)
             {
+                // With bans the AI bans and picks at random (roadmap 3.9); its ship isn't set here.
+                Text(FONT, lx, y + 6.f, "The AI bans and picks its ship at random.", light);
+                g.aiShipLess.w = g.aiShipMore.w = 0.f;
+            }
+            else if (g.vsAi)
+            {
+                // Its ship: from a host's list, its pick if the list has it (else one of the list at random); with each
+                // player's own (the console's), the ship it flies.
                 std::vector<std::string> ships = Ai::PlayerShips();
-                Text(FONT, lx, y + 6.f, "The AI's ship:", light);
+                Text(FONT, lx, y + 6.f, g.next.ships == 2 ? "The AI's pick:" : "The AI's ship:", light);
                 ButtonAt(g.aiShipLess, lx + 110.f, y, 30.f, 28.f, "<");
                 CSurface::GL_SetColor(white);
                 std::string shipName = g.aiShip == 0 ? std::string("Random") : Ai::ShipTitle(AiShipBlueprint());
@@ -329,7 +338,10 @@ namespace Duels
             y += 32.f;
             CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
             y += 40.f;
-            Paragraph(FONT, lx, y, lw, g.vsAi ? "CHOOSE SHIP opens FTL's hangar. Its START begins the run and the match against "
+            Paragraph(FONT, lx, y, lw, g.vsAi && StartsWithoutHangar()
+                                           ? "START begins the run and the match against the AI, on this computer: no room, "
+                                             "nothing over the network. The ships are chosen first, the AI's turns its own."
+                                       : g.vsAi ? "CHOOSE SHIP opens FTL's hangar. Its START begins the run and the match against "
                                                 "the AI, on this computer: no room, nothing over the network."
                                               : StartsWithoutHangar()
                                                     ? "START begins the run and opens the room. Its code is in the Duels window (DUELS "
@@ -379,56 +391,45 @@ namespace Duels
             else Paragraph(FONT, rx, y, rw, "The anti-ship battery comes from round 5 on.", soft);
             y += 26.f;
 
-            // The ships (roadmap 3.9): bans from the ticked types, then a pick of the three left; or a pick from the list,
-            // its ships ticked by layout. (Each player's own, the hangar's, is the console's, for tests.)
-            if (!g.vsAi)
+            // The ships (roadmap 3.9), against a player or the AI: bans from the ticked types, then a pick of the three
+            // left; or a pick from the list, its ships ticked by layout. (Each player's own, the hangar's, is the
+            // console's, for tests.)
+            Text(TEXT, rx, y + 6.f, "Ships", light);
+            float bx = rx + 70.f;
+            ButtonAt(g.shipsLess, bx, y, 30.f, 28.f, "<");
+            CSurface::GL_SetColor(n.ships == 0 ? gold : white);
+            freetype::easy_printCenter(TEXT, bx + 30.f + 105.f, y + 6.f,
+                                       n.ships == 1 ? "Bans, then a pick" : n.ships == 2 ? "A pick from a list" : "Their own (console)");
+            ButtonAt(g.shipsMore, bx + 30.f + 210.f, y, 30.f, 28.f, ">");
+            y += 36.f;
+            const float column = rw / 2.f, rowH = 27.f;
+            for (int type = 0; type < Ships::TYPE_COUNT; ++type)
             {
-                Text(TEXT, rx, y + 6.f, "Ships", light);
-                float bx = rx + 70.f;
-                ButtonAt(g.shipsLess, bx, y, 30.f, 28.f, "<");
-                CSurface::GL_SetColor(n.ships == 0 ? gold : white);
-                freetype::easy_printCenter(TEXT, bx + 30.f + 105.f, y + 6.f,
-                                           n.ships == 1 ? "Bans, then a pick" : n.ships == 2 ? "A pick from a list" : "Their own (console)");
-                ButtonAt(g.shipsMore, bx + 30.f + 210.f, y, 30.f, 28.f, ">");
-                y += 36.f;
-                const float column = rw / 2.f, rowH = 27.f;
-                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
+                float cx = rx + (type / 5) * column, cy = y + (type % 5) * rowH;
+                if (n.ships == 2)
                 {
-                    float cx = rx + (type / 5) * column, cy = y + (type % 5) * rowH;
-                    if (n.ships == 2)
+                    // The type's name, then a toggle for each of its layouts: gold when the list has it.
+                    Text(FONT, cx, cy + 4.f, Ships::TypeName(type), light);
+                    std::vector<std::string> variants = Ships::Variants(type);
+                    for (int layout = 0; layout < 3; ++layout)
                     {
-                        // The type's name, then a toggle for each of its layouts: gold when the list has it.
-                        Text(FONT, cx, cy + 4.f, Ships::TypeName(type), light);
-                        std::vector<std::string> variants = Ships::Variants(type);
-                        for (int layout = 0; layout < 3; ++layout)
-                        {
-                            Style::Box &box = g.layoutBoxes[type][layout];
-                            box = Style::Box();
-                            if (layout >= (int)variants.size()) continue;
-                            bool on = std::find(n.list.begin(), n.list.end(), variants[layout]) != n.list.end();
-                            box.x = cx + 82.f + layout * 28.f;
-                            box.y = cy;
-                            box.w = 24.f;
-                            box.h = 22.f;
-                            const GL_Color goldBody = Rgb(255, 214, 90);
-                            Style::Button(box.x, box.y, box.w, box.h, std::string(1, (char)('A' + layout)), FONT,
-                                          Hover(box) ? Style::Look::Hover : Style::Look::Idle, on && !Hover(box) ? &goldBody : nullptr);
-                        }
-                        g.typeBoxes[type] = Style::Box();
+                        Style::Box &box = g.layoutBoxes[type][layout];
+                        box = Style::Box();
+                        if (layout >= (int)variants.size()) continue;
+                        bool on = std::find(n.list.begin(), n.list.end(), variants[layout]) != n.list.end();
+                        box.x = cx + 82.f + layout * 28.f;
+                        box.y = cy;
+                        box.w = 24.f;
+                        box.h = 22.f;
+                        const GL_Color goldBody = Rgb(255, 214, 90);
+                        Style::Button(box.x, box.y, box.w, box.h, std::string(1, (char)('A' + layout)), FONT,
+                                      Hover(box) ? Style::Look::Hover : Style::Look::Idle, on && !Hover(box) ? &goldBody : nullptr);
                     }
-                    else
-                    {
-                        CheckAt(g.typeBoxes[type], cx, cy, (n.pool >> type) & 1, Ships::TypeName(type));
-                        for (Style::Box &box : g.layoutBoxes[type]) box = Style::Box();
-                    }
-                }
-            }
-            else
-            {
-                g.shipsLess = g.shipsMore = Style::Box();
-                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
-                {
                     g.typeBoxes[type] = Style::Box();
+                }
+                else
+                {
+                    CheckAt(g.typeBoxes[type], cx, cy, (n.pool >> type) & 1, Ships::TypeName(type));
                     for (Style::Box &box : g.layoutBoxes[type]) box = Style::Box();
                 }
             }

@@ -762,6 +762,7 @@ namespace Duels
             Environment::End();
             Match::NewFight();
             if (d.round == 1) TakeChosenShip();
+            if (d.round == 1 && g.local && !d.ships[GUEST].empty()) Ai::TakeShip(d.ships[GUEST]);   // its pick
             Refit::Restore(d.settings.permadeath);
             if (g.scrapRound != d.round)
             {
@@ -1467,14 +1468,32 @@ namespace Duels
             Refit::OnMatchStart();
             g.data = Data();
             g.data.settings = g.settings;
-            g.data.settings.ships = SHIPS_OWN;   // the AI's ship is chosen in HOST DUEL's window
             g.data.token = 1;
             if (g.data.settings.free) g.data.settings.rounds = 1;
             Announce(g.data.settings.free ? std::string("A free fight against the AI (no rounds)")
                                           : "A match against the AI: best of " + std::to_string(g.data.settings.rounds) + " rounds, " +
                                                 std::to_string(g.data.settings.prepSeconds) + " s preparation, permanent death " +
                                                 (g.data.settings.permadeath ? "on" : "off"));
-            StartRound(1);
+            // The ships are chosen as in a duel, the AI banning and picking in its turns (DuelsAi.cpp); with each
+            // player's own, ours is the hangar's and the AI's the one HOST DUEL's window set.
+            if (ChoosesShips(g.data.settings)) StartChoice();
+            else StartRound(1);
+        }
+
+        bool NextChoosesShips()
+        {
+            LoadSettings();
+            return ChoosesShips(g.settings);
+        }
+
+        void OpponentBan(int type)
+        {
+            if (g.local && g.active && type >= 0 && type < Ships::TYPE_COUNT) HostEvent(GUEST, EV_BAN, (uint8_t)type);
+        }
+
+        void OpponentPick(int index)
+        {
+            if (g.local && g.active && index >= 0 && index < 256) HostEvent(GUEST, EV_PICK, (uint8_t)index);
         }
 
         bool IsLocal()
@@ -1986,9 +2005,21 @@ namespace Duels
                 if (d.phase != Phase::Choice || BansDone(d)) { message = "no bans now"; return false; }
                 uint8_t banner = BannerOf(d, d.bans.size());
                 if (banner != g.me) { message = "it is " + Who(banner) + "'s ban"; return false; }
-                if (cmd.args.size() < 2 || !Ships::ParseType(cmd.args[1], type))
+                if (ArgIs(cmd, 1, "any"))
                 {
-                    message = "usage: ban <type> (kestrel, stealth, mantis, engi, federation, slug, rock, zoltan, crystal, lanius; or 1-10)";
+                    // Any type still in the choice, at random.
+                    std::vector<int> open;
+                    for (int t = 0; t < Ships::TYPE_COUNT; ++t)
+                    {
+                        if (TypesLeft(d) & (1 << t)) open.push_back(t);
+                    }
+                    if (open.empty()) { message = "no type left to ban"; return false; }
+                    std::mt19937 random((uint32_t)std::chrono::system_clock::now().time_since_epoch().count());
+                    type = open[std::uniform_int_distribution<size_t>(0, open.size() - 1)(random)];
+                }
+                else if (cmd.args.size() < 2 || !Ships::ParseType(cmd.args[1], type))
+                {
+                    message = "usage: ban <type>|any (kestrel, stealth, mantis, engi, federation, slug, rock, zoltan, crystal, lanius; or 1-10)";
                     return false;
                 }
                 if (!(TypesLeft(d) & (1 << type))) { message = std::string("the ") + Ships::TypeName(type) + " is out of the choice already"; return false; }
