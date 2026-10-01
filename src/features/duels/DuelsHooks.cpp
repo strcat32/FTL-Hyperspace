@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "Duels.h"
+#include "DuelsAi.h"
 #include "DuelsBays.h"
 #include "DuelsBoarding.h"
 #include "DuelsHacking.h"
@@ -368,6 +369,17 @@ HOOK_METHOD_PRIORITY(ProjectileFactory, GetProjectile, -2000, () -> Projectile*)
     Projectile *projectile = super();
     if (projectile && iShipId == 0) Duels::Match::OnOwnProjectile(this, projectile);
     return projectile;
+}
+
+// The AI's ship (a match against the AI, roadmap 3.6) is drawn as a duel's opponent, mirrored and facing us
+// (DuelsView.cpp). FTL fires an enemy's weapons upwards (270), out of its window's top, which went up the screen past
+// the ship's nose; a player ship's shots leave forward (0) instead, which the mirror turns towards us, as the duel's
+// replica's do. Before Hyperspace's ProjectileFactory::Update (CustomWeapons.cpp) makes the shot with the angle.
+HOOK_METHOD_PRIORITY(ProjectileFactory, Update, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ProjectileFactory::Update -> Begin (DuelsHooks.cpp)\n")
+    if (iShipId == 1 && Duels::Ai::Active()) currentFiringAngle = 0.f;
+    super();
 }
 
 // The replica's artillery charges but never fires by itself: FTL would pick a target of its own, and its shots come

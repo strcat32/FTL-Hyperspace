@@ -1137,10 +1137,13 @@ namespace Duels
             for (size_t slot = 0; slot < weapons.size(); ++slot)
             {
                 ProjectileFactory *weapon = weapons[slot];
-                Log("  weapon %u %-18s type %d power %d %s charge %.2f/%.2f autofire %d", (unsigned)slot,
+                // angle: where its shots leave (FTL's firing angle, 0 right, 270 up, in its ship's space), and where
+                // they come into the other space; mount: rotated, mirrored.
+                Log("  weapon %u %-18s type %d power %d %s charge %.2f/%.2f autofire %d angle %.0f entry %.0f mount %d%d", (unsigned)slot,
                     weapon->name.c_str(), weapon->blueprint ? weapon->blueprint->type : -1, weapon->requiredPower,
                     weapon->powered ? "on " : "off", weapon->cooldown.first, weapon->cooldown.second,
-                    (int)weapon->autoFiring);
+                    (int)weapon->autoFiring, weapon->currentFiringAngle, weapon->currentEntryAngle, (int)weapon->mount.rotate,
+                    (int)weapon->mount.mirror);
             }
         }
         for (size_t index = 0; index < ship->artillerySystems.size(); ++index)

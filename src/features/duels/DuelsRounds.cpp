@@ -1376,6 +1376,24 @@ namespace Duels
         {
             LoadSettings();
             Settings &s = g.settings;
+            // Test verb: a hazard from now on in this fight, in a match against the AI only (in a duel both games build
+            // the same environment from the host's plan).
+            if (ArgIs(cmd, 1, "env") && ArgIs(cmd, 2, "now"))
+            {
+                uint8_t mode = Environment::MODE_OFF;
+                if (!g.local || g.data.phase != Phase::Fight || cmd.args.size() < 4 || !Environment::ParseMode(cmd.args[3], mode) ||
+                    mode < Environment::MODE_SUN)
+                {
+                    message = "usage: match env now sun|pulsar|asteroids|nebula|storm|battery (in a fight against the AI)";
+                    return false;
+                }
+                Environment::Plan plan;
+                plan.kind = (uint8_t)(mode - 1);
+                plan.seed = (uint32_t)g.random();
+                Environment::Begin(plan, g.data.round, WallMs());
+                message = std::string("this fight is near ") + Environment::KindName(plan.kind) + " from now on";
+                return true;
+            }
             if (cmd.args.size() >= 2 && g.active)
             {
                 message = "the match is on: its settings are the host's from the start (change them before 'host')";

@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsEnvironment.h"
+#include "DuelsRounds.h"
 #include "DuelsTrace.h"
 
 #include <algorithm>
@@ -360,8 +361,23 @@ namespace Duels
             g.nextShotRoom = g.shotNumbers.Next();
         }
 
+        // The AI's ship in a match against the AI (roadmap 3.6, part 3): this game decides its hazards as well, and it
+        // gets the same as ours (the same rocks and shots at the same moments, at the same room numbers).
+        static ShipManager *AiShip()
+        {
+            ShipManager *ship = G_->GetShipManager(1);
+            return Rounds::IsLocal() && ship && !ship->bDestroyed && ship->ship.hullIntegrity.first > 0 ? ship : nullptr;
+        }
+
+        static int Rooms(int shipId)
+        {
+            ShipGraph *graph = ShipGraph::GetShipInfo(shipId);
+            return graph ? (int)graph->rooms.size() : 0;
+        }
+
         // FTL's battery shot (PDS_SHOT: 3 damage, through 5 shield layers, a breach) at our own ship, as FTL's battery
-        // fires it (Hyperspace's CreatePDSFire); a miss goes past to a side of the screen.
+        // fires it (Hyperspace's CreatePDSFire); a miss goes past to a side of the screen. Against the AI its ship gets
+        // the same shot.
         static void FireBattery(bool miss)
         {
             ShipManager *own = G_->GetShipManager(0);
@@ -372,6 +388,13 @@ namespace Duels
             if (!own || !space || own->bDestroyed || rooms <= 0 || !shot) return;
             Pointf target = miss ? Projectile::RandomSidePoint(0) : own->GetRoomCenter((int)(g.nextShotRoom % (uint32_t)rooms));
             space->CreatePDSFire(shot, BatteryOrigin(space), target, 0, true);
+            ShipManager *ai = miss ? nullptr : AiShip();
+            if (ai && Rooms(1) > 0)
+            {
+                int room = (int)(g.nextShotRoom % (uint32_t)Rooms(1));
+                space->CreatePDSFire(shot, BatteryOrigin(space), ai->GetRoomCenter(room), 1, true);
+                Log("Environment: the shot at the AI's ship, room %d", room);
+            }
         }
 
         static void MakeRock(const Rock &rock)
@@ -388,6 +411,12 @@ namespace Duels
             space->CreateAsteroid(start, 0, -1, target, 0, -1.f);
             ++g.rocksMade;
             Log("Environment: rock %d at %.0f room %d", g.rocks, rock.at, room);
+            if (ShipManager *ai = AiShip())
+            {
+                int aiRoom = Rooms(1) > 0 ? (int)(rock.room % (uint32_t)Rooms(1)) : 0;
+                space->CreateAsteroid(Projectile::RandomSidePoint(rock.side), 1, -1, ai->GetRoomCenter(aiRoom), 1, -1.f);
+                Log("Environment: rock %d at the AI's ship, room %d", g.rocks, aiRoom);
+            }
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -396,13 +425,17 @@ namespace Duels
 
         // FTL's nebula and ion storm as the status effects of its events (StatusEffect::GetNebulaEffect: the sensors
         // limited to 0; GetStormEffect: the reactor divided by 2), on our own ship only: the opponent's game does its
-        // ship's.
+        // ship's. Against the AI its ship too.
         static void OnOwnShip(int type, int system, int amount)
         {
             WorldManager *world = G_->GetWorld();
             ShipManager *own = G_->GetShipManager(0);
             if (!world || !own) return;
             world->ModifyStatusEffect(StatusEffect{type, system, amount, StatusEffect::TARGET_PLAYER}, own, StatusEffect::TARGET_PLAYER);
+            if (ShipManager *ai = AiShip())
+            {
+                world->ModifyStatusEffect(StatusEffect{type, system, amount, StatusEffect::TARGET_ENEMY}, ai, StatusEffect::TARGET_ENEMY);
+            }
         }
 
         static void HazardsOff(SpaceManager *space)
@@ -568,7 +601,14 @@ namespace Duels
 
         bool AllowsHazardDamage(ShipManager *ship)
         {
+            // FTL's flare or pulse acts on our own ship; on the opponent's in a match against the AI, which this game
+            // decides alone (roadmap 3.6, part 3).
             if (!g.active || !ship || ship->iShipId == 0) return true;
+            if (Rounds::IsLocal())
+            {
+                Log("Environment: FTL's %s reaches the AI's ship", g.plan.kind == SUN ? "flare" : "pulse");
+                return true;
+            }
             Log("Environment: FTL's %s skips the opponent's ship (its own game does it)", g.plan.kind == SUN ? "flare" : "pulse");
             return false;
         }
@@ -583,7 +623,7 @@ namespace Duels
 
         bool SmartPulse(ShipManager *ship)
         {
-            if (!g.active || g.plan.kind != PULSAR || !ship || ship->iShipId != 0) return false;
+            if (!g.active || g.plan.kind != PULSAR || !ship || (ship->iShipId != 0 && !Rounds::IsLocal())) return false;
             // The ion armor, as FTL: its value in tenths is the chance to resist the whole pulse.
             if (ship->HasAugmentation("ION_ARMOR"))
             {
