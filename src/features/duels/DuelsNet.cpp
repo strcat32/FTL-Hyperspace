@@ -701,8 +701,25 @@ namespace Duels
                 std::unique_ptr<Searcher> searcher(new Searcher());
                 searcher->address = address;
                 std::string error;
-                if (!ResolveAddress(address.server, address.port, searcher->relay, error) ||
-                    !searcher->socket.Open(0, IsLoopback(searcher->relay), error))
+                if (!ResolveAddress(address.server, address.port, searcher->relay, error))
+                {
+                    ++g_search.failed;
+                    g_search.errors.push_back(address.name + ": " + error);
+                    continue;
+                }
+                // A server under two names (a relay line with the master's address, roadmap AZ) is asked once.
+                bool asked = false;
+                for (const std::unique_ptr<Searcher> &other : g_searchers)
+                {
+                    if (other->relay == searcher->relay) asked = true;
+                }
+                if (asked)
+                {
+                    --g_search.relays;
+                    Log("Net: %s is a server asked already", address.name.c_str());
+                    continue;
+                }
+                if (!searcher->socket.Open(0, IsLoopback(searcher->relay), error))
                 {
                     ++g_search.failed;
                     g_search.errors.push_back(address.name + ": " + error);

@@ -12,14 +12,17 @@ namespace Duels
     {
         static const char *const FILE_NAME = "duels.cfg";
 
-        // The project's public relays, on every player's list after the relays of their own file (rules, section 6).
-        static const char *const PUBLIC_RELAYS[] = {"18.226.104.62"};
+        // The master server of a duels.cfg that names none (roadmap AZ): its name, so that the server can move. It is the
+        // project's public relay, on every player's list after the relays of their own file (rules, section 6).
+        static const char *const DEFAULT_MASTER = "ftl-duels.link";
 
         struct Settings
         {
             bool loaded = false;
             std::vector<std::string> lines;   // the file as it was, to write it back with one line changed
             std::string playerName;
+            std::string master;
+            bool masterInFile = false;        // the file has its master line (else it is written at the first need)
             std::vector<std::string> relays;
             std::map<std::string, std::string> values;   // the last line of each one-value setting
         };
@@ -60,21 +63,25 @@ namespace Duels
                 if (!Split(line, key, value) || value.empty()) continue;
                 if (key == "name") s.playerName = value;
                 else if (key == "relay") s.relays.push_back(value);
+                else if (key == "master") s.master = value;
                 else s.values[key] = value;
             }
+            s.masterInFile = !s.master.empty();
+            if (s.master.empty()) s.master = DEFAULT_MASTER;
             size_t own = s.relays.size();
-            for (const char *relay : PUBLIC_RELAYS)
             {
-                // The same server with the default port written out is the same relay.
-                std::string plain = relay, withPort = plain + ":47700";
+                // The master after the file's own relays (the same server with the default port written out is the
+                // same relay).
+                std::string plain = s.master, withPort = plain + ":47700";
                 if (std::find(s.relays.begin(), s.relays.end(), plain) == s.relays.end() &&
                     std::find(s.relays.begin(), s.relays.end(), withPort) == s.relays.end())
                 {
                     s.relays.push_back(plain);
                 }
             }
-            Log("Config: %s: name %s, %u relay(s) of its own, %u in all", FILE_NAME,
-                s.playerName.empty() ? "(none)" : s.playerName.c_str(), (unsigned)own, (unsigned)s.relays.size());
+            Log("Config: %s: name %s, master %s%s, %u relay(s) of its own, %u in all", FILE_NAME,
+                s.playerName.empty() ? "(none)" : s.playerName.c_str(), s.master.c_str(), s.masterInFile ? "" : " (none in the file)",
+                (unsigned)own, (unsigned)s.relays.size());
         }
 
         const std::string &PlayerName()
@@ -100,7 +107,8 @@ namespace Duels
             {
                 if (s.lines.empty())
                 {
-                    s.lines.push_back("# FTL: Duels settings: name <player name>, relay <server>[:port] (any number), and the host's match settings");
+                    s.lines.push_back("# FTL: Duels settings: name <player name>, master <server> (the master server), relay <server>[:port] "
+                                      "(any number), and the host's match settings");
                 }
                 s.lines.push_back(name + " " + newValue);
             }
@@ -131,18 +139,42 @@ namespace Duels
             WriteSetting(key, value);
         }
 
+        // A server's host without its port ("name:47700", "name", an IPv6 address in brackets with its port).
+        static std::string HostOf(const std::string &server)
+        {
+            if (!server.empty() && server[0] == '[')
+            {
+                size_t end = server.find(']');
+                return end == std::string::npos ? server : server.substr(1, end - 1);
+            }
+            size_t colon = server.find(':');
+            if (colon != std::string::npos && server.find(':', colon + 1) == std::string::npos) return server.substr(0, colon);
+            return server;
+        }
+
+        const std::string &Master()
+        {
+            Load();
+            Settings &s = g_settings;
+            // In the file from now on: the master's address is a setting, not the code's (roadmap AZ).
+            if (!s.masterInFile && SettingsFromConfig())
+            {
+                s.masterInFile = true;
+                WriteSetting("master", s.master);
+                Log("Config: %s names its master server now (%s)", FILE_NAME, s.master.c_str());
+            }
+            return s.master;
+        }
+
         bool IsPublicRelay(const std::string &server)
         {
-            for (const char *relay : PUBLIC_RELAYS)
-            {
-                if (server == relay) return true;
-            }
-            return false;
+            Load();
+            return HostOf(server) == HostOf(g_settings.master);
         }
 
         const std::vector<std::string> &Relays()
         {
-            Load();
+            Master();
             return g_settings.relays;
         }
     }
