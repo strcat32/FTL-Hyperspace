@@ -1985,23 +1985,6 @@ namespace Duels
             ++m.shotsSent;
         }
 
-        void OnReplayPause(double ms)
-        {
-            // FTL's world stood still: the waits for verdicts (a beam's too) start that much later, and the opponent's
-            // shots waiting to come in leave that much later.
-            for (OutShot &shot : g_match.out)
-            {
-                if (shot.holdStartMs >= 0.0) shot.holdStartMs += ms;
-                if (shot.goneMs >= 0.0) shot.goneMs += ms;
-            }
-            for (InShot &shot : g_match.in)
-            {
-                if (shot.holdStartMs >= 0.0) shot.holdStartMs += ms;
-                if (shot.goneMs >= 0.0) shot.goneMs += ms;
-                if (!shot.released) shot.releaseAt += ms;
-            }
-        }
-
         void ReplayOwnResult(const uint8_t *data, size_t size)
         {
             if (!Net::Replaying()) return;
@@ -3210,8 +3193,7 @@ namespace Duels
                 TraceSync(now);
             }
             Rounds::OnFrame(now);
-            // A replay's pause stops FTL's world (roadmap 5.1): no shot moves, none waits for its verdict.
-            if (!Demo::ReplayPaused()) TrackShots(now);
+            TrackShots(now);
         }
 
         const std::string &PlayerName()

@@ -58,7 +58,7 @@ namespace Duels
 
         g_state.script = script;
         g_state.nextScriptCommand = 0;
-        g_state.scriptStartMs = WallMs();
+        g_state.scriptStartMs = RealMs();
         message = "script " + path + " started";
         Log("Script %s started with %u commands", path.c_str(), (unsigned)script.size());
         return true;
@@ -68,7 +68,8 @@ namespace Duels
     {
         if (g_state.scriptStartMs < 0.0) return;
 
-        double elapsed = (WallMs() - g_state.scriptStartMs) / 1000.0;
+        // Real time: a script goes on while a replay is paused (its clock stands still then).
+        double elapsed = (RealMs() - g_state.scriptStartMs) / 1000.0;
         while (g_state.nextScriptCommand < g_state.script.size() &&
                g_state.script[g_state.nextScriptCommand].time <= elapsed)
         {

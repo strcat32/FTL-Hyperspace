@@ -66,7 +66,7 @@ namespace Duels
         g_auto.checked = true;
         if (!std::ifstream(AUTOTEST_FILE)) return;
 
-        g_auto.startMs = WallMs();
+        g_auto.startMs = RealMs();
         std::vector<std::string> directives;
         std::string error;
         bool noDebug = false;
@@ -136,7 +136,7 @@ namespace Duels
         if (g_auto.phase == Phase::Off || !app) return;
 
         ++g_auto.frames;
-        if (g_auto.phase != Phase::Quitting && WallMs() - g_auto.startMs > g_auto.timeoutS * 1000.0)
+        if (g_auto.phase != Phase::Quitting && RealMs() - g_auto.startMs > g_auto.timeoutS * 1000.0)
         {
             RequestQuit("timeout");
         }
@@ -150,7 +150,7 @@ namespace Duels
                 Log("Autotest: running the scenario in the main menu");
                 state.script = g_auto.script;
                 state.nextScriptCommand = 0;
-                state.scriptStartMs = WallMs();
+                state.scriptStartMs = RealMs();
                 Enter(Phase::Running);
             }
             else if (app->menu.bOpen && g_auto.frames >= 60)
@@ -201,7 +201,7 @@ namespace Duels
                 Log("Autotest: %d dialog choices made, running the scenario", g_auto.dialogsClosed);
                 state.script = g_auto.script;
                 state.nextScriptCommand = 0;
-                state.scriptStartMs = WallMs();
+                state.scriptStartMs = RealMs();
                 Enter(Phase::Running);
             }
             break;

@@ -63,10 +63,23 @@ HOOK_METHOD(WorldManager, OnLoop, () -> void)
 {
     LOG_HOOK("HOOK_METHOD -> WorldManager::OnLoop -> Begin (DuelsHooks.cpp)\n")
     Duels::State &state = Duels::GetState();
-    ++state.worldLoops;
-    // Raw field on purpose: GetSpeedFactor() is rescaled by Hyperspace's time dilation hooks.
-    state.gameTime += G_->GetCFPS()->SpeedFactor * 0.0625;
-    super();
+    // A replay (roadmap 5.1): its speed is how many steps of FTL's world a frame takes (a half step for half speed), and
+    // its records come between the steps, its clock moving on with them (DuelsDemo.cpp).
+    int steps = 1;
+    float share = 1.f;
+    CFPS *fps = G_->GetCFPS();
+    Duels::Demo::Pace(steps, share, fps->SpeedFactor * 62.5);
+    float frame = fps->SpeedFactor;
+    fps->SpeedFactor = frame * share;
+    for (int step = 0; step < steps; ++step)
+    {
+        ++state.worldLoops;
+        // Raw field on purpose: GetSpeedFactor() is rescaled by Hyperspace's time dilation hooks.
+        state.gameTime += fps->SpeedFactor * 0.0625;
+        Duels::Demo::BeforeWorldStep(fps->SpeedFactor * 62.5);
+        super();
+    }
+    fps->SpeedFactor = frame;
 }
 
 HOOK_METHOD(WorldManager, PauseLoop, () -> void)

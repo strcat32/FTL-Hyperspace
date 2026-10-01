@@ -1095,6 +1095,7 @@ namespace Duels
             Session &s = g_session;
             if (!s.replay) return;
             s.replay = false;
+            ReplayClockOff();   // real time again (DuelsTrace.h)
             Log("Net: the replay ended (%s)", reason.c_str());
             Close();
             if (s.listener) s.listener->OnDisconnected(reason, false);

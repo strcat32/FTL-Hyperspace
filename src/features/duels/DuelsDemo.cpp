@@ -5,7 +5,6 @@
 #include "DuelsCrew.h"
 #include "DuelsDemo.h"
 #include "DuelsDrones.h"
-#include "DuelsEnvironment.h"
 #include "DuelsFair.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
@@ -16,6 +15,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <sstream>
@@ -71,7 +72,11 @@ namespace Duels
             uint8_t recorder = FROM_HOST;
             std::vector<DemoRecord> records;
             size_t next = 0;
-            double startMs = 0.0, pausedAt = -1.0;
+            double startMs = 0.0;            // the demo's start, on the replay's clock
+            bool paused = false;
+            double speed = 1.0;              // 0.5, 1, 2, 4 or 8
+            double seekTo = -1.0;            // running ahead to this time (ms in the demo); -1: not seeking
+            bool pauseAfterSeek = false;
             uint32_t delivered = 0, ownLoadouts = 0, ownStates = 0, held = 0;
         };
 
@@ -390,14 +395,17 @@ namespace Duels
             if (g.file) End("a replay begins");
             ReplayState replay;
             if (!ReadDemo(NewestDemo(path), replay, message)) return false;
+            const std::string opponent = replay.recorder == FROM_HOST ? replay.guestName : replay.hostName;
+            Log("Demo: replaying %s (%u records, %.0f s; recorded by the %s, %s vs %s)", path.c_str(), (unsigned)replay.records.size(),
+                replay.records.back().ms / 1000.0, replay.recorder == FROM_HOST ? "host" : "guest", replay.hostName.c_str(),
+                replay.guestName.c_str());
+            // A replay that runs ends first (another one, or this one going back to its start).
+            Net::BeginReplay(opponent);
             g_replay = std::move(replay);
             g_replay.active = true;
+            // Its clock: FTL's world time from now on (DuelsTrace.h); the demo starts now.
+            ReplayClockOn();
             g_replay.startMs = WallMs();
-            const std::string &opponent = g_replay.recorder == FROM_HOST ? g_replay.guestName : g_replay.hostName;
-            Log("Demo: replaying %s (%u records, %.0f s; recorded by the %s, %s vs %s)", path.c_str(), (unsigned)g_replay.records.size(),
-                g_replay.records.back().ms / 1000.0, g_replay.recorder == FROM_HOST ? "host" : "guest", g_replay.hostName.c_str(),
-                g_replay.guestName.c_str());
-            Net::BeginReplay(opponent);
             // The recorded clocks against ours, from the first state each side sent: the recorder's full states went as
             // they were written; the opponent's states as they came (their latency in it, as the recorder saw them).
             // The match's times are the host's: the recorder's own, if it hosted.
@@ -507,17 +515,44 @@ namespace Duels
 
         bool ReplayPaused()
         {
-            return g_replay.active && g_replay.pausedAt >= 0.0;
+            return g_replay.active && g_replay.paused;
         }
 
-        void ReplayFrame(double now)
+        static const int SEEK_STEPS = 32;   // FTL's world steps a frame while a seek runs ahead
+
+        void Pace(int &steps, float &share, double stepMs)
         {
-            if (!g_replay.active || g_replay.pausedAt >= 0.0) return;
-            double t = now - g_replay.startMs;
+            steps = 1;
+            share = 1.f;
+            if (!g_replay.active || g_replay.paused) return;
+            // A seek runs ahead: no more steps than it takes to get there.
+            double ahead = g_replay.seekTo - (WallMs() - g_replay.startMs);
+            if (g_replay.seekTo >= 0.0) steps = stepMs > 0.0 ? std::max(1, std::min(SEEK_STEPS, (int)std::ceil(ahead / stepMs))) : SEEK_STEPS;
+            else if (g_replay.speed >= 1.0) steps = (int)g_replay.speed;
+            else share = (float)g_replay.speed;
+        }
+
+        void BeforeWorldStep(double stepMs)
+        {
+            if (!g_replay.active || g_replay.paused) return;
+            ReplayClockAdvance(stepMs);
+            double t = WallMs() - g_replay.startMs;
             while (g_replay.active && g_replay.next < g_replay.records.size() && g_replay.records[g_replay.next].ms <= t)
             {
                 Play(g_replay.records[g_replay.next]);
                 ++g_replay.next;
+            }
+        }
+
+        void ReplayFrame(double now)
+        {
+            if (!g_replay.active) return;
+            // A seek there: on at the speed before it, or paused again.
+            if (g_replay.seekTo >= 0.0 && now - g_replay.startMs >= g_replay.seekTo)
+            {
+                Log("Demo: the replay is at %.1f s (seek)", (now - g_replay.startMs) / 1000.0);
+                g_replay.seekTo = -1.0;
+                g_replay.paused = g_replay.pauseAfterSeek;
             }
             if (g_replay.active && g_replay.next >= g_replay.records.size())
             {
@@ -532,11 +567,33 @@ namespace Duels
         {
             if (!g_replay.active) return "replay: none";
             std::ostringstream out;
-            double t = (g_replay.pausedAt >= 0.0 ? g_replay.pausedAt : WallMs()) - g_replay.startMs;
+            double t = WallMs() - g_replay.startMs;
             out << "replay: " << g_replay.path << ", " << (int)(t / 1000.0) << " of " << (int)(g_replay.records.back().ms / 1000) << " s"
-                << (g_replay.pausedAt >= 0.0 ? " (paused)" : "") << ", record " << g_replay.next << " of " << g_replay.records.size()
-                << ", " << g_replay.delivered << " played, " << g_replay.held << " held";
+                << (g_replay.paused ? " (paused)" : "") << (g_replay.seekTo >= 0.0 ? " (seeking)" : "") << ", speed " << g_replay.speed
+                << ", record " << g_replay.next << " of " << g_replay.records.size() << ", " << g_replay.delivered << " played, "
+                << g_replay.held << " held";
             return out.str();
+        }
+
+        // To a time of the demo (ms): ahead by running there, back by starting again and running there.
+        static bool Seek(double target, std::string &message)
+        {
+            double length = g_replay.records.back().ms;
+            target = std::max(0.0, std::min(target, length));
+            double position = WallMs() - g_replay.startMs;
+            bool paused = g_replay.paused;
+            if (target < position)
+            {
+                std::string path = g_replay.path;
+                double speed = g_replay.speed;
+                if (!StartReplay(path, message)) return false;
+                g_replay.speed = speed;
+            }
+            g_replay.seekTo = target;
+            g_replay.pauseAfterSeek = paused;
+            g_replay.paused = false;
+            message = "replay seeking " + std::to_string((int)(target / 1000.0)) + " s" + (target < position ? " (from the start)" : "");
+            return true;
         }
 
         bool RunReplayVerb(const Command &cmd, std::string &message)
@@ -548,33 +605,54 @@ namespace Duels
             }
             if (ArgIs(cmd, 1, "pause"))
             {
-                if (!g_replay.active || g_replay.pausedAt >= 0.0)
+                if (!g_replay.active || g_replay.paused)
                 {
                     message = "no replay runs";
                     return false;
                 }
-                g_replay.pausedAt = WallMs();
+                // FTL's world stands still (FTL's pause), and the replay's clock with it.
+                g_replay.paused = true;
                 message = "replay paused";
                 return true;
             }
             if (ArgIs(cmd, 1, "resume"))
             {
-                if (!g_replay.active || g_replay.pausedAt < 0.0)
+                if (!g_replay.active || !g_replay.paused)
                 {
                     message = "no replay is paused";
                     return false;
                 }
-                // FTL's world stood still (FTL's pause): the records' times move on by it, both recorded clocks against
-                // ours, the shots' waits and the fight's hazards with them.
-                double paused = WallMs() - g_replay.pausedAt;
-                g_replay.startMs += paused;
-                Net::SetReplayClock(Net::ReplayClock() - paused);
-                Net::SetReplayHostClock(Net::ReplayHostClock() - paused);
-                Match::OnReplayPause(paused);
-                Environment::Shift(paused);
-                g_replay.pausedAt = -1.0;
+                g_replay.paused = false;
                 message = "replay resumed";
                 return true;
+            }
+            if (ArgIs(cmd, 1, "speed"))
+            {
+                double speed = cmd.args.size() > 2 ? std::atof(cmd.args[2].c_str()) : 0.0;
+                if (!g_replay.active || (speed != 0.5 && speed != 1.0 && speed != 2.0 && speed != 4.0 && speed != 8.0))
+                {
+                    message = "usage: replay speed 0.5|1|2|4|8 (while a replay runs)";
+                    return false;
+                }
+                g_replay.speed = speed;
+                std::ostringstream text;
+                text << "replay speed " << speed;
+                message = text.str();
+                return true;
+            }
+            if (ArgIs(cmd, 1, "seek"))
+            {
+                // replay seek <s> (the demo's time), or +<s> / -<s> from where it is.
+                std::string value = cmd.args.size() > 2 ? cmd.args[2] : "";
+                if (!g_replay.active || value.empty())
+                {
+                    message = "usage: replay seek <s>|+<s>|-<s> (while a replay runs)";
+                    return false;
+                }
+                double seconds = std::atof(value.c_str());
+                bool relative = value[0] == '+' || value[0] == '-';
+                double target = relative ? WallMs() - g_replay.startMs + seconds * 1000.0 : seconds * 1000.0;
+                return Seek(target, message);
             }
             if (ArgIs(cmd, 1, "stop"))
             {

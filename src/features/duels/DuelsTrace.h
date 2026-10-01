@@ -6,8 +6,16 @@
 
 namespace Duels
 {
-    // Monotonic wall-clock milliseconds since the first call.
+    // Milliseconds since the game started, never going back. In a replay (roadmap 5.1) the replay's own time: FTL's world
+    // time, which moves on with the world's steps (ReplayClockAdvance) and stands still while the replay is paused, so
+    // everything timed by it follows the replay at any speed.
     double WallMs();
+    // Real time since the game started, always (the test harness's script goes on while a replay is paused).
+    double RealMs();
+    // A replay's clock: from On, WallMs moves on only by Advance; Off goes back to real time (it never goes back).
+    void ReplayClockOn();
+    void ReplayClockAdvance(double ms);
+    void ReplayClockOff();
 
     // Append-only CSV file in the game directory. Rows are flushed periodically so a crash loses little.
     class CsvFile

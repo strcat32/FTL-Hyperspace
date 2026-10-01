@@ -79,8 +79,6 @@ namespace Duels
         void ReplayOwnShot(const uint8_t *data, size_t size);
         void ReplayOwnResult(const uint8_t *data, size_t size);
         void ReplayOwnShotDowned(const uint8_t *data, size_t size);
-        // A replay's pause (FTL's world stood still for ms): the shots' waits move on by it.
-        void OnReplayPause(double ms);
         // A ship our game doesn't decide but follows: the opponent's copy (ship 1, once built), and in a replay our ship
         // too, once the recorder's states drive it.
         bool IsDriven(int shipId);

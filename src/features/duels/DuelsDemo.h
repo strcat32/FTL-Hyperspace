@@ -50,10 +50,17 @@ namespace Duels
         // ship follows them), its shots and its verdicts on the opponent's (Match::ReplayOwnShot, ReplayOwnResult), the
         // match's flow when it hosted, the chat. Boarding, hacking, mind control and drones wait for a later stage.
         bool StartReplay(const std::string &path, std::string &message);
-        void ReplayFrame(double now);   // Net::Update while it replays
-        // A replay's pause is FTL's pause too: the world stands still (CommandGui::IsPaused).
+        void ReplayFrame(double now);   // Net::Update while it replays: a seek's arrival, the replay's end
+        // A replay's pause is FTL's pause too: the world stands still (CommandGui::IsPaused), and the replay's clock.
         bool ReplayPaused();
-        // Test verb: replay <file> | replay pause | replay resume | replay stop | replay (its state).
+        // A replay's clock is FTL's world time (DuelsTrace.h). Its pace (WorldManager::OnLoop, DuelsHooks.cpp): how
+        // many steps of FTL's world a frame takes (2 to 8 for its speed, 32 while a seek runs ahead), and each step's
+        // share of FTL's own (half speed); 1 and 1 outside a replay. Before each step its clock moves on by the step and
+        // the records whose time has come are played.
+        void Pace(int &steps, float &share, double stepMs);
+        void BeforeWorldStep(double stepMs);
+        // Test verb: replay <file> | replay pause | replay resume | replay stop | replay speed 0.5|1|2|4|8 |
+        // replay seek <s>|+<s>|-<s> | replay (its state).
         bool RunReplayVerb(const Command &cmd, std::string &message);
     }
 }
