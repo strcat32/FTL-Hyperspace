@@ -97,6 +97,9 @@ namespace Duels
             bool havePending = false;
             std::map<const CrewAnimation*, uint8_t> puppetAnimations;   // rebuilt after every loop of the ship
             uint32_t rostersApplied = 0, placed = 0, created = 0;
+            // A replay: the other side's crew aboard this ship (on ours: the opponent's boarders), by their owner's ids,
+            // puppets of this ship's owner's guest entries (its game simulated them).
+            std::map<uint16_t, Puppet> guests;
         };
         static PuppetSide g_sides[2];
 
@@ -384,6 +387,10 @@ namespace Duels
         {
             for (const PuppetSide &side : g_sides)
             {
+                for (const std::pair<const uint16_t, Puppet> &entry : side.guests)
+                {
+                    if (entry.second.crew == crew) return true;
+                }
                 if (!side.active) continue;
                 for (const std::pair<const uint16_t, Puppet> &entry : side.puppets)
                 {
@@ -637,15 +644,22 @@ namespace Duels
 
         bool ReplayOwnState(Reader &r, double localTime)
         {
-            // The recorder's crew on its ship; the guests (the opponent's boarders there) wait for the replay's later
-            // stages.
+            // The recorder's crew on its ship, and its guests (the opponent's boarders there) as its game had them.
             std::vector<std::pair<uint16_t, Sample>> samples, guests;
             ReadEntries(r, samples);
             ReadEntries(r, guests);
             if (!r.Ok()) return false;
+            ShipManager *own = G_->GetShipManager(0);
             g_sides[0].pending.swap(samples);
             g_sides[0].havePending = true;
-            ApplyStateFor(g_sides[0], G_->GetShipManager(0), localTime, false);
+            ApplyStateFor(g_sides[0], own, localTime, false);
+            for (std::pair<uint16_t, Sample> &entry : guests)
+            {
+                auto found = g_sides[0].guests.find(entry.first);
+                if (found == g_sides[0].guests.end() || !own) continue;   // aboard before the replay knew of them
+                entry.second.t = localTime;
+                ApplySample(own, found->second, entry.second, false);
+            }
             return true;
         }
 
@@ -659,6 +673,7 @@ namespace Duels
             side.puppetAnimations.clear();
             std::vector<Puppet*> all;
             for (std::pair<const uint16_t, Puppet> &entry : side.puppets) all.push_back(&entry.second);
+            for (std::pair<const uint16_t, Puppet> &entry : side.guests) all.push_back(&entry.second);
             for (std::pair<const uint16_t, Puppet> &entry : g_crew.away)
             {
                 if (!theirs) break;
@@ -718,11 +733,16 @@ namespace Duels
             std::vector<std::pair<uint16_t, CrewMember*>> list, guests;
             if (ship && ship == G_->GetShipManager(0) && g_sides[0].active)
             {
-                // A replay's ship 0: the recorder's crew, its puppets by its ids (roadmap 5.1).
+                // A replay's ship 0: the recorder's crew, its puppets by its ids (roadmap 5.1), and its guests.
                 for (std::pair<const uint16_t, Puppet> &entry : g_sides[0].puppets)
                 {
                     CrewMember *crew = LiveCrew(ship, entry.second);
                     if (crew) list.push_back(std::make_pair(entry.first, crew));
+                }
+                for (std::pair<const uint16_t, Puppet> &entry : g_sides[0].guests)
+                {
+                    CrewMember *crew = LiveCrew(ship, entry.second);
+                    if (crew) guests.push_back(std::make_pair(entry.first, crew));
                 }
             }
             else if (ship && ship == G_->GetShipManager(0))
@@ -797,7 +817,7 @@ namespace Duels
             out << "crew: rosters " << side.rostersApplied << ", puppets " << side.puppets.size() << ", made "
                 << side.created << ", put in place " << side.placed << ", boarded " << g_crew.boarded << " (away "
                 << g_crew.away.size() << "), guests made " << g_crew.guestsMade << " (aboard " << g_crew.guests.size() << ")";
-            if (g_sides[0].active) out << "; our ship's (a replay) " << g_sides[0].puppets.size() << " puppets";
+            if (g_sides[0].active) out << "; our ship's (a replay) " << g_sides[0].puppets.size() << " puppets, " << g_sides[0].guests.size() << " boarders";
             return out.str();
         }
 
@@ -871,17 +891,50 @@ namespace Duels
             return g_crew.nextId++;
         }
 
+        // A boarder made aboard a ship (a robot by its pod, a crew member by the teleport): the puppet for its id.
+        static void BoarderPuppet(Puppet &puppet, uint16_t id, CrewMember *crew)
+        {
+            puppet = Puppet();
+            puppet.crew = crew;
+            puppet.roster.id = id;
+            puppet.roster.species = crew->species;
+            puppet.roster.name = crew->GetName();
+            puppet.roster.male = crew->blueprint.male;
+            puppet.placeNow = false;   // its pod (the teleport) put it there
+        }
+
         void RobotAway(CrewMember *robot, uint16_t id)
         {
-            Puppet &puppet = g_crew.away[id];
-            puppet = Puppet();
-            puppet.crew = robot;
-            puppet.roster.id = id;
-            puppet.roster.species = robot->species;
-            puppet.roster.name = robot->GetName();
-            puppet.roster.male = robot->blueprint.male;
-            puppet.placeNow = false;   // its pod put it there
+            BoarderPuppet(g_crew.away[id], id, robot);
             ++g_crew.boarded;
+        }
+
+        void ReplayAwayAboard(uint16_t id, CrewMember *crew)
+        {
+            BoarderPuppet(g_crew.away[id], id, crew);
+            ++g_crew.boarded;
+        }
+
+        void ReplayAwayGone(uint16_t id)
+        {
+            auto found = g_crew.away.find(id);
+            if (found == g_crew.away.end()) return;
+            ShipManager *replica = G_->GetShipManager(1);
+            CrewMember *crew = LiveCrew(replica, found->second);
+            if (crew && !crew->bDead) replica->RemoveCrewmember(crew);
+            g_crew.away.erase(found);
+        }
+
+        void ReplayGuestAboard(uint16_t id, CrewMember *crew)
+        {
+            BoarderPuppet(g_sides[0].guests[id], id, crew);
+            ++g_crew.guestsMade;
+        }
+
+        CrewMember *ReplayGuest(uint16_t id)
+        {
+            auto found = g_sides[0].guests.find(id);
+            return found == g_sides[0].guests.end() ? nullptr : LiveCrew(G_->GetShipManager(0), found->second);
         }
 
         void AddGuest(uint16_t id, CrewMember *crew)
@@ -916,6 +969,7 @@ namespace Duels
         void RemoveGuest(uint16_t id)
         {
             g_crew.guests.erase(id);
+            g_sides[0].guests.erase(id);   // a replay's
         }
 
         std::vector<std::pair<uint16_t, CrewMember*>> AwayCrew()
@@ -949,6 +1003,7 @@ namespace Duels
         void AdoptPuppet(uint16_t id, CrewMember *crew)
         {
             g_crew.guests.erase(id);
+            g_sides[0].guests.erase(id);   // a replay's
             Puppet &puppet = g_sides[1].puppets[id];
             puppet = Puppet();
             puppet.crew = crew;

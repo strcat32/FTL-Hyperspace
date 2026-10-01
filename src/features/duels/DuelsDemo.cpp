@@ -1,8 +1,10 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsBoarding.h"
 #include "DuelsConfig.h"
 #include "DuelsCrew.h"
 #include "DuelsDemo.h"
+#include "DuelsDrones.h"
 #include "DuelsEnvironment.h"
 #include "DuelsFair.h"
 #include "DuelsMatch.h"
@@ -430,7 +432,8 @@ namespace Duels
         }
 
         static const uint8_t MSG_CHAT = 16, MSG_LOADOUT = 17, MSG_READY = 18, MSG_SHOT = 20, MSG_RESULT = 21, MSG_SHOT_DOWNED = 23,
-                             MSG_CREW_ROSTER = 26, MSG_SETTINGS = 27, MSG_MATCH = 38, MSG_MATCH_EVENT = 39;
+                             MSG_DRONE_SHOT = 25, MSG_CREW_ROSTER = 26, MSG_SETTINGS = 27, MSG_BOARD = 32, MSG_RECALL = 33,
+                             MSG_MATCH = 38, MSG_MATCH_EVENT = 39;
 
         // One record, its time come.
         static void Play(const DemoRecord &record)
@@ -458,6 +461,18 @@ namespace Duels
                     Crew::ReplayOwnRoster(record.data.data(), record.data.size());
                     ++g_replay.delivered;
                 }
+                else if (record.type == MSG_BOARD || record.type == MSG_RECALL)
+                {
+                    // Stage 4b: its crew going aboard the opponent's ship and taken back.
+                    Boarding::ReplayOwn(record.type, record.data.data(), record.data.size());
+                    ++g_replay.delivered;
+                }
+                else if (record.type == MSG_DRONE_SHOT)
+                {
+                    // Stage 4b: its defense drones' shots, copies in our space.
+                    Drones::ReplayOwnDroneShot(record.data.data(), record.data.size());
+                    ++g_replay.delivered;
+                }
                 else if (record.type == MSG_SHOT || record.type == MSG_RESULT || record.type == MSG_SHOT_DOWNED)
                 {
                     // Stage 4: its shots from our ship, its verdicts on the opponent's.
@@ -479,7 +494,8 @@ namespace Duels
             }
             bool shown = record.type == MSG_CHAT || record.type == MSG_LOADOUT || record.type == MSG_READY || record.type == MSG_STATE ||
                          record.type == MSG_CREW_ROSTER || record.type == MSG_SHOT || record.type == MSG_RESULT ||
-                         record.type == MSG_SHOT_DOWNED || (matchFlow && fromHost);
+                         record.type == MSG_SHOT_DOWNED || record.type == MSG_DRONE_SHOT || record.type == MSG_BOARD ||
+                         record.type == MSG_RECALL || (matchFlow && fromHost);
             if (!shown)
             {
                 ++g_replay.held;

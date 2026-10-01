@@ -3,6 +3,7 @@
 #include "Duels.h"
 #include "DuelsConsole.h"
 #include "DuelsDrones.h"
+#include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsTrace.h"
 #include "DuelsWire.h"
@@ -81,17 +82,24 @@ namespace Duels
             Pointf target;
         };
 
-        struct DroneState
+        // A ship driven by its owner's states: the opponent's copy (side 1), and in a replay (roadmap 5.1) our ship, the
+        // recorder's (side 0). Its drones are puppets.
+        struct DroneSide
         {
-            std::vector<Puppet> puppets;           // by the replica's drone slot
-            std::vector<Entry> pending;            // the last state message, applied after the replica's systems
+            std::vector<Puppet> puppets;           // by the ship's drone slot
+            std::vector<Entry> pending;            // the last state message, applied after the ship's systems
             int pendingParts = 0;
             bool havePending = false;
-            std::vector<TrackedShot> visual;       // harmless copies of the opponent's drone shots
+            double updateAgeMs = -1.0;             // how old the owner's updates are when they arrive (smoothed)
+        };
+
+        struct DroneState
+        {
+            DroneSide sides[2];
+            std::vector<TrackedShot> visual;       // harmless copies of drone shots: the opponent's (in a replay ours too)
             std::vector<TrackedShot> own;          // our drones' shots in our space
             std::set<std::string> notNetworked;    // drones announced as not networked yet
             uint32_t hitsSent = 0, hitsReceived = 0, shotCopies = 0;
-            double updateAgeMs = -1.0;             // how old the owner's updates are when they arrive (smoothed)
             CsvFile trace;                         // duels_drones.csv with "trace on": where each puppet is drawn
             CsvFile ownTrace;                      // duels_owndrones.csv with "trace on": our defense drones' aim
         };
@@ -100,19 +108,23 @@ namespace Duels
 
         void Reset()
         {
-            g_drones.puppets.clear();
-            g_drones.pending.clear();
-            g_drones.havePending = false;
+            g_drones.sides[0] = DroneSide();
+            g_drones.sides[1] = DroneSide();
             g_drones.visual.clear();
             g_drones.own.clear();
             g_drones.notNetworked.clear();
-            g_drones.updateAgeMs = -1.0;
         }
 
         // The replica's AI is replaced while it is a duel opponent (or a command-driven enemy).
         static bool Replaced()
         {
             return GetState().aiOff[1] && G_->GetShipManager(1) != nullptr;
+        }
+
+        // A ship whose drones are puppets: the replica, and in a replay our ship once the recorder's states drive it.
+        static bool Driven(int shipId)
+        {
+            return shipId == 1 ? Replaced() : shipId == 0 && Match::IsDriven(0);
         }
 
         // Space drones this module handles: defense, combat, hull repair and shield drones. (Boarding and hacking drones
@@ -136,7 +148,7 @@ namespace Duels
 
         bool IsPuppet(const Drone *drone)
         {
-            return drone && drone->iShipId == 1 && Replaced();
+            return drone && (drone->iShipId == 0 || drone->iShipId == 1) && Driven(drone->iShipId);
         }
 
         int SlotOf(ShipManager *ship, const Drone *drone)
@@ -212,8 +224,9 @@ namespace Duels
 
         bool OwnerDrone(int slot, bool &deployed, bool &powered)
         {
-            if (slot < 0 || slot >= (int)g_drones.pending.size()) return false;
-            const Entry &entry = g_drones.pending[slot];
+            const DroneSide &side = g_drones.sides[1];
+            if (slot < 0 || slot >= (int)side.pending.size()) return false;
+            const Entry &entry = side.pending[slot];
             deployed = (entry.flags & FLAG_DEPLOYED) != 0;
             powered = (entry.flags & FLAG_POWERED) != 0;
             return true;
@@ -253,9 +266,10 @@ namespace Duels
             int parts = 0;
             std::vector<Entry> entries;
             if (!ParseState(r, parts, entries)) return false;
-            g_drones.pendingParts = parts;
-            g_drones.pending.swap(entries);
-            g_drones.havePending = true;
+            DroneSide &side = g_drones.sides[1];
+            side.pendingParts = parts;
+            side.pending.swap(entries);
+            side.havePending = true;
             return true;
         }
 
@@ -276,10 +290,11 @@ namespace Duels
             if (!replica->PowerDrone(drone, room, false, false) && !puppet.launchFailedLogged)
             {
                 puppet.launchFailedLogged = true;
-                Log("Drones: the replica's %s could not be %s (drone system power %d/%d, reactor %d/%d)",
-                    drone->blueprint ? drone->blueprint->name.c_str() : "drone", launching ? "launched" : "powered",
-                    system->powerState.first, system->powerState.second,
-                    PowerManager::GetPowerManager(1)->currentPower.first, PowerManager::GetPowerManager(1)->currentPower.second);
+                PowerManager *power = PowerManager::GetPowerManager(replica->iShipId);
+                Log("Drones: %s %s could not be %s (drone system power %d/%d, reactor %d/%d)",
+                    replica->iShipId == 1 ? "the replica's" : "our (replayed)", drone->blueprint ? drone->blueprint->name.c_str() : "drone",
+                    launching ? "launched" : "powered", system->powerState.first, system->powerState.second,
+                    power ? power->currentPower.first : -1, power ? power->currentPower.second : -1);
             }
         }
 
@@ -312,20 +327,21 @@ namespace Duels
             }
         }
 
-        void ApplyState(double localTime)
+        static void ApplyStateTo(int shipId, double localTime)
         {
-            if (!g_drones.havePending) return;
-            g_drones.havePending = false;
+            DroneSide &side = g_drones.sides[shipId];
+            if (!side.havePending) return;
+            side.havePending = false;
             // Rises at once with a late update, settles slowly: the puppets' delay follows the worst recent latency.
             double age = std::max(0.0, WallMs() - localTime);
-            double &smoothed = g_drones.updateAgeMs;
+            double &smoothed = side.updateAgeMs;
             smoothed = smoothed < 0.0 || age > smoothed ? age : smoothed * 0.98 + age * 0.02;
-            ShipManager *replica = G_->GetShipManager(1);
+            ShipManager *replica = G_->GetShipManager(shipId);
             if (!replica || !replica->droneSystem) return;
             std::vector<Drone*> &drones = replica->droneSystem->drones;
-            if (g_drones.puppets.size() != drones.size()) g_drones.puppets.resize(drones.size());
+            if (side.puppets.size() != drones.size()) side.puppets.resize(drones.size());
 
-            for (size_t slot = 0; slot < drones.size() && slot < g_drones.pending.size(); ++slot)
+            for (size_t slot = 0; slot < drones.size() && slot < side.pending.size(); ++slot)
             {
                 Drone *drone = drones[slot];
                 SpaceDrone *space = AsSpaceDrone(drone);
@@ -333,12 +349,12 @@ namespace Duels
                 {
                     if (drone && (drone->type == DRONE_REPAIR || drone->type == DRONE_BATTLE))
                     {
-                        FollowCrewDrone(replica, drone, g_drones.pending[slot], g_drones.puppets[slot]);
+                        FollowCrewDrone(replica, drone, side.pending[slot], side.puppets[slot]);
                     }
                     continue;
                 }
-                const Entry &entry = g_drones.pending[slot];
-                Puppet &puppet = g_drones.puppets[slot];
+                const Entry &entry = side.pending[slot];
+                Puppet &puppet = side.puppets[slot];
                 bool ownerDead = (entry.flags & FLAG_DEAD) != 0;
                 bool ownerDeployed = (entry.flags & FLAG_DEPLOYED) != 0 && !ownerDead;
                 bool ownerPowered = (entry.flags & FLAG_POWERED) != 0;
@@ -396,7 +412,25 @@ namespace Duels
                 puppet.flags = entry.flags;
             }
             // The owner's drone parts, after the launches above took theirs.
-            replica->droneSystem->drone_count = std::max(0, g_drones.pendingParts);
+            replica->droneSystem->drone_count = std::max(0, side.pendingParts);
+        }
+
+        void ApplyState(double localTime)
+        {
+            ApplyStateTo(1, localTime);
+        }
+
+        bool ReplayOwnState(Reader &r, double localTime)
+        {
+            int parts = 0;
+            std::vector<Entry> entries;
+            if (!ParseState(r, parts, entries)) return false;
+            DroneSide &side = g_drones.sides[0];
+            side.pendingParts = parts;
+            side.pending.swap(entries);
+            side.havePending = true;
+            if (Match::IsDriven(0)) ApplyStateTo(0, localTime);
+            return true;
         }
 
         // --------------------------------------------------------------------------------------------------------
@@ -488,6 +522,8 @@ namespace Duels
             }
         }
 
+        static void PlacePuppets(int shipId);
+
         void AfterSpaceLoop()
         {
             WorldManager *world = G_->GetWorld();
@@ -500,11 +536,19 @@ namespace Duels
                 PruneTracked(g_drones.own, live);
             }
 
-            ShipManager *replica = G_->GetShipManager(1);
-            if (!replica || !replica->droneSystem || !Replaced()) return;
+            for (int shipId = 1; shipId >= 0; --shipId) PlacePuppets(shipId);
+        }
+
+        // The puppets of a driven ship take their owner's places, as far behind as its updates come (rendering comes
+        // after).
+        static void PlacePuppets(int shipId)
+        {
+            ShipManager *replica = G_->GetShipManager(shipId);
+            if (!replica || !replica->droneSystem || !Driven(shipId)) return;
+            DroneSide &side = g_drones.sides[shipId];
             std::vector<Drone*> &drones = replica->droneSystem->drones;
-            if (g_drones.puppets.size() != drones.size()) g_drones.puppets.resize(drones.size());
-            double delay = std::max(0.0, g_drones.updateAgeMs) + UPDATE_INTERVAL_MS + JITTER_ROOM_MS;
+            if (side.puppets.size() != drones.size()) side.puppets.resize(drones.size());
+            double delay = std::max(0.0, side.updateAgeMs) + UPDATE_INTERVAL_MS + JITTER_ROOM_MS;
             double renderTime = WallMs() - delay;
 
             for (size_t slot = 0; slot < drones.size(); ++slot)
@@ -514,12 +558,12 @@ namespace Duels
                 // A puppet never fires, repairs or runs out on its own; its owner's game does all that.
                 space->bFire = false;
                 space->lifespan = INT_MAX;
-                Puppet &puppet = g_drones.puppets[slot];
+                Puppet &puppet = side.puppets[slot];
                 if (puppet.samples.empty() || space->explosion.tracker.running) continue;
 
                 Fit fit;
                 Sample s = Interpolate(puppet.samples, renderTime, fit);
-                if (GetState().trace)
+                if (GetState().trace && shipId == 1)
                 {
                     static const char *const FITS[] = {"before", "between", "ahead", "held"};
                     if (!g_drones.trace.IsOpen()) g_drones.trace.Open("duels_drones.csv", "wall_ms,slot,x,y,fit,delay_ms,updates");
@@ -527,8 +571,8 @@ namespace Duels
                     row << WallMs() << slot << s.x << s.y << FITS[(int)fit] << delay << puppet.samples.size();
                     g_drones.trace.WriteRow(row.str());
                 }
-                // Combat drones fly around the opponent's target (our ship, space 0), the others around their own ship.
-                int spaceId = (puppet.flags & FLAG_TARGET_SPACE) ? 0 : 1;
+                // Combat drones fly around the opponent's ship (in its space), the others around their own ship.
+                int spaceId = (puppet.flags & FLAG_TARGET_SPACE) ? 1 - shipId : shipId;
                 space->currentSpace = spaceId;
                 space->destinationSpace = spaceId;
                 Pointf location(s.x, s.y);
@@ -599,8 +643,9 @@ namespace Duels
             Net::Send(MSG_DRONE_SHOT, w, true);
         }
 
-        // A harmless copy of the opponent's drone shot, from where our screen shows their drone.
-        static void CreateShotCopy(Reader &r)
+        // A harmless copy of a drone's shot in its own ship's space, from where our screen shows the drone: the opponent's
+        // (ship 1), and in a replay the recorder's (ship 0, roadmap 5.1).
+        static void CreateShotCopy(Reader &r, int shipId)
         {
             int slot = r.U8();
             std::string weaponName = r.Str();
@@ -610,17 +655,17 @@ namespace Duels
             target.x = r.F32();
             target.y = r.F32();
             if (!r.Ok()) return;
-            ShipManager *replica = G_->GetShipManager(1);
+            ShipManager *replica = G_->GetShipManager(shipId);
             WeaponBlueprint *blueprint = G_->GetBlueprints()->GetWeaponBlueprint(weaponName);
             if (!replica || !blueprint || blueprint->name != weaponName || G_->GetWorld() == nullptr) return;
             SpaceDrone *puppet = DroneInSlot(replica, slot);
-            if (puppet && puppet->deployed && !puppet->bDead && puppet->currentSpace == 1) origin = puppet->currentLocation;
+            if (puppet && puppet->deployed && !puppet->bDead && puppet->currentSpace == shipId) origin = puppet->currentLocation;
 
-            LaserBlast *laser = new LaserBlast(origin, 1, 1, target);
+            LaserBlast *laser = new LaserBlast(origin, shipId, shipId, target);
             laser->heading = -1.f;
             laser->OnInit();
             laser->Initialize(*blueprint);
-            laser->ownerId = 1;
+            laser->ownerId = shipId;
             if (puppet) laser->flight_animation = puppet->weapon_animation;
             G_->GetWorld()->space.AddProjectile(laser);
             if (!blueprint->effects.launchSounds.empty())
@@ -657,8 +702,9 @@ namespace Duels
 
         void ObserveDroneCollision(SpaceDrone *drone, bool explodingBefore, float ionStunBefore)
         {
-            // Only the opponent's drones in our space are ours to judge (theirs in their space never collide here).
-            if (!IsPuppet(drone) || drone->currentSpace != 0 || !Net::IsConnected()) return;
+            // Only the opponent's drones in our space are ours to judge (theirs in their space never collide here); a
+            // replay judges nothing.
+            if (!IsPuppet(drone) || drone->iShipId != 1 || drone->currentSpace != 0 || !Net::IsConnected() || Net::Replaying()) return;
             int slot = SlotOf(G_->GetShipManager(1), drone);
             if (slot < 0) return;
             Writer w;
@@ -689,7 +735,7 @@ namespace Duels
             int slot = r.U8();
             int kind = r.U8();
             float ionStun = r.F32();
-            if (!r.Ok()) return;
+            if (!r.Ok() || Net::Replaying()) return;   // a replay: our drones follow the recorder's states
             ++g_drones.hitsReceived;
             SpaceDrone *drone = DroneInSlot(G_->GetShipManager(0), slot);
             if (!drone || !drone->deployed || drone->bDead || drone->explosion.tracker.running) return;
@@ -709,7 +755,14 @@ namespace Duels
         void OnMessage(uint8_t type, Reader &r)
         {
             if (type == MSG_DRONE_HIT) ApplyHit(r);
-            else if (type == MSG_DRONE_SHOT) CreateShotCopy(r);
+            else if (type == MSG_DRONE_SHOT) CreateShotCopy(r, 1);
+        }
+
+        void ReplayOwnDroneShot(const uint8_t *data, size_t size)
+        {
+            if (!Net::Replaying()) return;
+            Reader r(data, size);
+            CreateShotCopy(r, 0);
         }
 
         bool RunsOwnLoop(Drone *drone)
@@ -719,7 +772,7 @@ namespace Duels
 
         bool BlocksReplicaRepair(ShipManager *ship, int damage)
         {
-            return ship && ship->iShipId == 1 && Replaced() && damage < 0;
+            return ship && (ship->iShipId == 0 || ship->iShipId == 1) && Driven(ship->iShipId) && damage < 0;
         }
 
         std::string Status()

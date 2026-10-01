@@ -365,8 +365,9 @@ namespace Duels
 
         void OnCrewArrived(ShipManager *ship, CrewMember *crew, int room)
         {
-            // A boarding drone's robot comes aboard with its pod (below), not through here.
-            if (!InDuel() || !crew || crew->iShipId != 0 || crew->IsDrone()) return;
+            // A boarding drone's robot comes aboard with its pod (below), not through here. A replay's crew are puppets
+            // made here (roadmap 5.1).
+            if (!InDuel() || Net::Replaying() || !crew || crew->iShipId != 0 || crew->IsDrone()) return;
             ShipManager *own = G_->GetShipManager(0);
             ShipManager *replica = G_->GetShipManager(1);
             if (ship == replica && Crew::AwayId(crew) < 0)
@@ -431,6 +432,7 @@ namespace Duels
 
         static void OnReturned(Reader &r)
         {
+            if (Net::Replaying()) return;   // a replay: the recorder's crew come home by its roster and states
             std::vector<Returned> reports(r.U8());
             for (Returned &report : reports)
             {
@@ -508,8 +510,15 @@ namespace Duels
                 ApplySkills(crew, skills);
                 crew->health.first = std::min((float)health, crew->health.second);
                 crew->StartTeleportArrive();
-                Crew::AddGuest(id, crew);
                 ++g_board.received;
+                if (Net::Replaying())
+                {
+                    // A replay (roadmap 5.1): the puppet of the recorder's guest entry for them, not ours to simulate.
+                    Crew::ReplayGuestAboard(id, crew);
+                    Log("Boarding: replay: the opponent's crew member %u (%s) came aboard (room %d)", (unsigned)id, species.c_str(), room);
+                    continue;
+                }
+                Crew::AddGuest(id, crew);
                 Log("Boarding: the opponent's crew member %u (%s) came aboard (room %d)", (unsigned)id, species.c_str(), room);
             }
         }
@@ -524,7 +533,8 @@ namespace Duels
             w.U8((uint8_t)ids.size());
             for (uint16_t id : ids)
             {
-                CrewMember *crew = Crew::Guest(id);
+                // (A replay's boarders are the puppets of the recorder's guest entries, and go the same way.)
+                CrewMember *crew = Net::Replaying() ? Crew::ReplayGuest(id) : Crew::Guest(id);
                 bool alive = crew && !crew->bDead && crew->health.first > 0.f;
                 w.U16(id);
                 w.Bool(alive);
@@ -550,7 +560,7 @@ namespace Duels
                 ++g_board.recallsReceived;
                 Log("Boarding: the opponent's teleporter took crew member %u back (%s)", (unsigned)id, alive ? "alive" : "dead");
             }
-            Net::Send(MSG_RETURNED, w, true);
+            if (!Net::Replaying()) Net::Send(MSG_RETURNED, w, true);
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -559,6 +569,8 @@ namespace Duels
 
         bool PowersHeld(const CrewMember *crew)
         {
+            // A replay (roadmap 5.1): nobody's; the recording has what the powers did.
+            if (Net::Replaying()) return InDuel() && Crew::IsPuppet(crew);
             // Ours aboard the replica are puppets there too, but their powers are ours to use.
             return InDuel() && crew && ((Crew::IsPuppet(crew) && Crew::AwayId(crew) < 0) || Crew::IsGuest(crew));
         }
@@ -604,6 +616,53 @@ namespace Duels
             (*powers)[index]->PreparePower();
             ++g_board.powersReceived;
             Log("Boarding: their crew member %u used power %d aboard our ship (room %d)", (unsigned)id, index, guest->iRoomId);
+        }
+
+        void ReplayOwn(uint8_t type, const uint8_t *data, size_t size)
+        {
+            ShipManager *replica = G_->GetShipManager(1);
+            if (!Net::Replaying() || !replica) return;
+            Reader r(data, size);
+            if (type == MSG_RECALL)
+            {
+                // Its teleporter took them back: they leave the opponent's ship (its roster brings them home).
+                std::vector<uint16_t> ids(r.U8());
+                for (uint16_t &id : ids) id = r.U16();
+                if (!r.Ok()) return;
+                for (uint16_t id : ids) Crew::ReplayAwayGone(id);
+                g_board.recalled += (uint32_t)ids.size();
+                return;
+            }
+            if (type != MSG_BOARD) return;
+            // Its crew arrived aboard the opponent's ship: made there, puppets of the opponent's guest entries for them.
+            int count = r.U8();
+            for (int i = 0; i < count; ++i)
+            {
+                uint16_t id = r.U16();
+                std::string species = r.Str();
+                std::string name = r.Str();
+                bool male = r.Bool();
+                uint8_t skills[SKILLS][2];
+                ReadSkills(r, skills);
+                int health = r.U16();
+                int room = r.I8();
+                if (!r.Ok()) return;
+                CrewMember *crew = replica->AddCrewMemberFromString(name, species, true, room, false, male);
+                if (!crew)
+                {
+                    Log("Boarding: replay: the recorder's %s could not go aboard (room %d)", species.c_str(), room);
+                    continue;
+                }
+                TextString shown(name, true);
+                crew->SetName(&shown, true);
+                ApplySkills(crew, skills);
+                crew->health.first = std::min((float)health, crew->health.second);
+                crew->StartTeleportArrive();
+                Crew::ReplayAwayAboard(id, crew);
+                ++g_board.sent;
+                Log("Boarding: replay: the recorder's crew member %u (%s) went aboard the opponent's ship (room %d)", (unsigned)id,
+                    species.c_str(), room);
+            }
         }
 
         void OnMessage(uint8_t type, Reader &r)

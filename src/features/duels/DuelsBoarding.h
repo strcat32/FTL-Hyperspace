@@ -33,6 +33,10 @@ namespace Duels
         void Reset();
         void OnFrame();
         void OnMessage(uint8_t type, Reader &r);
+        // A replay (roadmap 5.1): the recorder's boarding messages as it sent them. MSG_BOARD makes its crew aboard the
+        // opponent's ship (puppets of the opponent's guest entries), MSG_RECALL takes them off again. The opponent's
+        // MSG_BOARD and MSG_RECALL come through OnMessage: their boarders are puppets of the recorder's guest entries.
+        void ReplayOwn(uint8_t type, const uint8_t *data, size_t size);
 
         // ShipManager::AddCrewMember, after it ran: our crew arriving on the replica (sent there by our teleporter)
         // or back home.

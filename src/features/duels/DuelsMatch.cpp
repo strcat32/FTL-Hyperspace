@@ -189,6 +189,7 @@ namespace Duels
             int recordedDamage = 0;
             Pointf recordedPoint;
             double recordedMs = -1.0, holdStartMs = -1.0;
+            double goneMs = -1.0;          // gone before its verdict (a beam's comes when the recorder's sweep is over)
             float downDistance = 1.0e9f;
             bool exploded = false;
         };
@@ -1273,8 +1274,8 @@ namespace Duels
             if (!g_replayOwnDriven) Log("Match: replay: our ship follows the recorder's states from now on");
             g_replayOwnDriven = true;
             ApplyShipState(own, s);
-            // Its crew and rooms (its drones' part passed over: they come later).
-            if (Drones::SkipState(r) && Crew::ReplayOwnState(r, WallMs())) Rooms::ReplayOwnState(r);
+            // Its drones, crew and rooms.
+            if (Drones::ReplayOwnState(r, WallMs()) && Crew::ReplayOwnState(r, WallMs())) Rooms::ReplayOwnState(r);
             ApplyLocks(own, s.systems);
         }
 
@@ -1945,8 +1946,15 @@ namespace Duels
             projectile->Initialize(*blueprint);
             if (!fromDrone) projectile->heading = heading;
             projectile->ownerId = 0;
+            SpaceDrone *drone = nullptr;
+            if (fromDrone && own->droneSystem && s.slot < (int)own->droneSystem->drones.size())
+            {
+                Drone *candidate = own->droneSystem->drones[s.slot];
+                if (candidate && (candidate->type == 1 || candidate->type == 5)) drone = static_cast<SpaceDrone*>(candidate);
+            }
             if (s.type == WEAPON_BURST && !blueprint->miniProjectiles.empty()) MakeShard(projectile, blueprint, s.shard, s.fakeShard);
             else if (weapon) projectile->flight_animation = weapon->flight_animation;
+            else if (drone) projectile->flight_animation = drone->weapon_animation;
             if (s.source == SOURCE_SHARD) projectile->damage.crystalShard = true;
             world->space.AddProjectile(projectile);
 
@@ -1989,6 +1997,7 @@ namespace Duels
             for (InShot &shot : g_match.in)
             {
                 if (shot.holdStartMs >= 0.0) shot.holdStartMs += ms;
+                if (shot.goneMs >= 0.0) shot.goneMs += ms;
                 if (!shot.released) shot.releaseAt += ms;
             }
         }
@@ -2732,6 +2741,18 @@ namespace Duels
                 }
                 if (Net::Replaying())
                 {
+                    // Gone before the recorder's verdict came (a beam: its game sends it when its sweep is over): it
+                    // waits a little for it, as ours wait for the defender's.
+                    if (shot.recorded == PENDING)
+                    {
+                        shot.projectile = nullptr;
+                        if (shot.goneMs < 0.0) shot.goneMs = now;
+                        if (now - shot.goneMs < BEAM_VERDICT_WAIT_MS)
+                        {
+                            ++i;
+                            continue;
+                        }
+                    }
                     shot.outcome = shot.recorded;
                     shot.damage = shot.recordedDamage;
                     shot.decisionMs = shot.recordedMs;
@@ -3155,7 +3176,8 @@ namespace Duels
             {
                 // The loadout and the state go while the ships meet (the match flow); between rounds each player
                 // refits. The loadout first: the other game builds our ship from it before our crew roster comes.
-                if (Rounds::ShipsMeet() && !Rounds::IsLocal())
+                // A replay sends nothing: our ship is the recorder's (roadmap 5.1).
+                if (Rounds::ShipsMeet() && !Rounds::IsLocal() && !Net::Replaying())
                 {
                     if (!m.loadoutSent) SendLoadout();
                     else if (Armament(G_->GetShipManager(0)) != m.sentArmament)

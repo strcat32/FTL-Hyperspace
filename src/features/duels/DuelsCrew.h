@@ -44,6 +44,12 @@ namespace Duels
         // opponent's are of theirs (the guests' part of the state is passed over).
         void ReplayOwnRoster(const uint8_t *data, size_t size);
         bool ReplayOwnState(Reader &r, double localTime);
+        // And the boarders, puppets too (DuelsBoarding.cpp makes them aboard): the opponent's aboard our ship follow the
+        // recorder's guest entries; the recorder's aboard theirs follow the opponent's, as ours away do in a duel.
+        void ReplayGuestAboard(uint16_t id, CrewMember *crew);
+        CrewMember *ReplayGuest(uint16_t id);   // still aboard our ship (RemoveGuest and AdoptPuppet end it, as a guest's)
+        void ReplayAwayAboard(uint16_t id, CrewMember *crew);
+        void ReplayAwayGone(uint16_t id);
 
         // After the replica's ShipManager::OnLoop: puppets keep their owners' health, and are put back in place when
         // they walked too far off.

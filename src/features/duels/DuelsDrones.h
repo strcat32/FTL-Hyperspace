@@ -33,8 +33,12 @@ namespace Duels
         // (localTime: when the owner sent it, on our clock).
         void WriteState(Writer &w);
         bool ReadState(Reader &r);
-        // Reads a state's drones without keeping them (a replay's own ship: its drones come later, roadmap 5.1).
+        // Reads a state's drones without keeping them.
         bool SkipState(Reader &r);
+        // A replay (roadmap 5.1): our ship's drones (the recorder's) from its full state, puppets as the replica's are;
+        // and its defense drones' shots (MSG_DRONE_SHOT as it sent them), harmless copies in our space.
+        bool ReplayOwnState(Reader &r, double localTime);
+        void ReplayOwnDroneShot(const uint8_t *data, size_t size);
         void ApplyState(double localTime);
         std::string Signature(ShipManager *ship);   // duels_sync.csv: drone parts, and each slot's power, launch, wreck
         // The owner's last state for one of the replica's drone slots (false if there is none yet).
@@ -46,7 +50,7 @@ namespace Duels
         // After SpaceManager::OnLoop: the puppets take their owners' positions (rendering comes after).
         void AfterSpaceLoop();
 
-        // A drone of the replica, driven by the network.
+        // A drone of the replica, driven by the network (and in a replay one of our ship's, driven by the recording).
         bool IsPuppet(const Drone *drone);
         // The drone's slot in its ship's drone system, or -1.
         int SlotOf(ShipManager *ship, const Drone *drone);
