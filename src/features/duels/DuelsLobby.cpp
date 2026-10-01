@@ -292,21 +292,21 @@ namespace Duels
             // The room (not for a match against the AI).
             y += Style::Label(lx, y, "THE ROOM") + 14.f;
             const GL_Color labels = g.vsAi ? soft : light;
-            Text(FONT, lx, y, "Its name, in the room list:", labels);
+            Text(FONT, lx, y, "Its title (a few words):", labels);
             RenderField(g.name, lx, y + 20.f, lw);
             y += 64.f;
             Text(FONT, lx, y, "A password (empty: none):", labels);
             RenderField(g.password, lx, y + 20.f, lw);
             y += 66.f;
-            CheckAt(g.listedBox, lx, y, g.listed, "In the room list (JOIN DUEL)");
+            CheckAt(g.listedBox, lx, y, !g.listed, "Private: only who has its code can join");
             y += 32.f;
             CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
             y += 40.f;
             Paragraph(FONT, lx, y, lw, g.vsAi ? "CHOOSE SHIP opens FTL's hangar. Its START begins the run and the match against "
                                                 "the AI, on this computer: no room, nothing over the network."
-                                              : "CHOOSE SHIP opens FTL's hangar. Its START begins the run and opens the room at the "
-                                                "relay. The room's code is in the Duels window (the DUELS button at the top): the "
-                                                "other player joins with it, or finds the room in JOIN DUEL's list.", soft);
+                                              : "CHOOSE SHIP opens FTL's hangar. Its START begins the run and opens the room. Its "
+                                                "code is in the Duels window (DUELS at the top): the other player joins with it, or "
+                                                "finds a room that isn't private in JOIN DUEL's list.", soft);
 
             // The match.
             float rx = HX + 410.f, rw = HW - 410.f - 30.f;
@@ -542,11 +542,13 @@ namespace Duels
             }
             y += 34.f;
 
-            // The rooms: a head row, then a page of them.
-            const float cName = lx + 10.f, cHost = lx + 240.f, cRelay = lx + 380.f, cLock = lx + 498.f;
+            // The rooms: a head row, then a page of them. The code (the relay's, unique) and the title (the host's) have a
+            // column each (AR).
+            const float cCode = lx + 10.f, cName = lx + 82.f, cHost = lx + 258.f, cRelay = lx + 380.f, cLock = lx + 498.f;
             float listY = LIST_Y, listH = ROW_H * (ROWS + 1) + 8.f;
             Style::Field(lx, listY, lw, listH, false);
-            Text(FONT, cName, listY + 6.f, "ROOM", soft);
+            Text(FONT, cCode, listY + 6.f, "CODE", soft);
+            Text(FONT, cName, listY + 6.f, "TITLE", soft);
             Text(FONT, cHost, listY + 6.f, "HOST", soft);
             Text(FONT, cRelay, listY + 6.f, "RELAY", soft);
             std::vector<Net::FoundRoom> shown = Shown();
@@ -563,8 +565,9 @@ namespace Duels
                 else if (Hover(box)) CSurface::GL_DrawRect(box.x, box.y, box.w, box.h, Rgb(255, 255, 255, 0.08f));
                 bool sameVersion = room.version == Net::Version();
                 float ty = box.y + 4.f;
-                Text(FONT, cName, ty, Fit(FONT, room.roomName.empty() ? "(no name)" : room.roomName, 220.f), sameVersion ? white : soft);
-                Text(FONT, cHost, ty, Fit(FONT, Match::ScreenName(room.hostName), 130.f), sameVersion ? light : soft);
+                Text(FONT, cCode, ty, Fit(FONT, room.code, 66.f), sameVersion ? light : soft);
+                Text(FONT, cName, ty, Fit(FONT, room.roomName.empty() ? "(no title)" : room.roomName, 170.f), sameVersion ? white : soft);
+                Text(FONT, cHost, ty, Fit(FONT, Match::ScreenName(room.hostName), 116.f), sameVersion ? light : soft);
                 Text(FONT, cRelay, ty, Fit(FONT, room.relay.name, 110.f), soft);
                 if (!sameVersion) Text(FONT, cLock, ty, "v" + Fit(FONT, room.version, 56.f), red);
                 else if (room.password) Text(FONT, cLock, ty, "PASSWORD", gold);
@@ -577,7 +580,7 @@ namespace Duels
             std::string status;
             if (search.Busy()) status = "Asking " + std::to_string(search.relays - search.answered - search.failed) + " of " +
                                         std::to_string(search.relays) + " relays...";
-            else if (shown.empty()) status = "No open rooms. An unlisted room is joined by its code, below.";
+            else if (shown.empty()) status = "No open rooms. A private room is joined by its code, below.";
             else status = std::to_string(shown.size()) + (shown.size() == 1 ? " room" : " rooms") + " open.";
             Text(FONT, lx, sy, Fit(FONT, status, lw - 170.f), light);
             if (!search.errors.empty()) Text(FONT, lx, sy + 16.f, Fit(FONT, search.errors.front(), lw - 170.f), red);
@@ -592,7 +595,7 @@ namespace Duels
             Net::FoundRoom room;
             if (Picked(room))
             {
-                dy += Paragraph(TEXT, dx, dy, dw, room.roomName.empty() ? "(no name)" : room.roomName, white) + 8.f;
+                dy += Paragraph(TEXT, dx, dy, dw, room.roomName.empty() ? "(no title)" : room.roomName, white) + 8.f;
                 auto line = [&](const std::string &label, const std::string &value, const GL_Color &colour)
                 {
                     Text(FONT, dx, dy, label, soft);
@@ -610,7 +613,7 @@ namespace Duels
             }
             else Paragraph(FONT, dx, dy, dw, "A click on a room in the list shows it here.", soft);
 
-            // A room by its code (one that isn't listed, say), and the password for either.
+            // A room by its code (a private one, say), and the password for either.
             float by = JY + JH - 58.f, fy = by - 72.f;
             Text(FONT, lx, fy, "Or a room by its code:", light);
             RenderField(g.code, lx, fy + 18.f, 130.f);

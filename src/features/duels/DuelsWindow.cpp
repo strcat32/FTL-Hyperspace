@@ -336,7 +336,7 @@ namespace Duels
             {
                 // The room waits for its guest (HOST DUEL, or the console's host relay).
                 row("Room " + code + " is open: waiting for a guest", gold);
-                row("Give them the code (or JOIN DUEL's list)", soft);
+                row(Net::RoomPrivate() ? "Private: give them the code" : "Give them the code (or JOIN DUEL's list)", soft);
             }
             else if (opponent.empty() && Net::GetPhase() == Net::Phase::Joining)
             {

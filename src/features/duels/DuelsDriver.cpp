@@ -132,10 +132,11 @@ namespace Duels
     static bool g_relayChosen = false;   // the relay command picked it (it comes first for the menu's rooms)
     static int g_relayPort = Relay::DEFAULT_PORT;
 
-    // The options of a relay room after "host relay [server]": name <room name...>, password <password>, unlisted.
+    // The options of a relay room after "host relay [server]": name <room title...>, password <password>, unlisted (or
+    // private: not in the room list, roadmap AR).
     static bool IsRoomOption(const std::string &word)
     {
-        return word == "name" || word == "password" || word == "unlisted";
+        return word == "name" || word == "password" || word == "unlisted" || word == "private";
     }
 
     static bool RoomOptions(const Command &cmd, size_t from, std::string &roomName, std::string &password, bool &listed,
@@ -145,7 +146,7 @@ namespace Duels
         for (size_t i = from; i < cmd.raw.size(); ++i)
         {
             const std::string &word = cmd.args[i];
-            if (word == "unlisted")
+            if (word == "unlisted" || word == "private")
             {
                 listed = false;
             }

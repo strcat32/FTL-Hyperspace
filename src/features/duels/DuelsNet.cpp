@@ -88,6 +88,7 @@ namespace Duels
             uint16_t backPort = 0;
             std::string backCode;
             std::string relayPassword;
+            bool roomPrivate = false;   // the room we host isn't in the relay's room list
         };
 
         static Session g_session;
@@ -548,6 +549,7 @@ namespace Duels
             s.host = true;
             s.acceptsJoin = true;
             s.relayPassword = password;
+            s.roomPrivate = !listed;
             s.link.Reset(0, s.now);
             s.relayClient.Create(s.name, s.version, roomName, password, listed, s.now);
             SetPhase(Phase::Hosting);
@@ -758,6 +760,7 @@ namespace Duels
 
         bool UsesRelay() { return g_session.relay; }
         std::string RelayCode() { return g_session.relayCode; }
+        bool RoomPrivate() { return g_session.host && g_session.roomPrivate; }
         uint64_t MatchSeed() { return g_session.relay ? g_session.relayClient.MatchSeed() : 0; }
 
         // A packet from the relay: link packets inside go on as if they came from the other player; its own events

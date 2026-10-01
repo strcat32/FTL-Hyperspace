@@ -113,6 +113,8 @@ namespace Duels
         const std::string &Version();
         bool UsesRelay();
         std::string RelayCode();
+        // The room we host is private: not in the relay's room list, joined only with its code (roadmap AR).
+        bool RoomPrivate();
         uint64_t MatchSeed();   // from the relay, 0 without one
 
         void Leave(const std::string &reason);
