@@ -82,6 +82,9 @@ namespace Duels
             enum class Lost { None, Waiting, Rejoining };
             Lost lost = Lost::None;
             double lostAt = 0.0;
+            // A replay (DuelsDemo.cpp): connected without a socket.
+            bool replay = false;
+            double replayClock = 0.0;   // the recorded opponent's clock less ours
             double nextAttempt = 0.0;
             uint32_t attempts = 0;
             // How to come back: the relay's room (with its password as typed), or the host's address.
@@ -845,6 +848,11 @@ namespace Duels
 
         void Leave(const std::string &reason)
         {
+            if (g_session.replay)
+            {
+                EndReplay(reason);
+                return;
+            }
             if (g_session.phase == Phase::Idle && g_session.lost == Session::Lost::None) return;
             Disconnect(reason, true);
         }
@@ -879,6 +887,11 @@ namespace Duels
         {
             Session &s = g_session;
             s.now = now;
+            if (s.replay)
+            {
+                Demo::ReplayFrame(now);
+                return;
+            }
             UpdateBrowser(now);
             UpdateSearch(now);
             UpdateLost(now);
@@ -1047,7 +1060,7 @@ namespace Duels
 
         bool Send(uint8_t type, const Writer &body, bool reliable)
         {
-            if (g_session.phase != Phase::Connected || type < FIRST_GAME_MESSAGE) return false;
+            if (g_session.phase != Phase::Connected || type < FIRST_GAME_MESSAGE || g_session.replay) return false;
             Demo::Sent(type, body.data.data(), body.data.size());
             Writer message;
             message.U8(type);
@@ -1055,9 +1068,47 @@ namespace Duels
             return reliable ? g_session.link.SendReliable(message.data) : g_session.link.SendUnreliable(message.data);
         }
 
-        bool HasClock() { return g_session.link.HasClock(); }
-        double PeerToLocalTime(double peerTime) { return peerTime - g_session.link.ClockOffsetMs(); }
-        double LocalToPeerTime(double localTime) { return localTime + g_session.link.ClockOffsetMs(); }
+        bool HasClock() { return g_session.replay || g_session.link.HasClock(); }
+        double PeerToLocalTime(double peerTime) { return peerTime - (g_session.replay ? g_session.replayClock : g_session.link.ClockOffsetMs()); }
+        double LocalToPeerTime(double localTime) { return localTime + (g_session.replay ? g_session.replayClock : g_session.link.ClockOffsetMs()); }
+
+        void BeginReplay(const std::string &peerName)
+        {
+            Session &s = g_session;
+            if (s.phase != Phase::Idle || s.lost != Session::Lost::None) Disconnect("a replay begins", true);
+            s.replay = true;
+            s.replayClock = 0.0;
+            s.host = false;   // the match's flow follows the recorded host's messages, as a guest's does
+            s.acceptsJoin = false;
+            s.resumed = false;
+            s.lost = Session::Lost::None;
+            s.peerName = peerName;
+            SetPhase(Phase::Connected);
+            Log("Net: a replay, %s's side shown as the opponent's", peerName.c_str());
+            if (s.listener) s.listener->OnConnected();
+        }
+
+        void EndReplay(const std::string &reason)
+        {
+            Session &s = g_session;
+            if (!s.replay) return;
+            s.replay = false;
+            Log("Net: the replay ended (%s)", reason.c_str());
+            Close();
+            if (s.listener) s.listener->OnDisconnected(reason, false);
+        }
+
+        bool Replaying() { return g_session.replay; }
+
+        void Deliver(uint8_t type, const uint8_t *data, size_t size)
+        {
+            if (!g_session.replay || !g_session.listener) return;
+            Reader reader(data, size);
+            g_session.listener->OnMessage(type, reader);
+        }
+
+        void SetReplayClock(double peerMinusLocalMs) { g_session.replayClock = peerMinusLocalMs; }
+        double ReplayClock() { return g_session.replayClock; }
         double RttMs() { return g_session.link.RttMs(); }
 
         void SetMatchToken(uint64_t token) { g_session.matchToken = token; }

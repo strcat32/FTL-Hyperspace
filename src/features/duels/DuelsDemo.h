@@ -42,5 +42,15 @@ namespace Duels
         std::string Status();
         // Test verb: demo (its state), demo on|off (record the next matches or not), demo stop (close the file now).
         bool RunVerb(const Command &cmd, std::string &message);
+
+        // Replay (roadmap 5.1, docs/design/demos.md, stage 1): a demo played back in this game, in Net's replay mode.
+        // Its records come at their times. What the opponent sent goes to the listener as if received (its ship, its
+        // states, its crew, the chat; the match's flow when it hosted). Of what the recorder sent: its ship's loadout
+        // (our ship becomes its ship, Match::ReplayOwnLoadout), the match's flow when it hosted, the chat. Shots, their
+        // verdicts and the other actions wait for the later stages, as does our ship driven by the recorder's states.
+        bool StartReplay(const std::string &path, std::string &message);
+        void ReplayFrame(double now);   // Net::Update while it replays
+        // Test verb: replay <file> | replay pause | replay resume | replay stop | replay (its state).
+        bool RunReplayVerb(const Command &cmd, std::string &message);
     }
 }

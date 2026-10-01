@@ -750,6 +750,7 @@ namespace Duels
         // Fair play (roadmap 4.1): its state; a lying verdict for tests.
         if (verb == "fair") return Fair::RunVerb(cmd, message);
         if (verb == "demo") return Demo::RunVerb(cmd, message);
+        if (verb == "replay") return Demo::RunReplayVerb(cmd, message);
         // Ours in the main menu (test verb: the name prompt, the tutorial box, the players' guide).
         if (verb == "menu") return Menu::RunVerb(cmd.args, message);
 

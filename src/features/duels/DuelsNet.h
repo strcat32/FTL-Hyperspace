@@ -129,6 +129,16 @@ namespace Duels
         bool IsConnected();
         bool IsHost();
         std::string PeerName();
+        // A replay (roadmap 5.1, DuelsDemo.cpp): the session is connected without a socket and sends nothing; the
+        // demo's player hands the recorded messages to the listener (Deliver) as their time comes. Ending it ends the
+        // session as a disconnection does. The replay's clock: the recorded opponent's clock less the offset is ours.
+        void BeginReplay(const std::string &peerName);
+        void EndReplay(const std::string &reason);
+        bool Replaying();
+        void Deliver(uint8_t type, const uint8_t *data, size_t size);
+        void SetReplayClock(double peerMinusLocalMs);
+        double ReplayClock();
+
         // Ours, as SetIdentity gave them (a demo's header, DuelsDemo.cpp).
         std::string OwnName();
         std::string OwnVersion();

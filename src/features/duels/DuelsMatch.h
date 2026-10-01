@@ -67,6 +67,9 @@ namespace Duels
         };
         Loadout TakeLoadout(ShipManager *ship);
         void FitShip(ShipManager *ship, const Loadout &loadout);
+        // A replay (roadmap 5.1, DuelsDemo.cpp): the recorder's own loadout (its MSG_LOADOUT as it went): our ship
+        // becomes its ship, fitted as it was.
+        void ReplayOwnLoadout(const uint8_t *data, size_t size);
         // A player ship as the opponent's (the replica, the AI's ship): its shields where a player ship has them, and
         // our combat drones' orbits around them (DuelsView.cpp; the enemy window's layout goes by SetDuelOpponent).
         void ShowOpponent(ShipManager *ship);

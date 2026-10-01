@@ -369,6 +369,14 @@ HOOK_METHOD_PRIORITY(CFPS, OnLoop, -1000, () -> void)
 HOOK_METHOD_PRIORITY(ProjectileFactory, GetProjectile, -2000, () -> Projectile*)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ProjectileFactory::GetProjectile -> Begin (DuelsHooks.cpp)\n")
+    // A decided round lets no shot leave (roadmap O): not even the rest of a volley FTL queued just before it (a burst
+    // laser's shots leave a few frames apart).
+    if (!queuedProjectiles.empty() && !Duels::Match::AllowNewShots(this))
+    {
+        for (Projectile *queued : queuedProjectiles) delete queued;
+        queuedProjectiles.clear();
+        return nullptr;
+    }
     Projectile *projectile = super();
     if (projectile && iShipId == 0) Duels::Match::OnOwnProjectile(this, projectile);
     return projectile;
@@ -1427,7 +1435,8 @@ HOOK_METHOD_PRIORITY(CommandGui, GetWorldCoordinates, -2000, (Point point, bool 
 // the console, the chat and the Duels window answer. FTL itself would take orders in a pause.
 static bool OrdersHeld(CommandGui *gui, int mX, int mY)
 {
-    if (!Duels::Rounds::NetPaused() || gui->menuBox.bOpen) return false;
+    // The connection lost (the match waits), or a replay (the recorder's ship isn't ours to command).
+    if ((!Duels::Rounds::NetPaused() && !Duels::Net::Replaying()) || gui->menuBox.bOpen) return false;
     const Globals::Rect &options = gui->optionsButton.hitbox;
     return !(mX >= options.x && mX < options.x + options.w && mY >= options.y && mY < options.y + options.h);
 }

@@ -3,6 +3,7 @@
 #include "DuelsConfig.h"
 #include "DuelsDemo.h"
 #include "DuelsFair.h"
+#include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsScript.h"
 #include "DuelsTrace.h"
@@ -11,9 +12,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <sstream>
 #include <vector>
+#include <boost/filesystem.hpp>
 #include <zlib.h>
 
 #ifdef _WIN32
@@ -49,6 +52,27 @@ namespace Duels
         };
 
         static DemoState g;
+
+        struct DemoRecord
+        {
+            uint32_t ms = 0;
+            uint8_t from = 0, kind = 0, type = 0;
+            std::vector<uint8_t> data;
+        };
+
+        struct ReplayState
+        {
+            bool active = false;
+            std::string path, hostName, guestName;
+            uint8_t recorder = FROM_HOST;
+            std::vector<DemoRecord> records;
+            size_t next = 0;
+            double startMs = 0.0, pausedAt = -1.0;
+            bool clockSet = false;
+            uint32_t delivered = 0, ownLoadouts = 0, held = 0;
+        };
+
+        static ReplayState g_replay;
 
         static bool Enabled()
         {
@@ -127,7 +151,7 @@ namespace Duels
         void Begin(bool host, const std::string &hostName, const std::string &guestName)
         {
             if (g.file) End("a new match");
-            if (!Enabled()) return;
+            if (!Enabled() || Net::Replaying()) return;
 #ifdef _WIN32
             _mkdir(FOLDER);
 #else
@@ -239,6 +263,271 @@ namespace Duels
                 out << ", last " << g.lastPath;
             }
             return out.str();
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // Replay
+        // ---------------------------------------------------------------------------------------------------------
+
+        static uint32_t Get32(const std::vector<uint8_t> &data, size_t pos)
+        {
+            return (uint32_t)data[pos] | ((uint32_t)data[pos + 1] << 8) | ((uint32_t)data[pos + 2] << 16) | ((uint32_t)data[pos + 3] << 24);
+        }
+
+        static bool ReadDemo(const std::string &path, ReplayState &out, std::string &message)
+        {
+            FILE *file = std::fopen(path.c_str(), "rb");
+            if (!file)
+            {
+                message = "no demo " + path;
+                return false;
+            }
+            std::vector<uint8_t> raw;
+            uint8_t buffer[65536];
+            size_t got;
+            while ((got = std::fread(buffer, 1, sizeof(buffer), file)) > 0) raw.insert(raw.end(), buffer, buffer + got);
+            std::fclose(file);
+            if (raw.size() < 11 || !std::equal(MAGIC, MAGIC + 8, raw.begin()))
+            {
+                message = path + " is no demo";
+                return false;
+            }
+            uint16_t format = (uint16_t)(raw[8] | (raw[9] << 8));
+            uint8_t compression = raw[10];
+            if (format != FORMAT || (compression != COMPRESSION_DEFLATE && compression != 0))
+            {
+                message = "the demo's format (" + std::to_string(format) + ", compression " + std::to_string(compression) + ") isn't this game's";
+                return false;
+            }
+            std::vector<uint8_t> data;
+            if (compression == 0)
+            {
+                data.assign(raw.begin() + 11, raw.end());
+            }
+            else
+            {
+                z_stream z = z_stream();
+                if (inflateInit(&z) != Z_OK)
+                {
+                    message = "no decompressor";
+                    return false;
+                }
+                z.next_in = raw.data() + 11;
+                z.avail_in = (uInt)(raw.size() - 11);
+                int result = Z_OK;
+                while (result == Z_OK)
+                {
+                    z.next_out = buffer;
+                    z.avail_out = sizeof(buffer);
+                    result = inflate(&z, Z_NO_FLUSH);
+                    data.insert(data.end(), buffer, buffer + (sizeof(buffer) - z.avail_out));
+                    if (z.avail_in == 0 && z.avail_out != 0) break;   // a demo cut short: what is there
+                }
+                inflateEnd(&z);
+            }
+            out.records.clear();
+            size_t pos = 0;
+            while (pos + 11 <= data.size())
+            {
+                DemoRecord record;
+                record.ms = Get32(data, pos);
+                record.from = data[pos + 4];
+                record.kind = data[pos + 5];
+                record.type = data[pos + 6];
+                uint32_t size = Get32(data, pos + 7);
+                pos += 11;
+                if (pos + size > data.size()) break;
+                record.data.assign(data.begin() + pos, data.begin() + pos + size);
+                pos += size;
+                out.records.push_back(std::move(record));
+            }
+            if (out.records.empty() || out.records[0].kind != KIND_MARKER || out.records[0].type != MARK_HEADER)
+            {
+                message = "the demo has no header";
+                return false;
+            }
+            Reader header(out.records[0].data);
+            uint16_t protocol = header.U16();
+            std::string version = header.Str(), build = header.Str(), dataHash = header.Str();
+            out.recorder = header.U8();
+            out.hostName = header.Str();
+            out.guestName = header.Str();
+            if (!header.Ok())
+            {
+                message = "the demo's header is broken";
+                return false;
+            }
+            if (protocol != Net::PROTOCOL_VERSION)
+            {
+                message = "the demo is from protocol " + std::to_string(protocol) + " (" + version + "), this game plays " +
+                          std::to_string(Net::PROTOCOL_VERSION);
+                return false;
+            }
+            out.path = path;
+            return true;
+        }
+
+        // A folder: its newest demo (their names begin with the date and time).
+        static std::string NewestDemo(const std::string &path)
+        {
+            namespace fs = boost::filesystem;
+            boost::system::error_code error;
+            if (!fs::is_directory(path, error)) return path;
+            std::string newest;
+            for (fs::directory_iterator it(path, error), end; !error && it != end; it.increment(error))
+            {
+                std::string name = it->path().filename().string();
+                if (name.size() > 8 && name.compare(name.size() - 8, 8, ".ftldemo") == 0 && name > newest) newest = name;
+            }
+            return newest.empty() ? path : (fs::path(path) / newest).string();
+        }
+
+        bool StartReplay(const std::string &path, std::string &message)
+        {
+            if (g.file) End("a replay begins");
+            ReplayState replay;
+            if (!ReadDemo(NewestDemo(path), replay, message)) return false;
+            g_replay = std::move(replay);
+            g_replay.active = true;
+            g_replay.startMs = WallMs();
+            const std::string &opponent = g_replay.recorder == FROM_HOST ? g_replay.guestName : g_replay.hostName;
+            Log("Demo: replaying %s (%u records, %.0f s; recorded by the %s, %s vs %s)", path.c_str(), (unsigned)g_replay.records.size(),
+                g_replay.records.back().ms / 1000.0, g_replay.recorder == FROM_HOST ? "host" : "guest", g_replay.hostName.c_str(),
+                g_replay.guestName.c_str());
+            Net::BeginReplay(opponent);
+            message = "replaying " + path + " (" + std::to_string(g_replay.records.size()) + " records, " +
+                      std::to_string((int)(g_replay.records.back().ms / 1000)) + " s), " + opponent + " as the opponent";
+            return true;
+        }
+
+        static const uint8_t MSG_CHAT = 16, MSG_LOADOUT = 17, MSG_READY = 18, MSG_CREW_ROSTER = 26, MSG_SETTINGS = 27,
+                             MSG_MATCH = 38, MSG_MATCH_EVENT = 39;
+
+        // One record, its time come.
+        static void Play(const DemoRecord &record)
+        {
+            if (record.kind != KIND_MESSAGE)
+            {
+                ++g_replay.held;   // the recorder's full states: our ship driven by them is stage 3
+                return;
+            }
+            bool fromRecorder = record.from == g_replay.recorder;
+            bool fromHost = record.from == FROM_HOST;
+            bool matchFlow = record.type == MSG_SETTINGS || record.type == MSG_MATCH || record.type == MSG_MATCH_EVENT;
+            if (fromRecorder)
+            {
+                if (record.type == MSG_LOADOUT)
+                {
+                    Match::ReplayOwnLoadout(record.data.data(), record.data.size());
+                    ++g_replay.ownLoadouts;
+                }
+                else if ((matchFlow && fromHost) || record.type == MSG_CHAT)
+                {
+                    Net::Deliver(record.type, record.data.data(), record.data.size());
+                    ++g_replay.delivered;
+                }
+                else
+                {
+                    ++g_replay.held;
+                }
+                return;
+            }
+            bool shown = record.type == MSG_CHAT || record.type == MSG_LOADOUT || record.type == MSG_READY || record.type == MSG_STATE ||
+                         record.type == MSG_CREW_ROSTER || (matchFlow && fromHost);
+            if (!shown)
+            {
+                ++g_replay.held;
+                return;
+            }
+            if (record.type == MSG_STATE && !g_replay.clockSet && record.data.size() >= 8)
+            {
+                // Their clock against ours: the state as sent, now.
+                double sentAt;
+                std::memcpy(&sentAt, record.data.data(), sizeof(sentAt));
+                Net::SetReplayClock(sentAt - WallMs());
+                g_replay.clockSet = true;
+            }
+            Net::Deliver(record.type, record.data.data(), record.data.size());
+            ++g_replay.delivered;
+        }
+
+        void ReplayFrame(double now)
+        {
+            if (!g_replay.active || g_replay.pausedAt >= 0.0) return;
+            double t = now - g_replay.startMs;
+            while (g_replay.active && g_replay.next < g_replay.records.size() && g_replay.records[g_replay.next].ms <= t)
+            {
+                Play(g_replay.records[g_replay.next]);
+                ++g_replay.next;
+            }
+            if (g_replay.active && g_replay.next >= g_replay.records.size())
+            {
+                g_replay.active = false;
+                Log("Demo: the replay is over (%u messages played, %u held, %u own loadouts)", g_replay.delivered, g_replay.held,
+                    g_replay.ownLoadouts);
+                Net::EndReplay("the replay is over");
+            }
+        }
+
+        static std::string ReplayStatus()
+        {
+            if (!g_replay.active) return "replay: none";
+            std::ostringstream out;
+            double t = (g_replay.pausedAt >= 0.0 ? g_replay.pausedAt : WallMs()) - g_replay.startMs;
+            out << "replay: " << g_replay.path << ", " << (int)(t / 1000.0) << " of " << (int)(g_replay.records.back().ms / 1000) << " s"
+                << (g_replay.pausedAt >= 0.0 ? " (paused)" : "") << ", record " << g_replay.next << " of " << g_replay.records.size()
+                << ", " << g_replay.delivered << " played, " << g_replay.held << " held";
+            return out.str();
+        }
+
+        bool RunReplayVerb(const Command &cmd, std::string &message)
+        {
+            if (cmd.args.size() <= 1)
+            {
+                message = ReplayStatus();
+                return true;
+            }
+            if (ArgIs(cmd, 1, "pause"))
+            {
+                if (!g_replay.active || g_replay.pausedAt >= 0.0)
+                {
+                    message = "no replay runs";
+                    return false;
+                }
+                g_replay.pausedAt = WallMs();
+                message = "replay paused";
+                return true;
+            }
+            if (ArgIs(cmd, 1, "resume"))
+            {
+                if (!g_replay.active || g_replay.pausedAt < 0.0)
+                {
+                    message = "no replay is paused";
+                    return false;
+                }
+                // The pause moves the records' times on, and their clock against ours with them.
+                double paused = WallMs() - g_replay.pausedAt;
+                g_replay.startMs += paused;
+                Net::SetReplayClock(Net::ReplayClock() - paused);
+                g_replay.pausedAt = -1.0;
+                message = "replay resumed";
+                return true;
+            }
+            if (ArgIs(cmd, 1, "stop"))
+            {
+                if (!g_replay.active)
+                {
+                    message = "no replay runs";
+                    return false;
+                }
+                g_replay.active = false;
+                Net::EndReplay("stopped");
+                message = "replay stopped";
+                return true;
+            }
+            std::string path = cmd.raw.size() > 1 ? cmd.raw[1] : "";
+            for (size_t i = 2; i < cmd.raw.size(); ++i) path += " " + cmd.raw[i];
+            return StartReplay(path, message);
         }
 
         bool RunVerb(const Command &cmd, std::string &message)

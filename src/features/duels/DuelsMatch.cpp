@@ -550,9 +550,8 @@ namespace Duels
             SetReplicaAugments(replica, augments);
         }
 
-        static void ApplyLoadout(Reader &r)
+        static bool ReadLoadout(Reader &r, Loadout &loadout)
         {
-            Loadout loadout;
             loadout.blueprint = r.Str();
             loadout.hullMax = r.I16();
             loadout.hull = r.I16();
@@ -572,7 +571,33 @@ namespace Duels
             loadout.droneParts = r.I16();
             loadout.augments.resize(r.U8());
             for (std::string &augment : loadout.augments) augment = r.Str();
-            if (!r.Ok())
+            return r.Ok();
+        }
+
+        void ReplayOwnLoadout(const uint8_t *data, size_t size)
+        {
+            Reader r(data, size);
+            Loadout loadout;
+            WorldManager *world = G_->GetWorld();
+            if (!ReadLoadout(r, loadout) || !world || !world->playerShip) return;
+            ShipManager *own = G_->GetShipManager(0);
+            if (own && own->myBlueprint.blueprintName != loadout.blueprint)
+            {
+                // As the ship choice switches ships (DuelsRounds.cpp): the bays come with the blueprint first.
+                Bays::PrepareBlueprint(G_->GetBlueprints()->GetShipBlueprint(loadout.blueprint, -1));
+                bool switched = world->SwitchShip(loadout.blueprint);
+                Log("Match: replay: our ship becomes the recorder's %s (%s)", loadout.blueprint.c_str(), switched ? "switched" : "the switch failed");
+                own = G_->GetShipManager(0);
+            }
+            if (!own) return;
+            FitShip(own, loadout);
+            Log("Match: replay: the recorder's ship fitted (%s)", loadout.blueprint.c_str());
+        }
+
+        static void ApplyLoadout(Reader &r)
+        {
+            Loadout loadout;
+            if (!ReadLoadout(r, loadout))
             {
                 Log("Match: malformed loadout");
                 return;
@@ -1265,6 +1290,8 @@ namespace Duels
 
         bool AllowNewShots(const ProjectileFactory *weapon)
         {
+            // A replay's ship 0 is the recorder's: its shots come from the demo (roadmap 5.1), never its own.
+            if (weapon && weapon->iShipId == 0 && Net::Replaying()) return false;
             if (!weapon || !Rounds::InMatch()) return true;
             if (weapon->iShipId != 0 && !(weapon->iShipId == 1 && Ai::Active())) return true;
             Rounds::Phase phase = Rounds::GetPhase();
@@ -2471,7 +2498,8 @@ namespace Duels
                 // No pause in a duel, from the first preparation on (rules, section 1): the store and the menus
                 // would pause this game.
                 GetState().noPause = true;
-                Headline(Net::IsHost() ? Net::PeerName() + " joined your duel" : "You joined " + Net::PeerName() + "'s duel");
+                Headline(Net::Replaying() ? "A replay: " + Net::PeerName() + " as the opponent"
+                         : Net::IsHost() ? Net::PeerName() + " joined your duel" : "You joined " + Net::PeerName() + "'s duel");
                 // The host's settings count for both; the guest has the default until they come.
                 LoadXpSetting();
                 g_xpMatch = Net::IsHost() ? g_xpSetting : XP_DEFAULT;
