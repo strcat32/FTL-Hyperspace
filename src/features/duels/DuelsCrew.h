@@ -55,6 +55,8 @@ namespace Duels
 
         // A crew member of the replica (a puppet): its health follows its owner, nothing else changes it.
         bool IsPuppet(const CrewMember *crew);
+        // A puppet the owner's latest state left out (roadmap 4.5: we can't see where they are): not drawn.
+        bool IsHidden(const CrewMember *crew);
         // A crew member's health as the messages carry it: whole points, and at least 1 while alive (FTL's crew live
         // on at 0.4; a copy given 0 would die).
         int WireHealth(const CrewMember *crew);
@@ -62,6 +64,7 @@ namespace Duels
         // Crew by the ids the rosters give them (the owner's ids, for ours and the puppets alike): a puppet's id, or
         // -1; our crew member with an id, or null.
         int PuppetId(const CrewMember *crew);
+        CrewMember *PuppetById(uint16_t id);
         int OwnId(const CrewMember *crew);
         CrewMember *OwnById(uint16_t id);
 

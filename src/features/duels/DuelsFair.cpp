@@ -12,6 +12,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <map>
 #include <random>
 #include <set>
 
@@ -32,6 +34,15 @@ namespace Duels
         static const double CHARGE_WINDOW_MIN_MS = 1000.0, CHARGE_WINDOW_MAX_MS = 2000.0;
         static const int PERSIST_STATES = 3;
         static const double CHARGE_AFTER_START_MS = 2500.0;
+        // From their shots (roadmap 4.5): the best gunner shortens a full charge by a fifth; a weapon's shots this close
+        // together are one volley; a volley may come this much of a charge early (timing); a weapon that fired was
+        // powered from its fastest charge before until then, less this much at both ends; their states are kept this
+        // long for it.
+        static const float GUNNER_BEST = 0.8f;
+        static const double VOLLEY_GAP_MS = 500.0;
+        static const double RATE_SLACK = 0.25;
+        static const double POWER_EDGE_MS = 500.0;
+        static const double POWER_KEEP_MS = 30000.0;
 
         enum Cheat
         {
@@ -41,8 +52,29 @@ namespace Duels
             CHEAT_CHAIN,     // our verdict values are made up
             CHEAT_HULL,      // our state's hull rises a point a second
             CHEAT_SHIELDS,   // our state names two shield layers more
-            CHEAT_POWER,     // our state names three bars more in each powered system
-            CHEAT_CHARGE     // our state's weapons charge twice as fast
+            CHEAT_POWER,     // our state names three bars (or as many as given) more in each powered system
+            CHEAT_CHARGE,    // our state's weapons charge twice as fast
+            CHEAT_RAPID      // our weapons charge twice as fast (really)
+        };
+
+        // A weapon's volleys, for their rate: FTL's charges as a bucket that fills at the fastest charge, holds one.
+        struct Volleys
+        {
+            const WeaponBlueprint *weapon = nullptr;
+            double lastShotMs = -1.0, lastVolleyMs = -1.0;
+            double charges = 1.0, chargesAt = 0.0;
+            bool reported = false;
+        };
+
+        // A state of theirs while their power isn't all seen: what we see drawn on their reactor, and the weapons we
+        // know were powered then (from their shots after it).
+        struct PowerSample
+        {
+            double atMs = 0.0;
+            int seen = 0, available = 0, weaponPower = 0;
+            uint32_t weapons = 0;   // slots
+            bool breach = false, reported = false;
+            std::string what;
         };
 
         // A weapon's charge since the start of its window: the state after a shot (or after it lost power), and every
@@ -63,9 +95,12 @@ namespace Duels
             double fightSince = 0.0;
             double sentAt = 0.0;
             int hull = -1;
+            double hullRepairUntil = 0.0;   // their clock: a hull repair drone of theirs was out until then (and 3 s)
             std::vector<ChargeWindow> charges;
             int shieldBreaches = 0, powerBreaches = 0;   // states in a row
             bool shieldReported = false, powerReported = false;
+            std::map<int, Volleys> volleys;              // by weapon slot
+            std::deque<PowerSample> power;
         };
 
         struct FairState
@@ -81,7 +116,7 @@ namespace Duels
             int cheat = CHEAT_OFF, cheatAmount = 0;
             double cheatSince = 0.0;
             SeenState seen;
-            uint32_t statesChecked = 0;
+            uint32_t statesChecked = 0, volleysChecked = 0, powerSamples = 0;
         };
 
         static FairState g;
@@ -303,8 +338,9 @@ namespace Duels
             }
             bool follows = seen.sentAt > 0.0 && state.sentAt > seen.sentAt && state.sentAt - seen.sentAt < 2000.0;
 
-            // The hull: it only goes down in a fight (FTL repairs a hull only at a store).
-            if (seen.hull >= 0 && state.hull > seen.hull)
+            // The hull: it only goes down in a fight (FTL repairs a hull only at a store), but for a hull repair drone.
+            if (state.hullRepair) seen.hullRepairUntil = state.sentAt + 3000.0;
+            if (seen.hull >= 0 && state.hull > seen.hull && state.sentAt > seen.hullRepairUntil)
             {
                 Dispute("their hull rose from " + std::to_string(seen.hull) + " to " + std::to_string(state.hull) + " in the fight");
             }
@@ -383,6 +419,103 @@ namespace Duels
             seen.sentAt = state.sentAt;
         }
 
+        // Weapons known powered over their states: a run of breaching states, as many as a state's breach must last,
+        // is one dispute.
+        static void CheckPowerRuns()
+        {
+            std::deque<PowerSample> &samples = g.seen.power;
+            size_t run = 0;
+            for (size_t i = 0; i < samples.size(); ++i)
+            {
+                run = samples[i].breach ? run + 1 : 0;
+                if (run < (size_t)PERSIST_STATES || samples[i].reported) continue;
+                bool already = false;
+                for (size_t j = i + 1 - run; j <= i; ++j) already = already || samples[j].reported;
+                for (size_t j = i + 1 - run; j <= i; ++j) samples[j].reported = true;
+                if (already) continue;
+                const PowerSample &sample = samples[i];
+                char text[300];
+                snprintf(text, sizeof(text), "their systems draw at least %d bars (%s, weapons that fired after it %d), their reactor, battery "
+                         "and Zoltans give %d", sample.seen + sample.weaponPower, sample.what.c_str(), sample.weaponPower, sample.available);
+                Dispute(text);
+            }
+        }
+
+        void PowerSeen(double sentMs, int seenPower, int available, const std::string &what)
+        {
+            if (!g.seen.fight) return;
+            PowerSample sample;
+            sample.atMs = sentMs;
+            sample.seen = seenPower;
+            sample.available = available;
+            sample.what = what;
+            sample.breach = seenPower > available;
+            g.seen.power.push_back(sample);
+            ++g.powerSamples;
+            while (!g.seen.power.empty() && sentMs - g.seen.power.front().atMs > POWER_KEEP_MS) g.seen.power.pop_front();
+            if (sample.breach) CheckPowerRuns();
+        }
+
+        void OnShot(int slot, const WeaponBlueprint *blueprint, ShipManager *replica, double firedMs)
+        {
+            const double localMs = firedMs;
+            SeenState &seen = g.seen;
+            if (!seen.fight || !blueprint || !replica || slot < 0 || slot >= 32) return;
+            // A weapon that holds several charges fires them together (Hyperspace's charge levels): not measured.
+            if (blueprint->chargeLevels > 1) return;
+            float full = blueprint->cooldown;
+            if (blueprint->boostPower.type == 1 && blueprint->boostPower.count > 0) full -= blueprint->boostPower.count * blueprint->boostPower.amount;
+            float reloaders = std::max(0.f, replica->GetAugmentationValue("AUTO_COOLDOWN"));
+            double fastest = std::max(0.2, (double)(full * GUNNER_BEST / (1.f + reloaders)));   // seconds between volleys
+
+            Volleys &volleys = seen.volleys[slot];
+            if (volleys.weapon != blueprint)
+            {
+                // Another weapon in that slot (moved there in the fight): its own charge, full for all we know.
+                volleys = Volleys();
+                volleys.weapon = blueprint;
+                volleys.chargesAt = localMs;
+            }
+            bool sameVolley = volleys.lastShotMs >= 0.0 && localMs - volleys.lastShotMs < VOLLEY_GAP_MS;
+            volleys.lastShotMs = localMs;
+            if (sameVolley) return;
+            volleys.charges = std::min(1.0, volleys.charges + (localMs - volleys.chargesAt) / 1000.0 / fastest) - 1.0;
+            volleys.chargesAt = localMs;
+            ++g.volleysChecked;
+            if (volleys.charges < -RATE_SLACK && !volleys.reported)
+            {
+                volleys.reported = true;
+                char text[240];
+                snprintf(text, sizeof(text), "their weapon %d (%s) fired again %.2f s after its last volley; FTL charges it in %.2f s at the fastest",
+                         slot, blueprint->name.c_str(), volleys.lastVolleyMs < 0.0 ? 0.0 : (localMs - volleys.lastVolleyMs) / 1000.0, fastest);
+                Dispute(text);
+            }
+            if (volleys.charges >= 0.0) volleys.reported = false;
+            volleys.lastVolleyMs = localMs;
+
+            // It was powered while it charged.
+            bool marked = false;
+            for (PowerSample &sample : seen.power)
+            {
+                if (sample.atMs < localMs - fastest * 1000.0 + POWER_EDGE_MS || sample.atMs > localMs - POWER_EDGE_MS) continue;
+                if (sample.weapons & (1u << slot)) continue;
+                sample.weapons |= 1u << slot;
+                sample.weaponPower += blueprint->power;
+                sample.breach = sample.seen + sample.weaponPower > sample.available;
+                marked = true;
+            }
+            if (marked) CheckPowerRuns();
+        }
+
+        void CheatCharging(ProjectileFactory *weapon)
+        {
+            // A second step before FTL's own (which then finds the charge full and readies the weapon).
+            if (g.cheat != CHEAT_RAPID || !weapon || weapon->iShipId != 0 || !weapon->powered) return;
+            if (weapon->cooldown.first >= weapon->cooldown.second - 0.01f) return;
+            weapon->cooldown.first = std::min(weapon->cooldown.second - 0.01f,
+                                              weapon->cooldown.first + G_->GetCFPS()->GetSpeedFactor() * 0.0625f);
+        }
+
         int CheatHull(int hull)
         {
             if (g.cheat != CHEAT_HULL) return hull;
@@ -396,7 +529,7 @@ namespace Duels
 
         int CheatPower(int power)
         {
-            return g.cheat == CHEAT_POWER ? power + 3 : power;
+            return g.cheat == CHEAT_POWER ? power + g.cheatAmount : power;
         }
 
         float CheatCharge(float charge, float cooldown)
@@ -500,7 +633,9 @@ namespace Duels
                 text += " (evasion " + std::to_string(g.evasionChecked) + ", theirs less our copy's " + std::to_string(g.evasionLowest) +
                         " to " + std::to_string(g.evasionHighest) + ")";
             }
-            text += ", their states checked " + std::to_string(g.statesChecked) + ", disputes " + std::to_string(g.disputes);
+            text += ", their states checked " + std::to_string(g.statesChecked) + " (power by their shots " +
+                    std::to_string(g.powerSamples) + "), their volleys checked " + std::to_string(g.volleysChecked) + ", disputes " +
+                    std::to_string(g.disputes);
             if (!g.lastDispute.empty()) text += " (last: " + g.lastDispute + ")";
             if (g.cheat != CHEAT_OFF) text += ", CHEATING (test)";
             return text;
@@ -515,8 +650,13 @@ namespace Duels
                 else if (ArgIs(cmd, 2, "chain")) g.cheat = CHEAT_CHAIN;
                 else if (ArgIs(cmd, 2, "hull")) g.cheat = CHEAT_HULL;
                 else if (ArgIs(cmd, 2, "shields")) g.cheat = CHEAT_SHIELDS;
-                else if (ArgIs(cmd, 2, "power")) g.cheat = CHEAT_POWER;
+                else if (ArgIs(cmd, 2, "power"))
+                {
+                    g.cheat = CHEAT_POWER;
+                    g.cheatAmount = ArgInt(cmd, 3, amount) ? amount : 3;
+                }
                 else if (ArgIs(cmd, 2, "charge")) g.cheat = CHEAT_CHARGE;
+                else if (ArgIs(cmd, 2, "rapid")) g.cheat = CHEAT_RAPID;
                 else if (ArgIs(cmd, 2, "evasion") && ArgInt(cmd, 3, amount))
                 {
                     g.cheat = CHEAT_EVASION;
@@ -525,7 +665,7 @@ namespace Duels
                 else if (ArgIs(cmd, 2, "off")) g.cheat = CHEAT_OFF;
                 else
                 {
-                    message = "usage: fair cheat dodge|evasion <n>|chain|hull|shields|power|charge|off";
+                    message = "usage: fair cheat dodge|evasion <n>|chain|hull|shields|power [n]|charge|rapid|off";
                     return false;
                 }
                 g.cheatSince = WallMs();
@@ -542,7 +682,7 @@ namespace Duels
             }
             if (cmd.args.size() > 1)
             {
-                message = "usage: fair [cheat dodge|evasion <n>|chain|hull|shields|power|charge|off | data <text>|real]";
+                message = "usage: fair [cheat dodge|evasion <n>|chain|hull|shields|power|charge|rapid|off | data <text>|real]";
                 return false;
             }
             message = Status();

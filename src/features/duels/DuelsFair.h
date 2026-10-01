@@ -5,6 +5,10 @@
 #include <string>
 #include <vector>
 
+struct ProjectileFactory;
+struct ShipManager;
+struct WeaponBlueprint;
+
 // Fair play (roadmap 4.1; docs/design/netcode-authority.md in the FTL: Duels repository, layer 1): dodge rolls that
 // neither player can choose or foresee. Each game makes two hash chains for a match (a chain is a random value hashed
 // again and again; its values are shown from the last hashed back, so each is checked against the one before it with
@@ -63,14 +67,30 @@ namespace Duels
             int shieldLayers = -1, shieldPower = 0;   // -1: no shields
             int powerUsed = 0, powerAvailable = -1;   // the systems that draw on the reactor; -1: not known
             std::vector<float> charges, cooldowns;    // each weapon's charge and its full charge, as its owner has them
+            bool hullRepair = false;                  // a hull repair drone of theirs is out (FTL's mends the hull)
         };
         void CheckState(const StateCheck &state);
+
+        // Layer 2 from what is always seen (roadmap 4.5: their power and their weapons' charge may be hidden from us):
+        // their shots. A weapon fires again no sooner than FTL can charge it: its blueprint's full charge (less a chain's
+        // boosts), shortened by the best gunner (20%), at 1 + their re-loaders a second. And a weapon that fired was
+        // powered while it charged: that with the power we do see drawn (shields, engines, cloak, hacking, mind control,
+        // drones out) more than their reactor, their battery and their Zoltans give is a dispute.
+        // firedMs: when it left their weapon, by their stamp on our clock (no later than it came, a lost message sent
+        // again comes late: its volley stays one).
+        void OnShot(int slot, const WeaponBlueprint *blueprint, ShipManager *replica, double firedMs);
+        // Each state of theirs while we don't see all their power (CheckState checks it all when we do), when it was
+        // sent on our clock: the power we see drawn on their reactor, and what the reactor, the battery and their Zoltans
+        // give at most.
+        void PowerSeen(double sentMs, int seenPower, int available, const std::string &what);
 
         // Test cheats on our own state, as SendState writes it ("fair cheat hull|shields|power|charge").
         int CheatHull(int hull);
         int CheatShieldLayers(int layers);
         int CheatPower(int power);
         float CheatCharge(float charge, float cooldown);
+        // "fair cheat rapid": before ProjectileFactory::Update, our weapons charge twice as fast (really: more shots).
+        void CheatCharging(ProjectileFactory *weapon);
 
         // Layer 5: the game's data that decides a fight, hashed (every weapon's, drone's and augment's numbers, every
         // player ship's systems, arms, hull and reactor); the handshake compares it (DuelsNet.cpp). "" until FTL has
@@ -80,7 +100,7 @@ namespace Duels
         int Disputes();
         std::string Status();
 
-        // Test verb (debug mode): "fair" (the state), "fair cheat dodge|evasion <n>|chain|hull|shields|power|charge|off":
+        // Test verb (debug mode): "fair" (the state), "fair cheat dodge|evasion <n>|chain|hull|shields|power|charge|rapid|off":
         // this game lies in its verdicts or its state, so that the other's checks can be seen to catch it.
         bool RunVerb(const Command &cmd, std::string &message);
     }

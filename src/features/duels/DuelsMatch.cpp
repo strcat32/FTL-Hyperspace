@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "CommandConsole.h"
 #include "CustomDamage.h"
+#include "Drones.h"
 #include "HSVersion.h"
 #include "Projectile_Extend.h"
 #include "Systems.h"
@@ -199,6 +200,7 @@ namespace Duels
             uint16_t stateSeq = 0;
             bool havePeerState = false;
             uint16_t peerStateSeq = 0;
+            uint8_t peerVision = 0;          // what we see of their ship, as their last state says (roadmap 4.5)
             double lastStateSent = -1.0e9;
             bool stateDirty = false;
             uint32_t statesApplied = 0;
@@ -795,6 +797,8 @@ namespace Duels
             Writer w;
             w.F64(now);
             w.U16(++g_match.stateSeq);
+            // What the receiver sees of our ship: what follows holds back the rest (255 or -1: not seen).
+            w.U8(Vision::Flags());
             w.I16((int16_t)Fair::CheatHull(ship->ship.hullIntegrity.first));
 
             Shields *shields = ship->shieldSystem;
@@ -814,8 +818,10 @@ namespace Duels
             w.U8((uint8_t)ship->vSystemList.size());
             for (ShipSystem *system : ship->vSystemList)
             {
+                bool powerHidden = Vision::PowerHidden(system->iSystemType, system->bNeedsPower);
                 w.U8((uint8_t)system->iSystemType);
-                w.U8((uint8_t)std::max(0, system->bNeedsPower && PowerBars(system) > 0 ? Fair::CheatPower(PowerBars(system)) : PowerBars(system)));
+                w.U8(powerHidden ? (uint8_t)255
+                                 : (uint8_t)std::max(0, system->bNeedsPower && PowerBars(system) > 0 ? Fair::CheatPower(PowerBars(system)) : PowerBars(system)));
                 w.U8((uint8_t)std::max(0, system->healthState.first));
                 w.I8((int8_t)std::max(-1, std::min(system->iLockCount, 127)));
                 if (system->iLockCount > 0)
@@ -825,8 +831,8 @@ namespace Duels
                 }
                 w.U8((uint8_t)HackFlags(system));
                 // Bonus power (Zoltan crew in the room): the replica's own crew are puppets that walk behind their
-                // owners, so its bonus is the owner's, not what its puppets would give (SetBonusPower).
-                w.U8((uint8_t)std::max(0, std::min(system->iBonusPower, 255)));
+                // owners, so its bonus is the owner's, not what its puppets would give (SetBonusPower). Power too.
+                w.U8(powerHidden ? (uint8_t)255 : (uint8_t)std::max(0, std::min(system->iBonusPower, 254)));
             }
 
             // The backup battery: on, and how far its 30 seconds have run.
@@ -850,20 +856,22 @@ namespace Duels
 
             std::vector<ProjectileFactory*> weapons = ship->weaponSystem ? ship->GetWeaponList() : std::vector<ProjectileFactory*>();
             w.U8((uint8_t)weapons.size());
+            const Vision::Seen &seen = Vision::Current();
             for (ProjectileFactory *weapon : weapons)
             {
-                w.Bool(weapon->powered);
-                w.F32(Fair::CheatCharge(weapon->cooldown.first, weapon->cooldown.second));
+                // Powered: 1, 2 when its power isn't seen (roadmap 4.5).
+                w.U8(seen.power ? (weapon->powered ? 1 : 0) : 2);
+                w.F32(seen.charge ? Fair::CheatCharge(weapon->cooldown.first, weapon->cooldown.second) : -1.f);
                 // Its full charge as it is now: a manned weapons system shortens it and FTL rescales the charge with it
                 // (roadmap 4.1's charge check measures the share).
-                w.F32(weapon->cooldown.second);
+                w.F32(seen.charge ? weapon->cooldown.second : -1.f);
             }
             // Artillery: each system's charge (power comes with the systems). It fires by itself when charged; its
             // shots come as MSG_SHOT, so the replica's never fires on its own.
             w.U8((uint8_t)ship->artillerySystems.size());
             for (ArtillerySystem *artillery : ship->artillerySystems)
             {
-                w.F32(artillery && artillery->projectileFactory ? artillery->projectileFactory->cooldown.first : 0.f);
+                w.F32(!seen.charge ? -1.f : artillery && artillery->projectileFactory ? artillery->projectileFactory->cooldown.first : 0.f);
             }
 
             // Drones: power, launch, wreck and where they are (DuelsDrones.cpp).
@@ -893,6 +901,7 @@ namespace Duels
         {
             double sentAt = r.F64();
             uint16_t seq = r.U16();
+            uint8_t vision = r.U8();   // what we see of their ship (roadmap 4.5)
             int hull = r.I16();
             bool hasShields = r.Bool();
             int shieldLayers = 0;
@@ -924,11 +933,11 @@ namespace Duels
             bool cloakOn = hasCloak && r.Bool();
             float cloakTime = hasCloak ? r.F32() : 0.f;
             float cloakGoal = hasCloak ? r.F32() : 0.f;
-            struct WeaponState { bool powered; float charge, full; };
+            struct WeaponState { uint8_t powered; float charge, full; };   // powered 2, charge < 0: not seen
             std::vector<WeaponState> weapons(r.U8());
             for (WeaponState &weapon : weapons)
             {
-                weapon.powered = r.Bool();
+                weapon.powered = r.U8();
                 weapon.charge = r.F32();
                 weapon.full = r.F32();
             }
@@ -941,6 +950,7 @@ namespace Duels
             if (g_match.havePeerState && (uint16_t)(seq - g_match.peerStateSeq) >= 32768) return;
             g_match.havePeerState = true;
             g_match.peerStateSeq = seq;
+            g_match.peerVision = vision;
 
             ShipManager *replica = G_->GetShipManager(1);
             if (!replica || !g_match.replicaReady) return;
@@ -952,6 +962,7 @@ namespace Duels
                 Rounds::Phase phase = Rounds::GetPhase();
                 check.fight = Rounds::FightBegun() && (phase == Rounds::Phase::Fight || Rounds::Free());
                 check.hull = hull;
+                // (What we don't see of their ship isn't checked: it does nothing here.)
                 if (hasShields)
                 {
                     check.shieldLayers = shieldLayers;
@@ -959,21 +970,59 @@ namespace Duels
                     {
                         if (state.id == SYS_SHIELDS) check.shieldPower = state.power;
                     }
+                    if (check.shieldPower == 255) check.shieldLayers = -1;
                 }
                 // The systems that draw on the reactor (not the subsystems, not the bays: their bars are their weapons').
+                bool powerSeen = true;
+                std::string seenPower;
                 for (const SystemState &state : systems)
                 {
                     ShipSystem *system = state.id < SYS_CUSTOM_FIRST ? replica->GetSystem(state.id) : nullptr;
-                    if (system && system->bNeedsPower) check.powerUsed += state.power;
+                    if (!system || !system->bNeedsPower) continue;
+                    if (state.power == 255)
+                    {
+                        powerSeen = false;
+                        continue;
+                    }
+                    check.powerUsed += state.power;
+                    if (state.power > 0) seenPower += (seenPower.empty() ? "" : ", ") + ShipSystem::SystemIdToName(state.id) + " " + std::to_string(state.power);
                 }
                 PowerManager *power = PowerManager::GetPowerManager(1);
-                if (power) check.powerAvailable = power->currentPower.second + (batteryOn ? 4 : 0);
+                if (power && powerSeen) check.powerAvailable = power->currentPower.second + (batteryOn ? 4 : 0);
+                if (replica->droneSystem)
+                {
+                    for (Drone *drone : replica->droneSystem->drones)
+                    {
+                        if (drone && drone->type == DRONE_SHIP_REPAIR && drone->deployed && !drone->bDead) check.hullRepair = true;
+                    }
+                }
                 for (const WeaponState &weapon : weapons)
                 {
-                    check.charges.push_back(weapon.charge);
-                    check.cooldowns.push_back(weapon.full);
+                    check.charges.push_back(weapon.charge < 0.f ? 0.f : weapon.charge);
+                    check.cooldowns.push_back(weapon.charge < 0.f ? 0.f : weapon.full);
                 }
                 Fair::CheckState(check);
+                // Not all of it seen (roadmap 4.5): what we see drawn, with their drones out, for the check by their shots
+                // (any of their Zoltans may power a system for free).
+                if (power && !powerSeen)
+                {
+                    int drones = 0, zoltans = 0;
+                    if (replica->droneSystem)
+                    {
+                        for (Drone *drone : replica->droneSystem->drones)
+                        {
+                            if (drone && drone->powered && drone->blueprint) drones += drone->blueprint->power;
+                        }
+                    }
+                    for (CrewMember *crew : replica->vCrewList)
+                    {
+                        if (crew && !crew->bDead && crew->iShipId == 1 && crew->species.compare(0, 6, "energy") == 0) ++zoltans;
+                    }
+                    if (drones > 0) seenPower += (seenPower.empty() ? "drones " : ", drones ") + std::to_string(drones);
+                    Fair::PowerSeen(Net::HasClock() ? Net::PeerToLocalTime(sentAt) : WallMs(), check.powerUsed + drones,
+                                    power->currentPower.second + (batteryOn ? 4 : 0) + zoltans,
+                                    seenPower.empty() ? std::string("nothing else seen") : seenPower);
+                }
             }
 
             replica->ship.hullIntegrity.first = std::min(hull, replica->ship.hullIntegrity.second);
@@ -983,7 +1032,7 @@ namespace Duels
             for (const SystemState &state : systems)
             {
                 g_match.hackFlags[state.id] = state.hack;
-                g_match.bonusPower[state.id] = state.bonus;
+                if (state.bonus != 255) g_match.bonusPower[state.id] = state.bonus;   // 255: not seen (roadmap 4.5)
             }
             HoldReplicaHacking(replica);
 
@@ -1014,7 +1063,7 @@ namespace Duels
                 // Weapons and drones power follows the weapons and drones, one by one (below, and DuelsDrones.cpp):
                 // raising drone power by itself would launch the replica's drones in slot order.
                 ShipSystem *system = replica->GetSystem(state.id);
-                if (state.id == SYS_WEAPONS || state.id == SYS_DRONES || !system) continue;
+                if (state.id == SYS_WEAPONS || state.id == SYS_DRONES || !system || state.power == 255) continue;
                 if (!system->bNeedsPower) g_match.subsystemPower[state.id] = state.power;
                 if (PowerBars(system) != state.power) SetReplicaPower(replica, system, state.power);
                 if (PowerBars(system) != state.power) LogPowerMiss(system, state.power);
@@ -1036,16 +1085,17 @@ namespace Duels
                 std::vector<ProjectileFactory*> list = replica->GetWeaponList();
                 for (size_t slot = 0; slot < list.size() && slot < weapons.size(); ++slot)
                 {
+                    // What isn't seen (roadmap 4.5) stays as last seen.
                     ProjectileFactory *weapon = list[slot];
-                    if (weapons[slot].powered && !weapon->powered) replica->PowerWeapon(weapon, true, true);
-                    else if (!weapons[slot].powered && weapon->powered) replica->DePowerWeapon(weapon, true);
-                    weapon->cooldown.first = std::min(weapons[slot].charge, weapon->cooldown.second);
+                    if (weapons[slot].powered == 1 && !weapon->powered) replica->PowerWeapon(weapon, true, true);
+                    else if (weapons[slot].powered == 0 && weapon->powered) replica->DePowerWeapon(weapon, true);
+                    if (weapons[slot].charge >= 0.f) weapon->cooldown.first = std::min(weapons[slot].charge, weapon->cooldown.second);
                 }
             }
             for (size_t i = 0; i < replica->artillerySystems.size() && i < artilleryCharge.size(); ++i)
             {
                 ProjectileFactory *weapon = replica->artillerySystems[i] ? replica->artillerySystems[i]->projectileFactory : nullptr;
-                if (weapon) weapon->cooldown.first = std::min(artilleryCharge[i], weapon->cooldown.second);
+                if (weapon && artilleryCharge[i] >= 0.f) weapon->cooldown.first = std::min(artilleryCharge[i], weapon->cooldown.second);
             }
 
             // Drones after the systems, so the reactor power they need is free.
@@ -1454,6 +1504,9 @@ namespace Duels
                 SendResult(shot, OUTCOME_GONE, 0);
                 return;
             }
+            // Its weapon's rate of fire, and that it was powered (roadmap 4.5: from what is always seen), by when it left
+            // their weapon: their stamp, but no later than it came (a stamp ahead of its message is a lie).
+            if (source == SOURCE_WEAPON) Fair::OnShot(slot, blueprint, replica, std::min(shot.spawnMs, now + 250.0 + Net::RttMs() * 0.5));
 
             Projectile *projectile = nullptr;
             if (fromDrone)
@@ -1608,6 +1661,18 @@ namespace Duels
             m.in.push_back(shot);
         }
 
+        // The most evasion a ship can have with its engines' power (FTL's: 5 a bar, 3 from the sixth on), its crew
+        // at their best (piloting and engines manned by masters: 10 each) and its cloak (60): for a verdict on a ship
+        // whose crew we don't see.
+        static int EvasionBound(ShipManager *ship)
+        {
+            static const int ENGINES[] = {0, 5, 10, 15, 20, 25, 28, 31, 35};
+            int power = ship->GetSystemPower(SYS_ENGINES);
+            int evasion = ENGINES[std::max(0, std::min(power, 8))] + 20;
+            if (ship->cloakSystem && ship->cloakSystem->bTurnedOn) evasion += 60;
+            return evasion;
+        }
+
         static void ApplyResult(Reader &r)
         {
             uint32_t netId = r.U32();
@@ -1634,9 +1699,12 @@ namespace Duels
                 if (shot.netId != netId) continue;
                 if (rolled)
                 {
-                    // Their roll, checked (roadmap 4.1); the evasion against their ship as our copy of it has it now.
+                    // Their roll, checked (roadmap 4.1); the evasion against their ship as our copy of it has it now,
+                    // or, without their crew in sight (roadmap 4.5), the most its engines and cloak allow.
                     ShipManager *replica = G_->GetShipManager(1);
-                    Fair::CheckRoll(shot.fair, verdict, evasion, outcome == OUTCOME_MISS, replica ? replica->GetDodgeFactor() : -1,
+                    bool crewSeen = (g_match.peerVision & (Vision::SEES_INTERIOR | Vision::SEES_LIFEFORMS)) != 0;
+                    Fair::CheckRoll(shot.fair, verdict, evasion, outcome == OUTCOME_MISS,
+                                    !replica ? -1 : crewSeen ? replica->GetDodgeFactor() : EvasionBound(replica),
                                     "shot " + std::to_string(netId) + " (" + shot.weapon + ")");
                 }
                 if (shot.verdict == PENDING)
@@ -1830,6 +1898,30 @@ namespace Duels
             if (!shot || shot->type != WEAPON_BOMB) return false;
             dodged = false;   // decided when it goes off (BeginBombCheck)
             return true;
+        }
+
+        bool SensorsAllow(const ShipManager *ship, int vision)
+        {
+            if (!ship || ship->iShipId != 0 || !Net::IsConnected() || !g_match.replicaReady || ship != G_->GetShipManager(0)) return true;
+            switch (vision)
+            {
+                case 2: return (g_match.peerVision & Vision::SEES_INTERIOR) != 0;
+                case 3: return (g_match.peerVision & Vision::SEES_POWER) != 0;
+                case 4: return (g_match.peerVision & Vision::SEES_CHARGE) != 0;
+                default: return true;
+            }
+        }
+
+        void ClampVision(ShipManager *ship)
+        {
+            if (!ship || ship->iShipId != 1 || !Net::IsConnected() || !g_match.replicaReady || ship != G_->GetShipManager(1)) return;
+            if (g_match.peerVision & Vision::SEES_INTERIOR) return;
+            for (Room *room : ship->ship.vRoomList)
+            {
+                int id = room ? room->iRoomId : -1;
+                if (id < 0 || (id < (int)ship->tempVision.size() && ship->tempVision[id])) continue;
+                room->bBlackedOut = true;
+            }
         }
 
         bool RolledDodge(ShipManager *ship, bool &dodged)
@@ -2459,6 +2551,7 @@ namespace Duels
                     Hacking::OnMessage(type, reader);
                     break;
                 case Mind::MSG_MIND:
+                case Mind::MSG_MIND_TAKEN:
                 case Mind::MSG_CREW_ORDER:
                     Mind::OnMessage(type, reader);
                     break;

@@ -10,6 +10,7 @@
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
 #include "DuelsEnvironment.h"
+#include "DuelsFair.h"
 #include "DuelsHud.h"
 #include "DuelsLobby.h"
 #include "DuelsMatch.h"
@@ -379,6 +380,7 @@ HOOK_METHOD_PRIORITY(ProjectileFactory, Update, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ProjectileFactory::Update -> Begin (DuelsHooks.cpp)\n")
     if (iShipId == 1 && Duels::Ai::Active()) currentFiringAngle = 0.f;
+    Duels::Fair::CheatCharging(this);
     super();
 }
 
@@ -471,6 +473,21 @@ HOOK_METHOD_PRIORITY(BombProjectile, CollisionCheck, -2000, (Collideable *other)
 }
 
 // A bomb's dodge roll, when it appears in its target room.
+// What FTL shows of the opponent's ship follows what their game sent (roadmap 4.5): FTL's sensor levels, but no more
+// than their state's vision.
+HOOK_METHOD_PRIORITY(ShipManager, DoSensorsProvide, -2000, (int vision) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::DoSensorsProvide -> Begin (DuelsHooks.cpp)\n")
+    return super(vision) && Duels::Match::SensorsAllow(this, vision);
+}
+
+HOOK_METHOD_PRIORITY(ShipManager, CheckVision, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::CheckVision -> Begin (DuelsHooks.cpp)\n")
+    super();
+    Duels::Match::ClampVision(this);
+}
+
 HOOK_METHOD_PRIORITY(ShipManager, GetDodged, -2000, () -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::GetDodged -> Begin (DuelsHooks.cpp)\n")
@@ -741,12 +758,28 @@ HOOK_METHOD_PRIORITY(CompleteShip, InitiateTeleport, -2000, (int targetRoom, int
     Duels::Boarding::AfterTeleport(this, command);
 }
 
-HOOK_METHOD_PRIORITY(MindSystem, InitiateMindControl, -2000, () -> void)
+// Our mind control aimed at the opponent's ship: their game picks whom it takes (DuelsMind.cpp; roadmap 4.5).
+HOOK_METHOD_PRIORITY(MindSystem, QueueMindControl, -2000, (std::vector<CrewMember*> *crew, int roomId, int shipId) -> void)
 {
-    LOG_HOOK("HOOK_METHOD_PRIORITY -> MindSystem::InitiateMindControl -> Begin (DuelsHooks.cpp)\n")
-    size_t before = controlledCrew.size();
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> MindSystem::QueueMindControl -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Mind::QueueToOwner(this, roomId, shipId)) return;
+    super(crew, roomId, shipId);
+}
+
+// A puppet its owner's state left out (roadmap 4.5: it is where we can't see it) isn't drawn: it stands where it was
+// last seen, and FTL would draw it in a room our crew light up.
+HOOK_METHOD_PRIORITY(CrewMember, OnRender, -2000, (bool outlineOnly) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::OnRender -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Crew::IsHidden(this)) return;
+    super(outlineOnly);
+}
+
+HOOK_METHOD_PRIORITY(CrewMember, OnRenderHealth, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::OnRenderHealth -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Crew::IsHidden(this)) return;
     super();
-    Duels::Mind::AfterInitiate(this, before);
 }
 
 // A crew member of the opponent's that our mind control holds aboard our ship repairs our systems as ours do (roadmap

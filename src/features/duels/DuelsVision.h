@@ -27,6 +27,16 @@ namespace Duels
             bool Crew(int room) const { return lifeforms || Room(room); }
         };
 
+        // The vision byte a state carries (what its receiver sees of the sender's ship).
+        static const uint8_t SEES_INTERIOR = 1, SEES_LIFEFORMS = 2, SEES_CHARGE = 4, SEES_POWER = 8;
+        uint8_t Flags();
+        // A system whose power its owner sends only with the power seen: the reactor's (and the weapon and drone bays,
+        // whose bars are their weapons'). Not: the subsystems (their power follows from their damage and ion, always
+        // seen), the engines (the evasion every verdict names, roadmap 4.1), the shields (FTL draws their layers'
+        // bubbles, charged or not, at any sensor level), the cloak (its time shows its level), and the hacking and mind
+        // control systems (the opponent's game runs them on its own ship and crew with their levels).
+        bool PowerHidden(int systemType, bool needsPower);
+
         // Each state we send (DuelsMatch.cpp): worked out anew; a change goes to the log.
         const Seen &Update();
         const Seen &Current();

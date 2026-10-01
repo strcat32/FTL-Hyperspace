@@ -157,6 +157,14 @@ namespace Duels
         // own roll; false when it can't (no chains yet): FTL rolls then.
         bool RolledDodge(ShipManager *ship, bool &dodged);
 
+        // ShipManager::DoSensorsProvide for our ship: what FTL shows of the opponent's ship (its interior, its weapons'
+        // charge, its power use) only as far as their state's vision says it was sent (roadmap 4.5). FTL's vision
+        // numbers: 2 the enemy's interior, 3 its power use, 4 its weapons' charge.
+        bool SensorsAllow(const ShipManager *ship, int vision);
+        // After ShipManager::CheckVision for the replica (FTL's blackout reads the sensors itself): its rooms dark where
+        // their state's vision says we don't see inside, but for the rooms our crew light up (FTL's tempVision).
+        void ClampVision(ShipManager *ship);
+
         // Beams (ShipManager::DamageBeam): ours sweeps the replica without damage; the defender's is reported when over.
         void MuteBeamDamage(ShipManager *ship, Damage &damage);
         void ObserveBeam(ShipManager *ship, bool hit, int hullBefore);

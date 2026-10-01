@@ -2,6 +2,7 @@
 #include "Duels.h"
 #include "DuelsCrew.h"
 #include "DuelsTrace.h"
+#include "DuelsVision.h"
 #include "DuelsWire.h"
 #include "Drones.h"
 
@@ -63,6 +64,7 @@ namespace Duels
             bool placeNow = true;          // a new puppet goes straight to its owner's position
             bool ownerControlled = false;  // under mind control, as the owner last said
             float normalMax = 0.f;         // its own maximum health while a mind control's boost raises it (0: none)
+            bool hidden = false;           // left out of the owner's latest state: where we can't see them (roadmap 4.5)
         };
 
         struct CrewState
@@ -234,7 +236,13 @@ namespace Duels
 
         void WriteState(Writer &w)
         {
+            // Only those the opponent can see (roadmap 4.5): their puppets of the others stay as last seen (FTL draws
+            // none of them where its player can't see).
             std::vector<std::pair<uint16_t, CrewMember*>> crew = OwnCrew();
+            const Vision::Seen &seen = Vision::Current();
+            crew.erase(std::remove_if(crew.begin(), crew.end(),
+                                      [&](const std::pair<uint16_t, CrewMember*> &entry) { return !seen.Crew(entry.second->iRoomId); }),
+                       crew.end());
             w.U8((uint8_t)crew.size());
             for (const std::pair<uint16_t, CrewMember*> &entry : crew) WriteEntry(w, entry.first, entry.second);
             // Guests: their crew aboard our ship, by their ids. One that died and is gone says so once more.
@@ -389,6 +397,7 @@ namespace Duels
             {
                 Puppet &puppet = g_crew.puppets[entry.id];
                 bool fresh = puppet.roster.id == 0;
+                if (fresh) puppet.hidden = true;   // until a state has them
                 bool sameMember = !fresh && puppet.roster.species == entry.species && puppet.roster.droneSlot == entry.droneSlot;
                 puppet.roster = entry;
                 if (entry.droneSlot >= 0)
@@ -543,6 +552,15 @@ namespace Duels
             g_crew.havePending = false;
             ShipManager *replica = G_->GetShipManager(1);
             if (!replica || !g_crew.active) return;
+            // Those the owner left out are where we can't see them (roadmap 4.5): they stand where they were last seen,
+            // undrawn (FTL would draw them in a room our crew light up), and go straight to where they are when seen.
+            for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            {
+                bool hidden = std::none_of(g_crew.pending.begin(), g_crew.pending.end(),
+                                           [&](const std::pair<uint16_t, Sample> &sent) { return sent.first == entry.first; });
+                if (entry.second.hidden && !hidden) entry.second.placeNow = true;
+                entry.second.hidden = hidden;
+            }
             for (std::pair<uint16_t, Sample> &entry : g_crew.pending)
             {
                 auto found = g_crew.puppets.find(entry.first);
@@ -710,6 +728,23 @@ namespace Duels
         bool IsPuppet(const CrewMember *crew)
         {
             return g_crew.active && crew && (IsPuppetCrew(crew) || AwayId(crew) >= 0);
+        }
+
+        bool IsHidden(const CrewMember *crew)
+        {
+            if (!g_crew.active || !crew) return false;
+            for (const std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            {
+                if (entry.second.crew == crew) return entry.second.hidden;
+            }
+            return false;
+        }
+
+        CrewMember *PuppetById(uint16_t id)
+        {
+            auto found = g_crew.puppets.find(id);
+            ShipManager *replica = G_->GetShipManager(1);
+            return found == g_crew.puppets.end() || !replica ? nullptr : LiveCrew(replica, found->second);
         }
 
         int BoardAway(CrewMember *crew)

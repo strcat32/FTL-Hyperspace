@@ -3,6 +3,7 @@
 #include "Duels.h"
 #include "DuelsBays.h"
 #include "DuelsBoarding.h"
+#include "DuelsCrew.h"
 #include "DuelsHacking.h"
 #include "DuelsMatch.h"
 #include "DuelsMind.h"
@@ -1063,6 +1064,35 @@ namespace Duels
     }
 
     // rooms <ship>: the ship's rooms (tiles), their consoles and systems (the weapon bays' cut, DuelsBays.cpp).
+    // sensors: what FTL's sensors give our ship now, as FTL decides it (ShipManager::DoSensorsProvide for each vision
+    // level), and how many of the enemy's system boxes show their power (roadmap 4.5: the vision follows FTL's rules).
+    static bool DoSensors(const Command &cmd, std::string &message)
+    {
+        ShipManager *own = G_->GetShipManager(0);
+        CApp *app = G_->GetCApp();
+        if (!own || !app || !app->gui)
+        {
+            message = "not in the game";
+            return false;
+        }
+        ShipSystem *sensors = own->GetSystem(SYS_SENSORS);
+        std::ostringstream out;
+        out << "sensors: power " << (sensors ? sensors->GetEffectivePower() : -1) << ", health "
+            << (sensors ? sensors->healthState.first : -1) << ", manned " << (sensors ? sensors->iActiveManned : -1)
+            << (sensors && sensors->bManned ? " (bManned)" : "") << ", hack " << (sensors ? sensors->iHackEffect : -1) << " | provides";
+        for (int vision = 0; vision <= 5; ++vision) out << " " << vision << ":" << (own->DoSensorsProvide(vision) ? 1 : 0);
+        int boxes = 0, showing = 0;
+        for (SystemBox *box : app->gui->combatControl.sysBoxes)
+        {
+            ++boxes;
+            if (box && box->bShowPower) ++showing;
+        }
+        out << " | enemy system boxes " << boxes << ", showing power " << showing;
+        message = out.str();
+        Log("%s", message.c_str());
+        return true;
+    }
+
     static bool DoRooms(const Command &cmd, std::string &message)
     {
         ShipManager *ship = ArgShip(cmd, 1, message);
@@ -1160,9 +1190,11 @@ namespace Duels
             CrewMember *member = crew[index];
             // task: FTL's CrewTask (0 = manning, 1 = repairing, ...); mans: the system it gives its skill to; slot: where it
             // stands in its room; station: its saved position (room/slot, the stations FTL's "return" button sends it to);
-            // flags: i an intruder, m mind-controlled, f fighting, r repairing (or sabotaging) something, s at a system
+            // flags: i an intruder, m mind-controlled, f fighting, r repairing (or sabotaging) something, s at a system,
+            // h hidden (a puppet where we can't see it, roadmap 4.5: not drawn, it stands where it was last seen)
             std::string flags = std::string(member->intruder ? "i" : "") + (member->bMindControlled ? "m" : "") +
-                                (member->bFighting ? "f" : "") + (member->currentRepair ? "r" : "") + (member->currentSystem ? "s" : "");
+                                (member->bFighting ? "f" : "") + (member->currentRepair ? "r" : "") + (member->currentSystem ? "s" : "") +
+                                (Crew::IsHidden(member) ? "h" : "");
             Log("  crew %u %-8s %-12s on ship %d room %2d health %.0f/%.0f task %d mans %s slot %d station %d/%d flags %s%s", (unsigned)index,
                 member->species.c_str(), member->GetName().c_str(), member->currentShipId, member->iRoomId, member->health.first,
                 member->health.second, member->task.taskId,
@@ -1279,6 +1311,7 @@ namespace Duels
         if (verb == "import") return DoImport(cmd, message);
         if (verb == "describe") return DoDescribe(cmd, message);
         if (verb == "rooms") return DoRooms(cmd, message);
+        if (verb == "sensors") return DoSensors(cmd, message);
         if (verb == "upgradeclick") return DoUpgradeClick(cmd, message);
         if (verb == "swap") return DoSwap(cmd, message);
         if (verb == "pausetest") return DoPauseTest(cmd, message);

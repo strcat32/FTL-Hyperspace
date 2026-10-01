@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsRooms.h"
+#include "DuelsVision.h"
 #include "DuelsWire.h"
 
 #include <algorithm>
@@ -32,6 +33,8 @@ namespace Duels
             std::vector<std::pair<int, int>> breaches;   // outer wall index, damage
             std::vector<bool> doors;              // doors, then airlocks: open
             std::vector<Lockdown> lockdowns;
+            // What of it the opponent sees (roadmap 4.5): each room, each door (a door with a room seen on one side).
+            std::vector<bool> roomsSeen, doorsSeen;
         };
 
         struct RoomsState
@@ -86,12 +89,56 @@ namespace Duels
             return s;
         }
 
+        static void WriteBits(Writer &w, const std::vector<bool> &bits)
+        {
+            w.U8((uint8_t)std::min<size_t>(bits.size(), 255));
+            for (size_t i = 0; i < bits.size() && i < 255; i += 8)
+            {
+                uint8_t byte = 0;
+                for (size_t b = 0; b < 8 && i + b < bits.size(); ++b) byte |= bits[i + b] ? (uint8_t)(1u << b) : 0;
+                w.U8(byte);
+            }
+        }
+
+        static std::vector<bool> ReadBits(Reader &r)
+        {
+            std::vector<bool> bits;
+            size_t count = r.U8();
+            for (size_t i = 0; i < count; i += 8)
+            {
+                uint8_t byte = r.U8();
+                for (size_t b = 0; b < 8 && i + b < count; ++b) bits.push_back((byte >> b) & 1);
+            }
+            return bits;
+        }
+
         void WriteState(Writer &w)
         {
             ShipManager *own = G_->GetShipManager(0);
             Snapshot s = own ? Take(own) : Snapshot();
+            // Only what the opponent sees of our rooms (roadmap 4.5): the rooms seen, the doors with one of them on a
+            // side, the fires, breaches and lockdowns in them.
+            const Vision::Seen &seen = Vision::Current();
+            if (own)
+            {
+                for (size_t room = 0; room < own->ship.vRoomList.size(); ++room) s.roomsSeen.push_back(seen.RoomState((int)room));
+                for (Door *door : Doors(own)) s.doorsSeen.push_back(door && (seen.RoomState(door->iRoom1) || seen.RoomState(door->iRoom2)));
+                std::vector<std::vector<Fire>> &grid = own->fireSpreader.grid;
+                s.fires.erase(std::remove_if(s.fires.begin(), s.fires.end(),
+                                             [&](const Tile &tile) { return !seen.RoomState(grid[tile.x][tile.y].roomId); }),
+                              s.fires.end());
+                std::vector<OuterHull*> &walls = own->ship.vOuterWalls;
+                s.breaches.erase(std::remove_if(s.breaches.begin(), s.breaches.end(),
+                                                [&](const std::pair<int, int> &breach)
+                                                { return breach.first >= (int)walls.size() || !walls[breach.first] || !seen.RoomState(walls[breach.first]->roomId); }),
+                                 s.breaches.end());
+                s.lockdowns.erase(std::remove_if(s.lockdowns.begin(), s.lockdowns.end(),
+                                                 [&](const Lockdown &lockdown) { return !seen.RoomState(lockdown.room); }),
+                                  s.lockdowns.end());
+            }
+            WriteBits(w, s.roomsSeen);
             w.U8((uint8_t)s.oxygen.size());
-            for (int level : s.oxygen) w.U8((uint8_t)level);
+            for (size_t room = 0; room < s.oxygen.size(); ++room) w.U8(room < s.roomsSeen.size() && s.roomsSeen[room] ? (uint8_t)s.oxygen[room] : (uint8_t)255);
             w.U8((uint8_t)std::min<size_t>(s.fires.size(), 255));
             for (size_t i = 0; i < s.fires.size() && i < 255; ++i)
             {
@@ -105,13 +152,10 @@ namespace Duels
                 w.U8((uint8_t)s.breaches[i].first);
                 w.U8((uint8_t)s.breaches[i].second);
             }
-            w.U8((uint8_t)s.doors.size());
-            for (size_t i = 0; i < s.doors.size(); i += 8)
-            {
-                uint8_t bits = 0;
-                for (size_t b = 0; b < 8 && i + b < s.doors.size(); ++b) bits |= s.doors[i + b] ? (uint8_t)(1u << b) : 0;
-                w.U8(bits);
-            }
+            WriteBits(w, s.doorsSeen);
+            std::vector<bool> doors = s.doors;
+            for (size_t i = 0; i < doors.size(); ++i) doors[i] = doors[i] && i < s.doorsSeen.size() && s.doorsSeen[i];
+            WriteBits(w, doors);
             w.U8((uint8_t)std::min<size_t>(s.lockdowns.size(), 255));
             for (size_t i = 0; i < s.lockdowns.size() && i < 255; ++i)
             {
@@ -124,6 +168,7 @@ namespace Duels
         bool ReadState(Reader &r)
         {
             Snapshot s;
+            s.roomsSeen = ReadBits(r);
             s.oxygen.resize(r.U8());
             for (int &level : s.oxygen) level = r.U8();
             s.fires.resize(r.U8());
@@ -139,12 +184,8 @@ namespace Duels
                 breach.first = r.U8();
                 breach.second = r.U8();
             }
-            size_t doorCount = r.U8();
-            for (size_t i = 0; i < doorCount; i += 8)
-            {
-                uint8_t bits = r.U8();
-                for (size_t b = 0; b < 8 && i + b < doorCount; ++b) s.doors.push_back((bits >> b) & 1);
-            }
+            s.doorsSeen = ReadBits(r);
+            s.doors = ReadBits(r);
             s.lockdowns.resize(r.U8());
             for (Lockdown &lockdown : s.lockdowns)
             {
@@ -156,6 +197,42 @@ namespace Duels
             g_rooms.pending = s;
             g_rooms.havePending = true;
             return true;
+        }
+
+        // What the owner sent of its rooms (roadmap 4.5: only those its opponent sees) over what we knew of them: the
+        // rooms, doors, fires, breaches and lockdowns not seen keep their last seen state.
+        static void Merge(ShipManager *replica)
+        {
+            Snapshot &s = g_rooms.pending;
+            // (Nothing seen before: an unseen room's air is taken as full, and nothing in it as burning or broken.)
+            const Snapshot none;
+            const Snapshot &old = g_rooms.haveOwner ? g_rooms.owner : none;
+            auto seenRoom = [&](int room) { return room >= 0 && room < (int)s.roomsSeen.size() && s.roomsSeen[room]; };
+            for (size_t room = 0; room < s.oxygen.size(); ++room)
+            {
+                if (!seenRoom((int)room)) s.oxygen[room] = room < old.oxygen.size() ? old.oxygen[room] : 100;
+            }
+            std::vector<std::vector<Fire>> &grid = replica->fireSpreader.grid;
+            for (const Tile &tile : old.fires)
+            {
+                bool inGrid = tile.x < (int)grid.size() && tile.y < (int)grid[tile.x].size();
+                if (inGrid && !seenRoom(grid[tile.x][tile.y].roomId)) s.fires.push_back(tile);
+            }
+            std::vector<OuterHull*> &walls = replica->ship.vOuterWalls;
+            for (const std::pair<int, int> &breach : old.breaches)
+            {
+                bool known = breach.first < (int)walls.size() && walls[breach.first];
+                if (known && !seenRoom(walls[breach.first]->roomId)) s.breaches.push_back(breach);
+            }
+            for (size_t i = 0; i < s.doors.size(); ++i)
+            {
+                bool seen = i < s.doorsSeen.size() && s.doorsSeen[i];
+                if (!seen) s.doors[i] = i < old.doors.size() && old.doors[i];
+            }
+            for (const Lockdown &lockdown : old.lockdowns)
+            {
+                if (!seenRoom(lockdown.room)) s.lockdowns.push_back(lockdown);
+            }
         }
 
         // Oxygen, fire strength and breach damage: the owner's values over whatever happened here.
@@ -239,6 +316,7 @@ namespace Duels
             g_rooms.havePending = false;
             ShipManager *replica = G_->GetShipManager(1);
             if (!replica) return;
+            Merge(replica);
             const Snapshot &s = g_rooms.pending;
 
             // Doors open and close with their animation.
