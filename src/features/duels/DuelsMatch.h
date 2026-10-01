@@ -70,6 +70,12 @@ namespace Duels
         // A replay (roadmap 5.1, DuelsDemo.cpp): the recorder's own loadout (its MSG_LOADOUT as it went): our ship
         // becomes its ship, fitted as it was.
         void ReplayOwnLoadout(const uint8_t *data, size_t size);
+        // And its full states (KIND_FULL_STATE): our ship's hull, shields, systems, weapons, cloak, battery, crew and
+        // rooms follow them as the opponent's copy follows its owner's (its drones come with a later stage).
+        void ReplayOwnState(const uint8_t *data, size_t size);
+        // A ship our game doesn't decide but follows: the opponent's copy (ship 1, once built), and in a replay our ship
+        // too, once the recorder's states drive it.
+        bool IsDriven(int shipId);
         // A player ship as the opponent's (the replica, the AI's ship): its shields where a player ship has them, and
         // our combat drones' orbits around them (DuelsView.cpp; the enemy window's layout goes by SetDuelOpponent).
         void ShowOpponent(ShipManager *ship);

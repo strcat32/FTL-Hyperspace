@@ -21,6 +21,8 @@ namespace Duels
         // The state message: our rooms; the opponent's are read with it and applied to the replica.
         void WriteState(Writer &w);
         bool ReadState(Reader &r);
+        // A replay (roadmap 5.1): our ship's rooms (the recorder's) from its full state, as the opponent's copy's.
+        bool ReplayOwnState(Reader &r);
         void ApplyState();
 
         // After the replica's ShipManager::OnLoop: oxygen, fires and breaches are held at their owner's values.

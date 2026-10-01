@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsConfig.h"
+#include "DuelsCrew.h"
 #include "DuelsDemo.h"
 #include "DuelsFair.h"
 #include "DuelsMatch.h"
@@ -69,7 +70,7 @@ namespace Duels
             size_t next = 0;
             double startMs = 0.0, pausedAt = -1.0;
             bool clockSet = false;
-            uint32_t delivered = 0, ownLoadouts = 0, held = 0;
+            uint32_t delivered = 0, ownLoadouts = 0, ownStates = 0, held = 0;
         };
 
         static ReplayState g_replay;
@@ -406,11 +407,14 @@ namespace Duels
         // One record, its time come.
         static void Play(const DemoRecord &record)
         {
-            if (record.kind != KIND_MESSAGE)
+            if (record.kind == KIND_FULL_STATE)
             {
-                ++g_replay.held;   // the recorder's full states: our ship driven by them is stage 3
+                // Our ship (the recorder's) follows its own states (stage 3: the ship, its crew and rooms).
+                Match::ReplayOwnState(record.data.data(), record.data.size());
+                ++g_replay.ownStates;
                 return;
             }
+            if (record.kind != KIND_MESSAGE) return;
             bool fromRecorder = record.from == g_replay.recorder;
             bool fromHost = record.from == FROM_HOST;
             bool matchFlow = record.type == MSG_SETTINGS || record.type == MSG_MATCH || record.type == MSG_MATCH_EVENT;
@@ -420,6 +424,11 @@ namespace Duels
                 {
                     Match::ReplayOwnLoadout(record.data.data(), record.data.size());
                     ++g_replay.ownLoadouts;
+                }
+                else if (record.type == MSG_CREW_ROSTER)
+                {
+                    Crew::ReplayOwnRoster(record.data.data(), record.data.size());
+                    ++g_replay.delivered;
                 }
                 else if ((matchFlow && fromHost) || record.type == MSG_CHAT)
                 {
@@ -463,8 +472,8 @@ namespace Duels
             if (g_replay.active && g_replay.next >= g_replay.records.size())
             {
                 g_replay.active = false;
-                Log("Demo: the replay is over (%u messages played, %u held, %u own loadouts)", g_replay.delivered, g_replay.held,
-                    g_replay.ownLoadouts);
+                Log("Demo: the replay is over (%u messages played, %u held, %u own loadouts, %u own states)", g_replay.delivered,
+                    g_replay.held, g_replay.ownLoadouts, g_replay.ownStates);
                 Net::EndReplay("the replay is over");
             }
         }

@@ -205,9 +205,6 @@ namespace Duels
             double lastStateSent = -1.0e9;
             bool stateDirty = false;
             uint32_t statesApplied = 0;
-            std::map<int, int> subsystemPower;   // the owner's, by system id (piloting, sensors, doors, battery)
-            std::map<int, int> hackFlags;        // the owner's hacking of each system (HACK_* bits), by system id
-            std::map<int, int> bonusPower;       // the owner's bonus power (Zoltan crew) of each system, by system id
 
             uint32_t nextNetId = 1;
             std::vector<OutShot> out;
@@ -238,6 +235,17 @@ namespace Duels
         };
 
         static MatchState g_match;
+
+        // A ship driven by its owner's states (the opponent's copy, ship 1; in a replay ship 0 too, roadmap 5.1): what
+        // the states keep on it between them, by system id.
+        struct DrivenFields
+        {
+            std::map<int, int> subsystemPower;   // the owner's (piloting, sensors, doors, battery)
+            std::map<int, int> hackFlags;        // the owner's hacking of each system (HACK_* bits)
+            std::map<int, int> bonusPower;       // the owner's bonus power (Zoltan crew) of each system
+        };
+        static DrivenFields g_driven[2];
+        static bool g_replayOwnDriven = false;   // a replay's ship 0 follows the recorder's states (the first came)
         static OutShot *g_forced = nullptr;   // our shot whose collision check is running with a verdict
 
         static void ResetMatch()
@@ -251,9 +259,9 @@ namespace Duels
             m.havePeerState = false;
             m.stateDirty = false;
             m.statesApplied = 0;
-            m.subsystemPower.clear();
-            m.hackFlags.clear();
-            m.bonusPower.clear();
+            g_driven[0] = DrivenFields();
+            g_driven[1] = DrivenFields();
+            g_replayOwnDriven = false;
             m.out.clear();
             m.in.clear();
             m.pendingShards.clear();
@@ -686,13 +694,25 @@ namespace Duels
             }
         }
 
+        bool IsDriven(int shipId)
+        {
+            if (shipId == 1) return g_match.replicaReady && G_->GetShipManager(1) != nullptr;
+            if (shipId == 0) return g_replayOwnDriven && Net::Replaying() && G_->GetShipManager(0) != nullptr;
+            return false;
+        }
+
+        static bool DrivenShip(const ShipManager *ship)
+        {
+            return ship && (ship->iShipId == 0 || ship->iShipId == 1) && IsDriven(ship->iShipId) && ship == G_->GetShipManager(ship->iShipId);
+        }
+
         void HoldReplicaSubsystems(ShipManager *ship)
         {
-            if (!ship || ship->iShipId != 1 || !g_match.replicaReady || ship != G_->GetShipManager(1)) return;
+            if (!DrivenShip(ship)) return;
             HoldReplicaHacking(ship);
             Crew::AfterReplicaLoop(ship);
             Rooms::AfterReplicaLoop(ship);
-            for (const std::pair<const int, int> &entry : g_match.subsystemPower)
+            for (const std::pair<const int, int> &entry : g_driven[ship->iShipId].subsystemPower)
             {
                 ShipSystem *system = ship->GetSystem(entry.first);
                 if (system && !system->bNeedsPower)
@@ -719,11 +739,12 @@ namespace Duels
 
         void HoldReplicaHacking(ShipManager *ship)
         {
-            if (!ship || ship->iShipId != 1 || !g_match.replicaReady || ship != G_->GetShipManager(1)) return;
+            if (!DrivenShip(ship)) return;
+            const std::map<int, int> &hackFlags = g_driven[ship->iShipId].hackFlags;
             for (ShipSystem *system : ship->vSystemList)
             {
-                auto found = g_match.hackFlags.find(system->iSystemType);
-                int flags = found != g_match.hackFlags.end() ? found->second : 0;
+                auto found = hackFlags.find(system->iSystemType);
+                int flags = found != hackFlags.end() ? found->second : 0;
                 system->bUnderAttack = (flags & HACK_UNDER_ATTACK) != 0;
                 system->iHackEffect = flags & HACK_LEVEL;
             }
@@ -754,15 +775,24 @@ namespace Duels
 
         bool MaySwitchCloak(const CloakingSystem *cloak)
         {
-            if (g_cloakFromOwner || !g_match.replicaReady || !cloak) return true;
-            ShipManager *replica = G_->GetShipManager(1);
-            return !replica || replica->cloakSystem != cloak;
+            if (g_cloakFromOwner || !cloak) return true;
+            for (int id = 0; id < 2; ++id)
+            {
+                ShipManager *ship = IsDriven(id) ? G_->GetShipManager(id) : nullptr;
+                if (ship && ship->cloakSystem == cloak) return false;
+            }
+            return true;
         }
 
         int HullDamage(const Ship *ship, int amount)
         {
-            ShipManager *replica = g_match.replicaReady ? G_->GetShipManager(1) : nullptr;
-            if (!replica || ship != &replica->ship || amount <= 0) return amount;
+            ShipManager *driven = nullptr;
+            for (int id = 0; id < 2 && !driven; ++id)
+            {
+                ShipManager *candidate = IsDriven(id) ? G_->GetShipManager(id) : nullptr;
+                if (candidate && ship == &candidate->ship) driven = candidate;
+            }
+            if (!driven || amount <= 0) return amount;
             int keep = std::max(0, ship->hullIntegrity.first - 1);
             if (amount <= keep) return amount;
             ++g_match.hullKept;
@@ -803,15 +833,17 @@ namespace Duels
         {
             static std::map<int, std::pair<int, int>> logged;
             std::pair<int, int> now(wanted, PowerBars(system));
-            auto found = logged.find(system->iSystemType);
+            int key = system->_shipObj.iShipId * 1000 + system->iSystemType;
+            auto found = logged.find(key);
             if (found != logged.end() && found->second == now) return;
-            logged[system->iSystemType] = now;
+            logged[key] = now;
+            PowerManager *power = PowerManager::GetPowerManager(system->_shipObj.iShipId);
+            if (!power) return;
             Log("Match: replica %s has %d power bars (reactor %d, battery %d, bonus %d, effective %d), the owner %d; "
                 "reactor %d/%d, battery power %d/%d", SystemName(system->iSystemType), now.second,
                 system->powerState.first, system->iBatteryPower, system->iBonusPower,
-                const_cast<ShipSystem*>(system)->GetEffectivePower(), wanted, PowerManager::GetPowerManager(1)->currentPower.first,
-                PowerManager::GetPowerManager(1)->currentPower.second, PowerManager::GetPowerManager(1)->batteryPower.first,
-                PowerManager::GetPowerManager(1)->batteryPower.second);
+                const_cast<ShipSystem*>(system)->GetEffectivePower(), wanted, power->currentPower.first, power->currentPower.second,
+                power->batteryPower.first, power->batteryPower.second);
         }
 
         // Our ship's state. record: for a demo (roadmap 5.1), written right after the one that goes, with
@@ -938,25 +970,44 @@ namespace Duels
             g_match.stateDirty = false;
         }
 
-        static void ApplyState(Reader &r)
+        struct WeaponState { uint8_t powered; float charge, full; };   // powered 2, charge < 0: not seen
+
+        // A ship's state as its owner sent it: the ship's own part (the modules' parts follow it in the message).
+        struct ShipState
         {
-            double sentAt = r.F64();
-            uint16_t seq = r.U16();
-            uint8_t vision = r.U8();   // what we see of their ship (roadmap 4.5)
-            int hull = r.I16();
-            bool hasShields = r.Bool();
+            double sentAt = 0.0;
+            uint16_t seq = 0;
+            uint8_t vision = 0;
+            int hull = 0;
+            bool hasShields = false;
             int shieldLayers = 0;
             float shieldCharge = 0.f;
             int superShield = 0, superShieldMax = 0;
-            if (hasShields)
+            std::vector<SystemState> systems;
+            bool hasBattery = false, batteryOn = false;
+            float batteryTime = 0.f;
+            bool hasCloak = false, cloakOn = false;
+            float cloakTime = 0.f, cloakGoal = 0.f;
+            std::vector<WeaponState> weapons;
+            std::vector<float> artilleryCharge;
+        };
+
+        static bool ReadShipState(Reader &r, ShipState &s)
+        {
+            s.sentAt = r.F64();
+            s.seq = r.U16();
+            s.vision = r.U8();   // what we see of their ship (roadmap 4.5)
+            s.hull = r.I16();
+            s.hasShields = r.Bool();
+            if (s.hasShields)
             {
-                shieldLayers = r.U8();
-                shieldCharge = r.F32();
-                superShield = r.U8();
-                superShieldMax = r.U8();
+                s.shieldLayers = r.U8();
+                s.shieldCharge = r.F32();
+                s.superShield = r.U8();
+                s.superShieldMax = r.U8();
             }
-            std::vector<SystemState> systems(r.U8());
-            for (SystemState &system : systems)
+            s.systems.resize(r.U8());
+            for (SystemState &system : s.systems)
             {
                 system.id = r.U8();
                 system.power = r.U8();
@@ -967,25 +1018,134 @@ namespace Duels
                 system.hack = r.U8();
                 system.bonus = r.U8();
             }
-            bool hasBattery = r.Bool();
-            bool batteryOn = hasBattery && r.Bool();
-            float batteryTime = hasBattery ? r.F32() : 0.f;
-            bool hasCloak = r.Bool();
-            bool cloakOn = hasCloak && r.Bool();
-            float cloakTime = hasCloak ? r.F32() : 0.f;
-            float cloakGoal = hasCloak ? r.F32() : 0.f;
-            struct WeaponState { uint8_t powered; float charge, full; };   // powered 2, charge < 0: not seen
-            std::vector<WeaponState> weapons(r.U8());
-            for (WeaponState &weapon : weapons)
+            s.hasBattery = r.Bool();
+            s.batteryOn = s.hasBattery && r.Bool();
+            s.batteryTime = s.hasBattery ? r.F32() : 0.f;
+            s.hasCloak = r.Bool();
+            s.cloakOn = s.hasCloak && r.Bool();
+            s.cloakTime = s.hasCloak ? r.F32() : 0.f;
+            s.cloakGoal = s.hasCloak ? r.F32() : 0.f;
+            s.weapons.resize(r.U8());
+            for (WeaponState &weapon : s.weapons)
             {
                 weapon.powered = r.U8();
                 weapon.charge = r.F32();
                 weapon.full = r.F32();
             }
-            std::vector<float> artilleryCharge(r.U8());
-            for (float &charge : artilleryCharge) charge = r.F32();
+            s.artilleryCharge.resize(r.U8());
+            for (float &charge : s.artilleryCharge) charge = r.F32();
+            return r.Ok();
+        }
+
+        // The ship's part of a state on a ship driven by it (the opponent's copy; in a replay our ship too).
+        static void ApplyShipState(ShipManager *replica, const ShipState &s)
+        {
+            const double sentAt = s.sentAt;
+            const int hull = s.hull;
+            const bool hasShields = s.hasShields;
+            const int shieldLayers = s.shieldLayers;
+            const float shieldCharge = s.shieldCharge;
+            const int superShield = s.superShield, superShieldMax = s.superShieldMax;
+            const std::vector<SystemState> &systems = s.systems;
+            const bool hasBattery = s.hasBattery, batteryOn = s.batteryOn;
+            const float batteryTime = s.batteryTime;
+            const bool hasCloak = s.hasCloak, cloakOn = s.cloakOn;
+            const float cloakTime = s.cloakTime, cloakGoal = s.cloakGoal;
+            const std::vector<WeaponState> &weapons = s.weapons;
+            const std::vector<float> &artilleryCharge = s.artilleryCharge;
+            (void)sentAt; (void)hull; (void)hasShields; (void)shieldLayers; (void)shieldCharge; (void)superShield; (void)superShieldMax;
+            (void)hasBattery; (void)batteryOn; (void)batteryTime; (void)hasCloak; (void)cloakOn; (void)cloakTime; (void)cloakGoal;
+            (void)artilleryCharge;
+
+            replica->ship.hullIntegrity.first = std::min(hull, replica->ship.hullIntegrity.second);
+
+            // The owner's locks first (ion, and the battery's): power is then set the way the owner's was changed.
+            ApplyLocks(replica, systems);
+            for (const SystemState &state : systems)
+            {
+                g_driven[replica->iShipId].hackFlags[state.id] = state.hack;
+                if (state.bonus != 255) g_driven[replica->iShipId].bonusPower[state.id] = state.bonus;   // 255: not seen (roadmap 4.5)
+            }
+            HoldReplicaHacking(replica);
+
+            // The battery before the systems: the extra power it gives must be there for them to draw on. Its timer
+            // runs behind the owner's like the lock timers, so it goes off when the owner's does.
+            BatterySystem *battery = replica->batterySystem;
+            if (hasBattery && battery)
+            {
+                if (batteryOn && !battery->bTurnedOn) battery->SetTurnedOn(true, true);
+                else if (!batteryOn && battery->bTurnedOn) battery->SetTurnedOn(false, false);
+                if (battery->bTurnedOn) battery->timer.currTime = std::max(0.f, batteryTime - LOCK_TIMER_LAG_S);
+            }
+
+            // Damage first, so power never exceeds what the system can hold.
+            for (const SystemState &state : systems)
+            {
+                ShipSystem *system = replica->GetSystem(state.id);
+                if (!system) continue;
+                int health = std::max(0, std::min(state.health, system->healthState.second));
+                if (system->healthState.first != health)
+                {
+                    system->healthState.first = health;
+                    if (state.id != SYS_DRONES && PowerBars(system) > health) SetReplicaPower(replica, system, health);
+                }
+            }
+            for (const SystemState &state : systems)
+            {
+                // Weapons and drones power follows the weapons and drones, one by one (below, and DuelsDrones.cpp):
+                // raising drone power by itself would launch the replica's drones in slot order.
+                ShipSystem *system = replica->GetSystem(state.id);
+                if (state.id == SYS_WEAPONS || state.id == SYS_DRONES || !system || state.power == 255) continue;
+                if (!system->bNeedsPower) g_driven[replica->iShipId].subsystemPower[state.id] = state.power;
+                if (PowerBars(system) != state.power) SetReplicaPower(replica, system, state.power);
+                if (PowerBars(system) != state.power) LogPowerMiss(system, state.power);
+            }
+
+            // The cloak after the systems, so its power is there.
+            if (hasCloak && replica->cloakSystem) SetReplicaCloak(replica->cloakSystem, cloakOn, cloakTime, cloakGoal);
+
+            if (hasShields && replica->shieldSystem)
+            {
+                replica->shieldSystem->shields.power.first = std::min(shieldLayers, 16);
+                replica->shieldSystem->shields.charger = shieldCharge;
+                replica->shieldSystem->shields.power.super.second = superShieldMax;
+                replica->shieldSystem->shields.power.super.first = std::min(superShield, superShieldMax);
+            }
+
+            if (replica->weaponSystem)
+            {
+                std::vector<ProjectileFactory*> list = replica->GetWeaponList();
+                for (size_t slot = 0; slot < list.size() && slot < weapons.size(); ++slot)
+                {
+                    // What isn't seen (roadmap 4.5) stays as last seen.
+                    ProjectileFactory *weapon = list[slot];
+                    if (weapons[slot].powered == 1 && !weapon->powered) replica->PowerWeapon(weapon, true, true);
+                    else if (weapons[slot].powered == 0 && weapon->powered) replica->DePowerWeapon(weapon, true);
+                    if (weapons[slot].charge >= 0.f) weapon->cooldown.first = std::min(weapons[slot].charge, weapon->cooldown.second);
+                }
+            }
+            for (size_t i = 0; i < replica->artillerySystems.size() && i < artilleryCharge.size(); ++i)
+            {
+                ProjectileFactory *weapon = replica->artillerySystems[i] ? replica->artillerySystems[i]->projectileFactory : nullptr;
+                if (weapon && artilleryCharge[i] >= 0.f) weapon->cooldown.first = std::min(artilleryCharge[i], weapon->cooldown.second);
+            }
+        }
+
+        static void ApplyState(Reader &r)
+        {
+            ShipState s;
+            if (!ReadShipState(r, s)) return;
             if (!Drones::ReadState(r) || !Crew::ReadState(r) || !Rooms::ReadState(r) || !Hacking::ReadState(r) || !Mind::ReadState(r) ||
                 !Rounds::ReadState(r) || !r.Ok()) return;
+            const double sentAt = s.sentAt;
+            const uint16_t seq = s.seq;
+            const uint8_t vision = s.vision;
+            const int hull = s.hull;
+            const bool hasShields = s.hasShields;
+            const int shieldLayers = s.shieldLayers;
+            const std::vector<SystemState> &systems = s.systems;
+            const bool batteryOn = s.batteryOn;
+            const std::vector<WeaponState> &weapons = s.weapons;
 
             // Snapshots may arrive out of order; only newer ones count.
             if (g_match.havePeerState && (uint16_t)(seq - g_match.peerStateSeq) >= 32768) return;
@@ -1066,78 +1226,7 @@ namespace Duels
                 }
             }
 
-            replica->ship.hullIntegrity.first = std::min(hull, replica->ship.hullIntegrity.second);
-
-            // The owner's locks first (ion, and the battery's): power is then set the way the owner's was changed.
-            ApplyLocks(replica, systems);
-            for (const SystemState &state : systems)
-            {
-                g_match.hackFlags[state.id] = state.hack;
-                if (state.bonus != 255) g_match.bonusPower[state.id] = state.bonus;   // 255: not seen (roadmap 4.5)
-            }
-            HoldReplicaHacking(replica);
-
-            // The battery before the systems: the extra power it gives must be there for them to draw on. Its timer
-            // runs behind the owner's like the lock timers, so it goes off when the owner's does.
-            BatterySystem *battery = replica->batterySystem;
-            if (hasBattery && battery)
-            {
-                if (batteryOn && !battery->bTurnedOn) battery->SetTurnedOn(true, true);
-                else if (!batteryOn && battery->bTurnedOn) battery->SetTurnedOn(false, false);
-                if (battery->bTurnedOn) battery->timer.currTime = std::max(0.f, batteryTime - LOCK_TIMER_LAG_S);
-            }
-
-            // Damage first, so power never exceeds what the system can hold.
-            for (const SystemState &state : systems)
-            {
-                ShipSystem *system = replica->GetSystem(state.id);
-                if (!system) continue;
-                int health = std::max(0, std::min(state.health, system->healthState.second));
-                if (system->healthState.first != health)
-                {
-                    system->healthState.first = health;
-                    if (state.id != SYS_DRONES && PowerBars(system) > health) SetReplicaPower(replica, system, health);
-                }
-            }
-            for (const SystemState &state : systems)
-            {
-                // Weapons and drones power follows the weapons and drones, one by one (below, and DuelsDrones.cpp):
-                // raising drone power by itself would launch the replica's drones in slot order.
-                ShipSystem *system = replica->GetSystem(state.id);
-                if (state.id == SYS_WEAPONS || state.id == SYS_DRONES || !system || state.power == 255) continue;
-                if (!system->bNeedsPower) g_match.subsystemPower[state.id] = state.power;
-                if (PowerBars(system) != state.power) SetReplicaPower(replica, system, state.power);
-                if (PowerBars(system) != state.power) LogPowerMiss(system, state.power);
-            }
-
-            // The cloak after the systems, so its power is there.
-            if (hasCloak && replica->cloakSystem) SetReplicaCloak(replica->cloakSystem, cloakOn, cloakTime, cloakGoal);
-
-            if (hasShields && replica->shieldSystem)
-            {
-                replica->shieldSystem->shields.power.first = std::min(shieldLayers, 16);
-                replica->shieldSystem->shields.charger = shieldCharge;
-                replica->shieldSystem->shields.power.super.second = superShieldMax;
-                replica->shieldSystem->shields.power.super.first = std::min(superShield, superShieldMax);
-            }
-
-            if (replica->weaponSystem)
-            {
-                std::vector<ProjectileFactory*> list = replica->GetWeaponList();
-                for (size_t slot = 0; slot < list.size() && slot < weapons.size(); ++slot)
-                {
-                    // What isn't seen (roadmap 4.5) stays as last seen.
-                    ProjectileFactory *weapon = list[slot];
-                    if (weapons[slot].powered == 1 && !weapon->powered) replica->PowerWeapon(weapon, true, true);
-                    else if (weapons[slot].powered == 0 && weapon->powered) replica->DePowerWeapon(weapon, true);
-                    if (weapons[slot].charge >= 0.f) weapon->cooldown.first = std::min(weapons[slot].charge, weapon->cooldown.second);
-                }
-            }
-            for (size_t i = 0; i < replica->artillerySystems.size() && i < artilleryCharge.size(); ++i)
-            {
-                ProjectileFactory *weapon = replica->artillerySystems[i] ? replica->artillerySystems[i]->projectileFactory : nullptr;
-                if (weapon && artilleryCharge[i] >= 0.f) weapon->cooldown.first = std::min(artilleryCharge[i], weapon->cooldown.second);
-            }
+            ApplyShipState(replica, s);
 
             // Drones after the systems, so the reactor power they need is free.
             Drones::ApplyState(Net::HasClock() ? Net::PeerToLocalTime(sentAt) : WallMs());
@@ -1150,6 +1239,21 @@ namespace Duels
             // (ShipSystem::OnLoop), so the lock display runs smoothly.
             ApplyLocks(replica, systems);
             ++g_match.statesApplied;
+        }
+
+        void ReplayOwnState(const uint8_t *data, size_t size)
+        {
+            ShipManager *own = G_->GetShipManager(0);
+            if (!Net::Replaying() || !own) return;
+            Reader r(data, size);
+            ShipState s;
+            if (!ReadShipState(r, s)) return;
+            if (!g_replayOwnDriven) Log("Match: replay: our ship follows the recorder's states from now on");
+            g_replayOwnDriven = true;
+            ApplyShipState(own, s);
+            // Its crew and rooms (its drones' part passed over: they come later).
+            if (Drones::SkipState(r) && Crew::ReplayOwnState(r, WallMs())) Rooms::ReplayOwnState(r);
+            ApplyLocks(own, s.systems);
         }
 
         // --------------------------------------------------------------------------------------------------------
@@ -1310,9 +1414,11 @@ namespace Duels
 
         bool ReplicaBonusPower(const ShipSystem *system, int &amount)
         {
-            if (!system || system->_shipObj.iShipId != 1 || !Net::IsConnected() || !g_match.replicaReady) return false;
-            auto found = g_match.bonusPower.find(system->iSystemType);
-            if (found == g_match.bonusPower.end()) return false;
+            int id = system ? system->_shipObj.iShipId : -1;
+            if ((id != 0 && id != 1) || !Net::IsConnected() || !IsDriven(id)) return false;
+            const std::map<int, int> &bonusPower = g_driven[id].bonusPower;
+            auto found = bonusPower.find(system->iSystemType);
+            if (found == bonusPower.end()) return false;
             amount = found->second;
             return true;
         }

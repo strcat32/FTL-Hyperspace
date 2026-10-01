@@ -74,13 +74,6 @@ namespace Duels
             uint16_t nextId = 1;
             std::string sentRoster;
             std::map<const CrewAnimation*, uint8_t> ownAnimations;   // what each animation showed last (only compared)
-            // Theirs.
-            bool active = false;           // a roster came: the replica's crew are puppets now
-            std::map<uint16_t, Puppet> puppets;
-            std::vector<std::pair<uint16_t, Sample>> pending;
-            bool havePending = false;
-            std::map<const CrewAnimation*, uint8_t> puppetAnimations;   // rebuilt after every replica loop
-            uint32_t rostersApplied = 0, placed = 0, created = 0;
             // Boarding. Theirs aboard our ship, ours to decide, by their owner's ids.
             std::map<uint16_t, CrewMember*> guests;
             // Ours aboard their ship: puppets of the owner's guest state there, by our ids (kept for their return).
@@ -94,9 +87,29 @@ namespace Duels
 
         static CrewState g_crew;
 
+        // Theirs: the puppets of a ship's crew, driven by its owner's roster and states. Side 1 is the opponent's ship;
+        // in a replay (roadmap 5.1) side 0 is ours, the recorder's.
+        struct PuppetSide
+        {
+            bool active = false;           // a roster came: the ship's crew are puppets now
+            std::map<uint16_t, Puppet> puppets;
+            std::vector<std::pair<uint16_t, Sample>> pending;
+            bool havePending = false;
+            std::map<const CrewAnimation*, uint8_t> puppetAnimations;   // rebuilt after every loop of the ship
+            uint32_t rostersApplied = 0, placed = 0, created = 0;
+        };
+        static PuppetSide g_sides[2];
+
+        static PuppetSide &SideOf(const ShipManager *ship)
+        {
+            return g_sides[ship && ship->iShipId == 0 ? 0 : 1];
+        }
+
         void Reset()
         {
             g_crew = CrewState();
+            g_sides[0] = PuppetSide();
+            g_sides[1] = PuppetSide();
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -343,7 +356,7 @@ namespace Duels
             puppet.placeNow = true;
             puppet.movingToRoom = puppet.movingToSlot = -1;
             ApplySkills(crew, puppet.roster);
-            ++g_crew.created;
+            ++SideOf(replica).created;
         }
 
         // A crew drone's puppet is the replica's own drone in that slot while it is out (DuelsDrones.cpp launches it as
@@ -369,14 +382,18 @@ namespace Duels
 
         static bool IsPuppetCrew(const CrewMember *crew)
         {
-            for (const std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            for (const PuppetSide &side : g_sides)
             {
-                if (entry.second.crew == crew) return true;
+                if (!side.active) continue;
+                for (const std::pair<const uint16_t, Puppet> &entry : side.puppets)
+                {
+                    if (entry.second.crew == crew) return true;
+                }
             }
             return false;
         }
 
-        void ApplyRoster(Reader &r)
+        static void ApplyRosterTo(PuppetSide &side, ShipManager *replica, Reader &r)
         {
             std::vector<RosterEntry> roster(r.U8());
             for (RosterEntry &entry : roster)
@@ -392,12 +409,10 @@ namespace Duels
                     entry.skills[skill][1] = r.U8();
                 }
             }
-            if (!r.Ok()) return;
-            ShipManager *replica = G_->GetShipManager(1);
-            if (!replica) return;
+            if (!r.Ok() || !replica) return;
 
             // Crew no longer on board leave the replica (the dead ones FTL cleans up itself).
-            for (auto it = g_crew.puppets.begin(); it != g_crew.puppets.end();)
+            for (auto it = side.puppets.begin(); it != side.puppets.end();)
             {
                 bool kept = std::any_of(roster.begin(), roster.end(), [&](const RosterEntry &entry) { return entry.id == it->first; });
                 if (kept)
@@ -408,19 +423,19 @@ namespace Duels
                 CrewMember *crew = LiveCrew(replica, it->second);
                 // A crew drone's puppet stays with the replica's drone system (DuelsDrones.cpp takes it back).
                 if (crew && !crew->bDead && it->second.roster.droneSlot < 0) replica->RemoveCrewmember(crew);
-                it = g_crew.puppets.erase(it);
+                it = side.puppets.erase(it);
             }
             // The replica's own crew (its blueprint's, or anyone else not from the roster) leaves too.
             std::vector<CrewMember*> others;
             for (CrewMember *crew : replica->vCrewList)
             {
-                if (crew && crew->iShipId == 1 && !crew->IsDrone() && !crew->bDead && !IsPuppetCrew(crew)) others.push_back(crew);
+                if (crew && crew->iShipId == replica->iShipId && !crew->IsDrone() && !crew->bDead && !IsPuppetCrew(crew)) others.push_back(crew);
             }
             for (CrewMember *crew : others) replica->RemoveCrewmember(crew);
 
             for (const RosterEntry &entry : roster)
             {
-                Puppet &puppet = g_crew.puppets[entry.id];
+                Puppet &puppet = side.puppets[entry.id];
                 bool fresh = puppet.roster.id == 0;
                 if (fresh) puppet.hidden = true;   // until a state has them
                 bool sameMember = !fresh && puppet.roster.species == entry.species && puppet.roster.droneSlot == entry.droneSlot;
@@ -439,9 +454,20 @@ namespace Duels
                 if (!crew) CreateCrew(replica, puppet);
                 else ApplySkills(crew, entry);
             }
-            g_crew.active = true;
-            ++g_crew.rostersApplied;
+            side.active = true;
+            ++side.rostersApplied;
             Log("Crew: roster applied (%u crew; %u removed from the replica's own)", (unsigned)roster.size(), (unsigned)others.size());
+        }
+
+        void ApplyRoster(Reader &r)
+        {
+            ApplyRosterTo(g_sides[1], G_->GetShipManager(1), r);
+        }
+
+        void ReplayOwnRoster(const uint8_t *data, size_t size)
+        {
+            Reader r(data, size);
+            ApplyRosterTo(g_sides[0], G_->GetShipManager(0), r);
         }
 
         static void ReadEntries(Reader &r, std::vector<std::pair<uint16_t, Sample>> &samples)
@@ -467,9 +493,9 @@ namespace Duels
             ReadEntries(r, samples);
             ReadEntries(r, away);
             if (!r.Ok()) return false;
-            g_crew.pending.swap(samples);
+            g_sides[1].pending.swap(samples);
             g_crew.pendingAway.swap(away);
-            g_crew.havePending = true;
+            g_sides[1].havePending = true;
             return true;
         }
 
@@ -571,30 +597,30 @@ namespace Duels
             }
         }
 
-        void ApplyState(double localTime)
+        static void ApplyStateFor(PuppetSide &side, ShipManager *replica, double localTime, bool withAway)
         {
-            if (!g_crew.havePending) return;
-            g_crew.havePending = false;
-            ShipManager *replica = G_->GetShipManager(1);
-            if (!replica || !g_crew.active) return;
+            if (!side.havePending) return;
+            side.havePending = false;
+            if (!replica || !side.active) return;
             // Those the owner left out are where we can't see them (roadmap 4.5): they stand where they were last seen,
             // undrawn (FTL would draw them in a room our crew light up), and go straight to where they are when seen.
-            for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            for (std::pair<const uint16_t, Puppet> &entry : side.puppets)
             {
-                bool hidden = std::none_of(g_crew.pending.begin(), g_crew.pending.end(),
+                bool hidden = std::none_of(side.pending.begin(), side.pending.end(),
                                            [&](const std::pair<uint16_t, Sample> &sent) { return sent.first == entry.first; });
                 if (entry.second.hidden && !hidden) entry.second.placeNow = true;
                 entry.second.hidden = hidden;
             }
-            for (std::pair<uint16_t, Sample> &entry : g_crew.pending)
+            for (std::pair<uint16_t, Sample> &entry : side.pending)
             {
-                auto found = g_crew.puppets.find(entry.first);
-                if (found == g_crew.puppets.end()) continue;   // not in a roster yet
+                auto found = side.puppets.find(entry.first);
+                if (found == side.puppets.end()) continue;   // not in a roster yet
                 entry.second.t = localTime;
                 bool drone = found->second.roster.droneSlot >= 0;
                 if (drone) BindDrone(replica, found->second);
                 ApplySample(replica, found->second, entry.second, !drone);
             }
+            if (!withAway) return;
             for (std::pair<uint16_t, Sample> &entry : g_crew.pendingAway)
             {
                 auto found = g_crew.away.find(entry.first);
@@ -604,15 +630,38 @@ namespace Duels
             }
         }
 
+        void ApplyState(double localTime)
+        {
+            ApplyStateFor(g_sides[1], G_->GetShipManager(1), localTime, true);
+        }
+
+        bool ReplayOwnState(Reader &r, double localTime)
+        {
+            // The recorder's crew on its ship; the guests (the opponent's boarders there) wait for the replay's later
+            // stages.
+            std::vector<std::pair<uint16_t, Sample>> samples, guests;
+            ReadEntries(r, samples);
+            ReadEntries(r, guests);
+            if (!r.Ok()) return false;
+            g_sides[0].pending.swap(samples);
+            g_sides[0].havePending = true;
+            ApplyStateFor(g_sides[0], G_->GetShipManager(0), localTime, false);
+            return true;
+        }
+
         void AfterReplicaLoop(ShipManager *replica)
         {
-            if (!g_crew.active || !replica || replica != G_->GetShipManager(1)) return;
+            if (!replica || (replica->iShipId != 0 && replica->iShipId != 1) || replica != G_->GetShipManager(replica->iShipId)) return;
+            PuppetSide &side = SideOf(replica);
+            if (!side.active) return;
+            bool theirs = replica->iShipId == 1;
             double now = WallMs();
-            g_crew.puppetAnimations.clear();
+            side.puppetAnimations.clear();
             std::vector<Puppet*> all;
-            for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets) all.push_back(&entry.second);
+            for (std::pair<const uint16_t, Puppet> &entry : side.puppets) all.push_back(&entry.second);
             for (std::pair<const uint16_t, Puppet> &entry : g_crew.away)
             {
+                if (!theirs) break;
                 if (entry.second.crew && !LiveCrew(replica, entry.second)) Log("Crew: our crew member %u left the replica", (unsigned)entry.first);
                 all.push_back(&entry.second);
             }
@@ -625,7 +674,7 @@ namespace Duels
                 // What they are doing shows as their owner's crew member shows it (the next frame's animation).
                 if (crew->crewAnim)
                 {
-                    g_crew.puppetAnimations[crew->crewAnim] = s.flags & ANIMATION_FLAGS;
+                    side.puppetAnimations[crew->crewAnim] = s.flags & ANIMATION_FLAGS;
                     // FTL sets typing again from the replica's own manning after the animation update: for the frame
                     // drawn now it is the owner's.
                     crew->crewAnim->bTyping = (s.flags & FLAG_TYPING) != 0;
@@ -656,7 +705,7 @@ namespace Duels
                     puppet.movingToRoom = room;
                     puppet.movingToSlot = slot;
                 }
-                ++g_crew.placed;
+                ++side.placed;
             }
         }
 
@@ -667,7 +716,16 @@ namespace Duels
             // Ours by our ids; the replica's by the owner's ids (the puppets').
             // Guests (the other ship's crew aboard) by their owner's ids, marked "g", after the ship's own.
             std::vector<std::pair<uint16_t, CrewMember*>> list, guests;
-            if (ship && ship == G_->GetShipManager(0))
+            if (ship && ship == G_->GetShipManager(0) && g_sides[0].active)
+            {
+                // A replay's ship 0: the recorder's crew, its puppets by its ids (roadmap 5.1).
+                for (std::pair<const uint16_t, Puppet> &entry : g_sides[0].puppets)
+                {
+                    CrewMember *crew = LiveCrew(ship, entry.second);
+                    if (crew) list.push_back(std::make_pair(entry.first, crew));
+                }
+            }
+            else if (ship && ship == G_->GetShipManager(0))
             {
                 for (const std::pair<const CrewMember*, uint16_t> &entry : g_crew.ownIds) list.push_back(std::make_pair(entry.second, const_cast<CrewMember*>(entry.first)));
                 for (const std::pair<const uint16_t, CrewMember*> &entry : g_crew.guests)
@@ -678,7 +736,7 @@ namespace Duels
             }
             else if (ship)
             {
-                for (std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+                for (std::pair<const uint16_t, Puppet> &entry : g_sides[1].puppets)
                 {
                     CrewMember *crew = LiveCrew(ship, entry.second);
                     if (crew) list.push_back(std::make_pair(entry.first, crew));
@@ -735,9 +793,11 @@ namespace Duels
         std::string Status()
         {
             std::ostringstream out;
-            out << "crew: rosters " << g_crew.rostersApplied << ", puppets " << g_crew.puppets.size() << ", made "
-                << g_crew.created << ", put in place " << g_crew.placed << ", boarded " << g_crew.boarded << " (away "
+            const PuppetSide &side = g_sides[1];
+            out << "crew: rosters " << side.rostersApplied << ", puppets " << side.puppets.size() << ", made "
+                << side.created << ", put in place " << side.placed << ", boarded " << g_crew.boarded << " (away "
                 << g_crew.away.size() << "), guests made " << g_crew.guestsMade << " (aboard " << g_crew.guests.size() << ")";
+            if (g_sides[0].active) out << "; our ship's (a replay) " << g_sides[0].puppets.size() << " puppets";
             return out.str();
         }
 
@@ -752,24 +812,28 @@ namespace Duels
 
         bool IsPuppet(const CrewMember *crew)
         {
-            return g_crew.active && crew && (IsPuppetCrew(crew) || AwayId(crew) >= 0);
+            return crew && (IsPuppetCrew(crew) || (g_sides[1].active && AwayId(crew) >= 0));
         }
 
         bool IsHidden(const CrewMember *crew)
         {
-            if (!g_crew.active || !crew) return false;
-            for (const std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            if (!crew) return false;
+            for (const PuppetSide &side : g_sides)
             {
-                if (entry.second.crew == crew) return entry.second.hidden;
+                if (!side.active) continue;
+                for (const std::pair<const uint16_t, Puppet> &entry : side.puppets)
+                {
+                    if (entry.second.crew == crew) return entry.second.hidden;
+                }
             }
             return false;
         }
 
         CrewMember *PuppetById(uint16_t id)
         {
-            auto found = g_crew.puppets.find(id);
+            auto found = g_sides[1].puppets.find(id);
             ShipManager *replica = G_->GetShipManager(1);
-            return found == g_crew.puppets.end() || !replica ? nullptr : LiveCrew(replica, found->second);
+            return found == g_sides[1].puppets.end() || !replica ? nullptr : LiveCrew(replica, found->second);
         }
 
         int BoardAway(CrewMember *crew)
@@ -885,7 +949,7 @@ namespace Duels
         void AdoptPuppet(uint16_t id, CrewMember *crew)
         {
             g_crew.guests.erase(id);
-            Puppet &puppet = g_crew.puppets[id];
+            Puppet &puppet = g_sides[1].puppets[id];
             puppet = Puppet();
             puppet.crew = crew;
             puppet.roster.id = id;
@@ -897,8 +961,8 @@ namespace Duels
 
         int PuppetId(const CrewMember *crew)
         {
-            if (!g_crew.active || !crew) return -1;
-            for (const std::pair<const uint16_t, Puppet> &entry : g_crew.puppets)
+            if (!g_sides[1].active || !crew) return -1;
+            for (const std::pair<const uint16_t, Puppet> &entry : g_sides[1].puppets)
             {
                 if (entry.second.crew == crew) return entry.first;
             }
@@ -928,21 +992,25 @@ namespace Duels
 
         bool MayRepair(const ShipSystem *system)
         {
-            return !(g_crew.active && system && system->_shipObj.iShipId == 1);
+            int id = system ? system->_shipObj.iShipId : -1;
+            return !((id == 0 || id == 1) && g_sides[id].active);
         }
 
         void Animate(CrewAnimation *anim, bool &fighting, bool &repairing, bool &onFire)
         {
             if (!anim) return;
-            auto puppet = g_crew.puppetAnimations.find(anim);
-            if (puppet != g_crew.puppetAnimations.end())
+            for (PuppetSide &side : g_sides)
             {
-                fighting = (puppet->second & FLAG_FIGHTING) != 0;
-                repairing = (puppet->second & FLAG_REPAIRING) != 0;
-                onFire = (puppet->second & FLAG_IN_FIRE) != 0;
-                // At a console the replica's own manning would decide (it differs while the owner's repairs).
-                anim->bTyping = (puppet->second & FLAG_TYPING) != 0;
-                return;
+                auto puppet = side.puppetAnimations.find(anim);
+                if (puppet != side.puppetAnimations.end())
+                {
+                    fighting = (puppet->second & FLAG_FIGHTING) != 0;
+                    repairing = (puppet->second & FLAG_REPAIRING) != 0;
+                    onFire = (puppet->second & FLAG_IN_FIRE) != 0;
+                    // At a console the replica's own manning would decide (it differs while the owner's repairs).
+                    anim->bTyping = (puppet->second & FLAG_TYPING) != 0;
+                    return;
+                }
             }
             // Ours, in a duel (the ids are made with the first state). Animations of crew that are gone stay in the
             // map until it is cleared; they are only compared with live crew's.

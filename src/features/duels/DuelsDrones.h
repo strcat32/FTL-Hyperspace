@@ -33,6 +33,8 @@ namespace Duels
         // (localTime: when the owner sent it, on our clock).
         void WriteState(Writer &w);
         bool ReadState(Reader &r);
+        // Reads a state's drones without keeping them (a replay's own ship: its drones come later, roadmap 5.1).
+        bool SkipState(Reader &r);
         void ApplyState(double localTime);
         std::string Signature(ShipManager *ship);   // duels_sync.csv: drone parts, and each slot's power, launch, wreck
         // The owner's last state for one of the replica's drone slots (false if there is none yet).

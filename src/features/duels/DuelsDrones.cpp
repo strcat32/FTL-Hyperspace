@@ -219,10 +219,10 @@ namespace Duels
             return true;
         }
 
-        bool ReadState(Reader &r)
+        static bool ParseState(Reader &r, int &parts, std::vector<Entry> &entries)
         {
-            g_drones.pendingParts = r.I16();
-            std::vector<Entry> entries(r.U8());
+            parts = r.I16();
+            entries.resize(r.U8());
             for (Entry &entry : entries)
             {
                 entry.flags = r.U8();
@@ -245,10 +245,25 @@ namespace Duels
                     }
                 }
             }
-            if (!r.Ok()) return false;
+            return r.Ok();
+        }
+
+        bool ReadState(Reader &r)
+        {
+            int parts = 0;
+            std::vector<Entry> entries;
+            if (!ParseState(r, parts, entries)) return false;
+            g_drones.pendingParts = parts;
             g_drones.pending.swap(entries);
             g_drones.havePending = true;
             return true;
+        }
+
+        bool SkipState(Reader &r)
+        {
+            int parts = 0;
+            std::vector<Entry> entries;
+            return ParseState(r, parts, entries);
         }
 
         // Launches or powers a puppet the way the drone button does. The owner already paid the drone part.

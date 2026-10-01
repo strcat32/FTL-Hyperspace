@@ -46,11 +46,18 @@ namespace Duels
             uint32_t firesStarted = 0, breachesMade = 0, doorsMoved = 0, lockdownsMade = 0;
         };
 
-        static RoomsState g_rooms;
+        // Side 1: the opponent's copy; in a replay (roadmap 5.1) side 0: our ship, the recorder's.
+        static RoomsState g_roomSides[2];
+
+        static RoomsState &SideOf(const ShipManager *ship)
+        {
+            return g_roomSides[ship && ship->iShipId == 0 ? 0 : 1];
+        }
 
         void Reset()
         {
-            g_rooms = RoomsState();
+            g_roomSides[0] = RoomsState();
+            g_roomSides[1] = RoomsState();
         }
 
         static std::vector<Door*> Doors(ShipManager *ship)
@@ -165,9 +172,8 @@ namespace Duels
             }
         }
 
-        bool ReadState(Reader &r)
+        static bool ParseState(Reader &r, Snapshot &s)
         {
-            Snapshot s;
             s.roomsSeen = ReadBits(r);
             s.oxygen.resize(r.U8());
             for (int &level : s.oxygen) level = r.U8();
@@ -193,9 +199,15 @@ namespace Duels
                 lockdown.x = r.I16();
                 lockdown.y = r.I16();
             }
-            if (!r.Ok()) return false;
-            g_rooms.pending = s;
-            g_rooms.havePending = true;
+            return r.Ok();
+        }
+
+        bool ReadState(Reader &r)
+        {
+            Snapshot s;
+            if (!ParseState(r, s)) return false;
+            g_roomSides[1].pending = s;
+            g_roomSides[1].havePending = true;
             return true;
         }
 
@@ -203,10 +215,11 @@ namespace Duels
         // rooms, doors, fires, breaches and lockdowns not seen keep their last seen state.
         static void Merge(ShipManager *replica)
         {
-            Snapshot &s = g_rooms.pending;
+            RoomsState &side = SideOf(replica);
+            Snapshot &s = side.pending;
             // (Nothing seen before: an unseen room's air is taken as full, and nothing in it as burning or broken.)
             const Snapshot none;
-            const Snapshot &old = g_rooms.haveOwner ? g_rooms.owner : none;
+            const Snapshot &old = side.haveOwner ? side.owner : none;
             auto seenRoom = [&](int room) { return room >= 0 && room < (int)s.roomsSeen.size() && s.roomsSeen[room]; };
             for (size_t room = 0; room < s.oxygen.size(); ++room)
             {
@@ -238,7 +251,8 @@ namespace Duels
         // Oxygen, fire strength and breach damage: the owner's values over whatever happened here.
         static void Hold(ShipManager *replica)
         {
-            const Snapshot &s = g_rooms.owner;
+            RoomsState &side = SideOf(replica);
+            const Snapshot &s = side.owner;
             if (replica->oxygenSystem)
             {
                 std::vector<float> &levels = replica->oxygenSystem->oxygenLevels;
@@ -254,7 +268,7 @@ namespace Duels
                 if (fire.fDamage <= 0.f)
                 {
                     fire.Spread();   // starts it, with its animation
-                    ++g_rooms.firesStarted;
+                    ++side.firesStarted;
                 }
                 fire.fDamage = (float)tile.damage;
             }
@@ -284,7 +298,7 @@ namespace Duels
                 if (damage[i] > 0 && wall->fDamage <= 0.f)
                 {
                     wall->PartialDamage((float)damage[i]);   // a new breach, with its animation
-                    ++g_rooms.breachesMade;
+                    ++side.breachesMade;
                 }
                 wall->fDamage = (float)damage[i];
             }
@@ -310,14 +324,14 @@ namespace Duels
             }
         }
 
-        void ApplyState()
+        static void ApplyStateTo(ShipManager *replica)
         {
-            if (!g_rooms.havePending) return;
-            g_rooms.havePending = false;
-            ShipManager *replica = G_->GetShipManager(1);
             if (!replica) return;
+            RoomsState &side = SideOf(replica);
+            if (!side.havePending) return;
+            side.havePending = false;
             Merge(replica);
-            const Snapshot &s = g_rooms.pending;
+            const Snapshot &s = side.pending;
 
             // Doors open and close with their animation.
             std::vector<Door*> doors = Doors(replica);
@@ -327,7 +341,7 @@ namespace Duels
                 if (!door || door->bOpen == s.doors[i]) continue;
                 if (s.doors[i]) door->Open();
                 else door->Close();
-                ++g_rooms.doorsMoved;
+                ++side.doorsMoved;
             }
 
             // A room the owner has locked down (its crystal shards fly to the doors, one per door) is locked down here
@@ -335,25 +349,41 @@ namespace Duels
             std::set<int> ownerRooms;
             for (const Lockdown &lockdown : s.lockdowns)
             {
-                if (!ownerRooms.insert(lockdown.room).second || g_rooms.lockedRooms.count(lockdown.room)) continue;
+                if (!ownerRooms.insert(lockdown.room).second || side.lockedRooms.count(lockdown.room)) continue;
                 replica->ship.LockdownRoom(lockdown.room, Pointf(lockdown.x, lockdown.y));
-                g_rooms.lockedRooms.insert(lockdown.room);
-                ++g_rooms.lockdownsMade;
+                side.lockedRooms.insert(lockdown.room);
+                ++side.lockdownsMade;
             }
-            for (auto it = g_rooms.lockedRooms.begin(); it != g_rooms.lockedRooms.end();)
+            for (auto it = side.lockedRooms.begin(); it != side.lockedRooms.end();)
             {
                 if (ownerRooms.count(*it)) ++it;
-                else it = g_rooms.lockedRooms.erase(it);
+                else it = side.lockedRooms.erase(it);
             }
 
-            g_rooms.owner = s;
-            g_rooms.haveOwner = true;
+            side.owner = s;
+            side.haveOwner = true;
             Hold(replica);
+        }
+
+        void ApplyState()
+        {
+            ApplyStateTo(G_->GetShipManager(1));
+        }
+
+        bool ReplayOwnState(Reader &r)
+        {
+            Snapshot s;
+            if (!ParseState(r, s)) return false;
+            g_roomSides[0].pending = s;
+            g_roomSides[0].havePending = true;
+            ApplyStateTo(G_->GetShipManager(0));
+            return true;
         }
 
         void AfterReplicaLoop(ShipManager *replica)
         {
-            if (g_rooms.haveOwner && replica && replica == G_->GetShipManager(1)) Hold(replica);
+            if (!replica || (replica->iShipId != 0 && replica->iShipId != 1) || replica != G_->GetShipManager(replica->iShipId)) return;
+            if (SideOf(replica).haveOwner) Hold(replica);
         }
 
         std::string Signature(ShipManager *ship)
@@ -376,14 +406,17 @@ namespace Duels
         std::string Status()
         {
             std::ostringstream out;
-            out << "rooms: fires started " << g_rooms.firesStarted << ", breaches made " << g_rooms.breachesMade << ", doors moved "
-                << g_rooms.doorsMoved << ", lockdowns " << g_rooms.lockdownsMade;
+            const RoomsState &side = g_roomSides[1];
+            out << "rooms: fires started " << side.firesStarted << ", breaches made " << side.breachesMade << ", doors moved "
+                << side.doorsMoved << ", lockdowns " << side.lockdownsMade;
             return out.str();
         }
 
         bool RunsEnvironment(ShipManager *ship)
         {
-            return !(g_rooms.haveOwner && ship && ship->iShipId == 1 && ship == G_->GetShipManager(1));
+            // The opponent's copy, and in a replay our ship: their rooms are their owners' (no air, fire or breach of their own).
+            return !(ship && (ship->iShipId == 0 || ship->iShipId == 1) && ship == G_->GetShipManager(ship->iShipId) &&
+                     SideOf(ship).haveOwner);
         }
     }
 }

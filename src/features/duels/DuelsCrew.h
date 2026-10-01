@@ -40,6 +40,10 @@ namespace Duels
         void ApplyRoster(Reader &r);
         bool ReadState(Reader &r);
         void ApplyState(double localTime);
+        // A replay (roadmap 5.1): the recorder's crew on our ship, puppets of its roster and its full states as the
+        // opponent's are of theirs (the guests' part of the state is passed over).
+        void ReplayOwnRoster(const uint8_t *data, size_t size);
+        bool ReplayOwnState(Reader &r, double localTime);
 
         // After the replica's ShipManager::OnLoop: puppets keep their owners' health, and are put back in place when
         // they walked too far off.

@@ -187,6 +187,8 @@ HOOK_METHOD_PRIORITY(ShipSystem, CheckForRepower, -10000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipSystem::CheckForRepower -> Begin (DuelsHooks.cpp)\n")
     if (_shipObj.iShipId == 1 && Duels::GetState().aiOff[1]) return;
+    // A replay's ship 0 is the recorder's: its power follows the recorder's states (roadmap 5.1).
+    if (_shipObj.iShipId == 0 && Duels::Match::IsDriven(0)) return;
     super();
 }
 
