@@ -1687,6 +1687,7 @@ namespace Duels
         int SeasonId() { return g_season.id; }
         std::string SeasonName() { return g_season.name; }
         float SeasonXp() { return g_season.xp; }
+        bool SeasonChoosesShips() { return g_season.known && ChoosesShips(g_season.settings); }
         const std::map<std::string, std::string> &SeasonFine() { return g_season.fine; }
 
         static bool SameSettings(const Settings &a, const Settings &b)

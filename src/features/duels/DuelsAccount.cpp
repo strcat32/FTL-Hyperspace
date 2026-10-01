@@ -29,6 +29,8 @@ namespace Duels
             bool loaded = false;
             State state = State::SignedOut;
             std::string key, name, steamId;
+            std::string master;          // the master that issued the key (its address); "": duels.cfg's
+            std::string linkBase;        // the master a sign-in under way asks
             std::string code, url;
             double nextPollMs = 0.0, deadlineMs = 0.0, intervalMs = 3000.0;
             bool polling = false;            // a poll is on its way
@@ -46,8 +48,12 @@ namespace Duels
 
         static AccountState g;
 
+        // The account's master: the one that issued the key (a test's local master, or after duels.cfg names another,
+        // it stays the key's); signed out, duels.cfg's.
         static std::string Base()
         {
+            if (g.state == State::SignedIn && !g.master.empty()) return g.master;
+            if (g.state == State::Linking && !g.linkBase.empty()) return g.linkBase;
             return Config::MasterUrl();
         }
 
@@ -68,6 +74,7 @@ namespace Duels
                 if (key == "key") g.key = value;
                 else if (key == "steam_id") g.steamId = value;
                 else if (key == "name") g.name = value;
+                else if (key == "master") g.master = value;
             }
             if (!g.key.empty())
             {
@@ -84,6 +91,7 @@ namespace Duels
             file << "key " << g.key << "\n";
             file << "steam_id " << g.steamId << "\n";
             file << "name " << g.name << "\n";
+            file << "master " << g.master << "\n";
             if (!file) Log("Account: can't write %s", FILE_NAME);
         }
 
@@ -165,6 +173,7 @@ namespace Duels
         {
             Load();
             if (g.state != State::SignedOut) return;
+            g.linkBase = Config::MasterUrl();
             g.state = State::Linking;
             g.code.clear();
             g.url.clear();
@@ -218,6 +227,7 @@ namespace Duels
             g.key.clear();
             g.name.clear();
             g.steamId.clear();
+            g.master.clear();
             g.ratingKnown = false;
             g.code.clear();
             g.url.clear();
@@ -314,6 +324,7 @@ namespace Duels
                            bool read = Http::ReadObject(r.body, link);
                            if (r.status == 200 && read && link["status"] == "linked" && !link["account_key"].empty())
                            {
+                               g.master = g.linkBase;
                                g.state = State::SignedIn;
                                g.key = link["account_key"];
                                g.steamId = link["steam_id"];

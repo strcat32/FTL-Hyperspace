@@ -242,7 +242,10 @@ namespace Duels
         // always starts so: the host's match chooses (its own ship, the hangar's, is a console's setting for tests).
         static bool StartsWithoutHangar()
         {
-            return g.open == Window::Join || g.next.ships != 0;
+            if (g.open == Window::Join) return true;
+            // A ranked room plays by the season's settings: its ship choice decides (roadmap BG).
+            if (g.ranked && !g.vsAi && Rounds::SeasonKnown()) return Rounds::SeasonChoosesShips();
+            return g.next.ships != 0;
         }
 
         // ---------------------------------------------------------------------------------------------------------

@@ -15,6 +15,7 @@
 #include "DuelsRounds.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
+#include "DuelsSocket.h"
 #include "DuelsTrace.h"
 #include "DuelsTune.h"
 #include "DuelsAccount.h"
@@ -272,9 +273,16 @@ namespace Duels
 
     // The relays the menu's HOST DUEL and JOIN DUEL use (roadmap 3.5, part 4), in order: one the relay command chose
     // (tests: the relay on this computer), then duels.cfg's and the project's public relay; each once.
+    // A server written as its address (digits and dots, or an IPv6 address), not a name.
+    static bool IsLiteralAddress(const std::string &server)
+    {
+        return server.find(':') != std::string::npos || server.find_first_not_of("0123456789.") == std::string::npos;
+    }
+
     std::vector<Net::RelayAddress> Net::RelayList()
     {
         std::vector<Net::RelayAddress> list;
+        std::vector<std::string> resolved;   // each entry's address, "" when it doesn't resolve
         auto add = [&](const std::string &text)
         {
             std::string server;
@@ -288,7 +296,23 @@ namespace Duels
             address.server = server;
             address.port = (uint16_t)port;
             address.name = Config::IsPublicRelay(server) && port == Relay::DEFAULT_PORT ? "public relay" : text;
+            // The same server under another name (a relay line with the master's address): one entry, in the first
+            // one's place, named by its name rather than its address.
+            NetAddress where;
+            std::string error;
+            std::string key = ResolveAddress(server, (uint16_t)port, where, error) ? where.ToString() : std::string();
+            for (size_t i = 0; i < list.size(); ++i)
+            {
+                if (key.empty() || resolved[i] != key) continue;
+                if (IsLiteralAddress(list[i].server) && !IsLiteralAddress(server))
+                {
+                    list[i].server = address.server;
+                    list[i].name = address.name;
+                }
+                return;
+            }
             list.push_back(address);
+            resolved.push_back(key);
         };
         if (g_relayChosen && !g_relayServer.empty())
         {

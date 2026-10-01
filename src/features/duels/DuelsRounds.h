@@ -104,6 +104,7 @@ namespace Duels
         int SeasonId();
         std::string SeasonName();
         float SeasonXp();
+        bool SeasonChoosesShips();   // the season's ships are chosen in the match (bans or a list), not in the hangar
         const std::map<std::string, std::string> &SeasonFine();
         // The season's settings as short rows, for the HOST DUEL window.
         std::vector<std::string> SeasonRows();
