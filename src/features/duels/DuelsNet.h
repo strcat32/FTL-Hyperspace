@@ -138,6 +138,8 @@ namespace Duels
         void Deliver(uint8_t type, const uint8_t *data, size_t size);
         void SetReplayClock(double peerMinusLocalMs);
         double ReplayClock();
+        void SetReplayHostClock(double hostMinusLocalMs);
+        double ReplayHostClock();
 
         // Ours, as SetIdentity gave them (a demo's header, DuelsDemo.cpp).
         std::string OwnName();
@@ -165,6 +167,9 @@ namespace Duels
         bool HasClock();
         double PeerToLocalTime(double peerTime);
         double LocalToPeerTime(double localTime);
+        // A time on the host's clock, on ours: the peer's in a duel (only a guest asks), the recorded host's in a replay
+        // (the recorder's own clock when it hosted).
+        double HostToLocalTime(double hostTime);
         double RttMs();
 
         // Test conditions for our outgoing packets: fixed delay, random jitter (+/-) and loss in percent.

@@ -85,6 +85,7 @@ namespace Duels
             // A replay (DuelsDemo.cpp): connected without a socket.
             bool replay = false;
             double replayClock = 0.0;   // the recorded opponent's clock less ours
+            double replayHostClock = 0.0;   // the recorded host's clock less ours (the recorder's own, if it hosted)
             double nextAttempt = 0.0;
             uint32_t attempts = 0;
             // How to come back: the relay's room (with its password as typed), or the host's address.
@@ -1078,6 +1079,7 @@ namespace Duels
             if (s.phase != Phase::Idle || s.lost != Session::Lost::None) Disconnect("a replay begins", true);
             s.replay = true;
             s.replayClock = 0.0;
+            s.replayHostClock = 0.0;
             s.host = false;   // the match's flow follows the recorded host's messages, as a guest's does
             s.acceptsJoin = false;
             s.resumed = false;
@@ -1109,6 +1111,9 @@ namespace Duels
 
         void SetReplayClock(double peerMinusLocalMs) { g_session.replayClock = peerMinusLocalMs; }
         double ReplayClock() { return g_session.replayClock; }
+        void SetReplayHostClock(double hostMinusLocalMs) { g_session.replayHostClock = hostMinusLocalMs; }
+        double ReplayHostClock() { return g_session.replayHostClock; }
+        double HostToLocalTime(double hostTime) { return g_session.replay ? hostTime - g_session.replayHostClock : PeerToLocalTime(hostTime); }
         double RttMs() { return g_session.link.RttMs(); }
 
         void SetMatchToken(uint64_t token) { g_session.matchToken = token; }

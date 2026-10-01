@@ -160,6 +160,12 @@ namespace Duels
             return text;
         }
 
+        // A replay (roadmap 5.1) checks nothing: its shots and states were checked when they were played.
+        static bool Checking()
+        {
+            return !Net::Replaying();
+        }
+
         static void Dispute(const std::string &text)
         {
             ++g.disputes;
@@ -178,6 +184,15 @@ namespace Duels
 
         void OnConnected(bool resumed)
         {
+            if (!Checking())
+            {
+                int cheat = g.cheat, cheatAmount = g.cheatAmount;
+                g = FairState();
+                g.cheat = cheat;
+                g.cheatAmount = cheatAmount;
+                Log("Fair: a replay: no chains, nothing checked");
+                return;
+            }
             if (!resumed || !g.shots.Ready() || !g.verdicts.Ready())
             {
                 int cheat = g.cheat, cheatAmount = g.cheatAmount;
@@ -289,6 +304,7 @@ namespace Duels
 
         void CheckRoll(const Value &shot, const Value &verdict, int evasion, bool dodged, int expectedEvasion, const std::string &what)
         {
+            if (!Checking()) return;
             ++g.checked;
             if (shot.index == 0 || verdict.index != shot.index)
             {
@@ -323,6 +339,7 @@ namespace Duels
 
         void CheckState(const StateCheck &state)
         {
+            if (!Checking()) return;
             SeenState &seen = g.seen;
             ++g.statesChecked;
             if (!state.fight)
@@ -443,7 +460,7 @@ namespace Duels
 
         void PowerSeen(double sentMs, int seenPower, int available, const std::string &what)
         {
-            if (!g.seen.fight) return;
+            if (!g.seen.fight || !Checking()) return;
             PowerSample sample;
             sample.atMs = sentMs;
             sample.seen = seenPower;
@@ -460,7 +477,7 @@ namespace Duels
         {
             const double localMs = firedMs;
             SeenState &seen = g.seen;
-            if (!seen.fight || !blueprint || !replica || slot < 0 || slot >= 32) return;
+            if (!seen.fight || !blueprint || !replica || slot < 0 || slot >= 32 || !Checking()) return;
             // A weapon that holds several charges fires them together (Hyperspace's charge levels): not measured.
             if (blueprint->chargeLevels > 1) return;
             float full = blueprint->cooldown;

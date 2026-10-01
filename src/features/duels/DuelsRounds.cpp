@@ -247,7 +247,7 @@ namespace Duels
         static double FromHost(double hostTime)
         {
             if (g.me == HOST || hostTime < 0.0) return hostTime;
-            return Net::HasClock() ? Net::PeerToLocalTime(hostTime) : hostTime;
+            return Net::HasClock() ? Net::HostToLocalTime(hostTime) : hostTime;
         }
 
         static uint8_t Other(uint8_t player)

@@ -3,6 +3,7 @@
 #include "DuelsConfig.h"
 #include "DuelsCrew.h"
 #include "DuelsDemo.h"
+#include "DuelsEnvironment.h"
 #include "DuelsFair.h"
 #include "DuelsMatch.h"
 #include "DuelsNet.h"
@@ -69,7 +70,6 @@ namespace Duels
             std::vector<DemoRecord> records;
             size_t next = 0;
             double startMs = 0.0, pausedAt = -1.0;
-            bool clockSet = false;
             uint32_t delivered = 0, ownLoadouts = 0, ownStates = 0, held = 0;
         };
 
@@ -396,13 +396,41 @@ namespace Duels
                 g_replay.records.back().ms / 1000.0, g_replay.recorder == FROM_HOST ? "host" : "guest", g_replay.hostName.c_str(),
                 g_replay.guestName.c_str());
             Net::BeginReplay(opponent);
+            // The recorded clocks against ours, from the first state each side sent: the recorder's full states went as
+            // they were written; the opponent's states as they came (their latency in it, as the recorder saw them).
+            // The match's times are the host's: the recorder's own, if it hosted.
+            double recorderClock = 0.0, peerClock = 0.0;
+            bool haveRecorder = false, havePeer = false;
+            for (const DemoRecord &record : g_replay.records)
+            {
+                if (record.data.size() < sizeof(double)) continue;
+                bool ownState = record.kind == KIND_FULL_STATE && record.from == g_replay.recorder && !haveRecorder;
+                bool peerState = record.kind == KIND_MESSAGE && record.type == MSG_STATE && record.from != g_replay.recorder && !havePeer;
+                if (!ownState && !peerState) continue;
+                double sentAt;
+                std::memcpy(&sentAt, record.data.data(), sizeof(sentAt));
+                double clock = sentAt - (g_replay.startMs + record.ms);
+                if (ownState)
+                {
+                    recorderClock = clock;
+                    haveRecorder = true;
+                }
+                else
+                {
+                    peerClock = clock;
+                    havePeer = true;
+                }
+                if (haveRecorder && havePeer) break;
+            }
+            Net::SetReplayClock(peerClock);
+            Net::SetReplayHostClock(g_replay.recorder == FROM_HOST ? recorderClock : peerClock);
             message = "replaying " + path + " (" + std::to_string(g_replay.records.size()) + " records, " +
                       std::to_string((int)(g_replay.records.back().ms / 1000)) + " s), " + opponent + " as the opponent";
             return true;
         }
 
-        static const uint8_t MSG_CHAT = 16, MSG_LOADOUT = 17, MSG_READY = 18, MSG_CREW_ROSTER = 26, MSG_SETTINGS = 27,
-                             MSG_MATCH = 38, MSG_MATCH_EVENT = 39;
+        static const uint8_t MSG_CHAT = 16, MSG_LOADOUT = 17, MSG_READY = 18, MSG_SHOT = 20, MSG_RESULT = 21, MSG_SHOT_DOWNED = 23,
+                             MSG_CREW_ROSTER = 26, MSG_SETTINGS = 27, MSG_MATCH = 38, MSG_MATCH_EVENT = 39;
 
         // One record, its time come.
         static void Play(const DemoRecord &record)
@@ -430,6 +458,14 @@ namespace Duels
                     Crew::ReplayOwnRoster(record.data.data(), record.data.size());
                     ++g_replay.delivered;
                 }
+                else if (record.type == MSG_SHOT || record.type == MSG_RESULT || record.type == MSG_SHOT_DOWNED)
+                {
+                    // Stage 4: its shots from our ship, its verdicts on the opponent's.
+                    if (record.type == MSG_SHOT) Match::ReplayOwnShot(record.data.data(), record.data.size());
+                    else if (record.type == MSG_RESULT) Match::ReplayOwnResult(record.data.data(), record.data.size());
+                    else Match::ReplayOwnShotDowned(record.data.data(), record.data.size());
+                    ++g_replay.delivered;
+                }
                 else if ((matchFlow && fromHost) || record.type == MSG_CHAT)
                 {
                     Net::Deliver(record.type, record.data.data(), record.data.size());
@@ -442,22 +478,20 @@ namespace Duels
                 return;
             }
             bool shown = record.type == MSG_CHAT || record.type == MSG_LOADOUT || record.type == MSG_READY || record.type == MSG_STATE ||
-                         record.type == MSG_CREW_ROSTER || (matchFlow && fromHost);
+                         record.type == MSG_CREW_ROSTER || record.type == MSG_SHOT || record.type == MSG_RESULT ||
+                         record.type == MSG_SHOT_DOWNED || (matchFlow && fromHost);
             if (!shown)
             {
                 ++g_replay.held;
                 return;
             }
-            if (record.type == MSG_STATE && !g_replay.clockSet && record.data.size() >= 8)
-            {
-                // Their clock against ours: the state as sent, now.
-                double sentAt;
-                std::memcpy(&sentAt, record.data.data(), sizeof(sentAt));
-                Net::SetReplayClock(sentAt - WallMs());
-                g_replay.clockSet = true;
-            }
             Net::Deliver(record.type, record.data.data(), record.data.size());
             ++g_replay.delivered;
+        }
+
+        bool ReplayPaused()
+        {
+            return g_replay.active && g_replay.pausedAt >= 0.0;
         }
 
         void ReplayFrame(double now)
@@ -514,10 +548,14 @@ namespace Duels
                     message = "no replay is paused";
                     return false;
                 }
-                // The pause moves the records' times on, and their clock against ours with them.
+                // FTL's world stood still (FTL's pause): the records' times move on by it, both recorded clocks against
+                // ours, the shots' waits and the fight's hazards with them.
                 double paused = WallMs() - g_replay.pausedAt;
                 g_replay.startMs += paused;
                 Net::SetReplayClock(Net::ReplayClock() - paused);
+                Net::SetReplayHostClock(Net::ReplayHostClock() - paused);
+                Match::OnReplayPause(paused);
+                Environment::Shift(paused);
                 g_replay.pausedAt = -1.0;
                 message = "replay resumed";
                 return true;

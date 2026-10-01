@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsEnvironment.h"
+#include "DuelsMatch.h"
 #include "DuelsRounds.h"
 #include "DuelsTrace.h"
 
@@ -85,6 +86,7 @@ namespace Duels
             // Flares and pulses.
             Numbers flareNumbers;
             int flares = 0;                // done
+            bool replayLogged = false;     // a replay: our ship skipped (logged once)
             double nextFlareMs = 0.0;      // from the fight's start
             float timerBefore = 0.f;       // FTL's flash timer before its loop (a reset: the flare went off)
 
@@ -602,8 +604,16 @@ namespace Duels
         bool AllowsHazardDamage(ShipManager *ship)
         {
             // FTL's flare or pulse acts on our own ship; on the opponent's in a match against the AI, which this game
-            // decides alone (roadmap 3.6, part 3).
-            if (!g.active || !ship || ship->iShipId == 0) return true;
+            // decides alone (roadmap 3.6, part 3). Not in a replay (roadmap 5.1): our ship is the recorder's, and its
+            // states have what the flare did.
+            if (!g.active || !ship) return true;
+            if (ship->iShipId == 0)
+            {
+                if (!Match::IsDriven(0)) return true;
+                if (!g.replayLogged) Log("Environment: a replay: FTL's %s leaves our ship to the recorder's states", g.plan.kind == SUN ? "flare" : "pulse");
+                g.replayLogged = true;
+                return false;
+            }
             if (Rounds::IsLocal())
             {
                 Log("Environment: FTL's %s reaches the AI's ship", g.plan.kind == SUN ? "flare" : "pulse");

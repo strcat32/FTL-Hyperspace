@@ -131,8 +131,9 @@ HOOK_METHOD_PRIORITY(CommandGui, RunCommand, -100, (std::string& command) -> voi
 HOOK_METHOD_PRIORITY(CommandGui, IsPaused, -1000, () -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::IsPaused -> Begin (DuelsHooks.cpp)\n")
-    // A duel pauses only while its connection is lost (roadmap AA): FTL's world stands still for both players.
-    if (Duels::GetState().noPause) return Duels::Rounds::NetPaused();
+    // A duel pauses only while its connection is lost (roadmap AA): FTL's world stands still for both players. A
+    // replay's pause stops it too (roadmap 5.1).
+    if (Duels::GetState().noPause) return Duels::Rounds::NetPaused() || Duels::Demo::ReplayPaused();
     return super();
 }
 

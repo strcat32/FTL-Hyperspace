@@ -183,6 +183,14 @@ namespace Duels
             bool rolled = false, dodged = false;
             int evasion = 0;
             Fair::Value fairVerdict;
+            // A replay (roadmap 5.1): the recorder's game decided it. Its verdict as recorded, and the wait for it at our
+            // ship (as our shots wait at theirs).
+            uint8_t recorded = PENDING;
+            int recordedDamage = 0;
+            Pointf recordedPoint;
+            double recordedMs = -1.0, holdStartMs = -1.0;
+            float downDistance = 1.0e9f;
+            bool exploded = false;
         };
 
         struct MatchState
@@ -246,7 +254,19 @@ namespace Duels
         };
         static DrivenFields g_driven[2];
         static bool g_replayOwnDriven = false;   // a replay's ship 0 follows the recorder's states (the first came)
-        static OutShot *g_forced = nullptr;   // our shot whose collision check is running with a verdict
+        // The shot whose collision check runs with a verdict (no projectile: none): ours at the opponent's copy, by the
+        // defender's verdict; in a replay (roadmap 5.1) theirs at our ship too, by the recorder's, and a hazard's (a rock,
+        // the battery's shot) at our ship, for its look only: the recorder's states have what it did.
+        struct Forced
+        {
+            Projectile *projectile = nullptr;
+            int shipId = 1;
+            uint8_t verdict = PENDING;
+            int damage = 0;
+            bool cosmetic = false;
+        };
+        static Forced g_forced;
+        static double g_replayLastFireMs[MAX_SLOTS + MAX_ARTILLERY];   // a replay: when our weapon last fired a recorded shot
 
         static void ResetMatch()
         {
@@ -272,7 +292,8 @@ namespace Duels
             }
             m.lastSignature[0].clear();
             m.lastSignature[1].clear();
-            g_forced = nullptr;
+            g_forced = Forced();
+            for (double &ms : g_replayLastFireMs) ms = -1.0e9;
             Drones::Reset();
             Crew::Reset();
             Rooms::Reset();
@@ -314,6 +335,7 @@ namespace Duels
 
         static OutShot *FindOut(Projectile *projectile)
         {
+            if (!projectile) return nullptr;
             for (OutShot &shot : g_match.out)
             {
                 if (shot.projectile == projectile && shot.selfId == projectile->selfId) return &shot;
@@ -1549,55 +1571,84 @@ namespace Duels
             G_->GetSoundControl()->PlaySoundMix(blueprint->effects.launchSounds[random32() % blueprint->effects.launchSounds.size()], -1.f, false);
         }
 
-        static void CreateIncomingShot(Reader &r)
+        // A shot message (MSG_SHOT, as SendShot writes it).
+        struct ShotMessage
         {
-            uint32_t netId = r.U32();
-            int slot = r.U8();
-            std::string weaponName = r.Str();
-            Pointf target;
-            target.x = r.F32();
-            target.y = r.F32();
-            double peerSpawn = r.F64();
-            double ownLeg = r.F32();
-            int type = r.U8();
-            Pointf target2 = target;
+            uint32_t netId = 0;
+            int slot = 0;
+            std::string weapon;
+            Pointf target, target2;
+            double spawn = 0.0;
+            double leg = 0.0;
+            int type = WEAPON_LASER;
             bool bombBypass = false;
             int shard = 0xFF;
             bool fakeShard = false;
-            if (type == WEAPON_BEAM)
-            {
-                target2.x = r.F32();
-                target2.y = r.F32();
-            }
-            else if (type == WEAPON_BOMB)
-            {
-                bombBypass = r.U8() != 0;
-            }
-            else if (type == WEAPON_BURST)
-            {
-                shard = r.U8();
-                fakeShard = r.U8() != 0;
-            }
-            uint8_t source = r.U8();
-            bool fromDrone = source == SOURCE_DRONE;
+            uint8_t source = SOURCE_WEAPON;
             Pointf origin;
             float droneAim = 0.f, shardHeading = 0.f, shardEntry = 0.f;
-            if (fromDrone)
-            {
-                origin.x = r.F32();
-                origin.y = r.F32();
-                droneAim = r.F32();
-            }
-            else if (source == SOURCE_SHARD)
-            {
-                origin.x = r.F32();
-                origin.y = r.F32();
-                shardHeading = r.F32();
-                shardEntry = r.F32();
-            }
             Fair::Value fair;
-            Fair::ReadValue(r, fair);
-            if (!r.Ok()) return;
+        };
+
+        static bool ReadShot(Reader &r, ShotMessage &s)
+        {
+            s.netId = r.U32();
+            s.slot = r.U8();
+            s.weapon = r.Str();
+            s.target.x = r.F32();
+            s.target.y = r.F32();
+            s.spawn = r.F64();
+            s.leg = r.F32();
+            s.type = r.U8();
+            s.target2 = s.target;
+            if (s.type == WEAPON_BEAM)
+            {
+                s.target2.x = r.F32();
+                s.target2.y = r.F32();
+            }
+            else if (s.type == WEAPON_BOMB)
+            {
+                s.bombBypass = r.U8() != 0;
+            }
+            else if (s.type == WEAPON_BURST)
+            {
+                s.shard = r.U8();
+                s.fakeShard = r.U8() != 0;
+            }
+            s.source = r.U8();
+            if (s.source == SOURCE_DRONE)
+            {
+                s.origin.x = r.F32();
+                s.origin.y = r.F32();
+                s.droneAim = r.F32();
+            }
+            else if (s.source == SOURCE_SHARD)
+            {
+                s.origin.x = r.F32();
+                s.origin.y = r.F32();
+                s.shardHeading = r.F32();
+                s.shardEntry = r.F32();
+            }
+            Fair::ReadValue(r, s.fair);
+            return r.Ok();
+        }
+
+        static void CreateIncomingShot(Reader &r)
+        {
+            ShotMessage s;
+            if (!ReadShot(r, s)) return;
+            uint32_t netId = s.netId;
+            int slot = s.slot;
+            const std::string &weaponName = s.weapon;
+            Pointf target = s.target, target2 = s.target2, origin = s.origin;
+            double peerSpawn = s.spawn, ownLeg = s.leg;
+            int type = s.type;
+            bool bombBypass = s.bombBypass, fakeShard = s.fakeShard;
+            int shard = s.shard;
+            uint8_t source = s.source;
+            bool fromDrone = source == SOURCE_DRONE;
+            float droneAim = s.droneAim, shardHeading = s.shardHeading, shardEntry = s.shardEntry;
+            const Fair::Value &fair = s.fair;
             MatchState &m = g_match;
             ++m.shotsReceived;
             double now = WallMs();
@@ -1810,6 +1861,209 @@ namespace Duels
             m.in.push_back(shot);
         }
 
+        void ReplayOwnShot(const uint8_t *data, size_t size)
+        {
+            MatchState &m = g_match;
+            ShipManager *own = G_->GetShipManager(0);
+            ShipManager *replica = G_->GetShipManager(1);
+            WorldManager *world = G_->GetWorld();
+            if (!Net::Replaying() || !own || !replica || !world || !m.replicaReady) return;
+            Reader r(data, size);
+            ShotMessage s;
+            if (!ReadShot(r, s)) return;
+            const WeaponBlueprint *blueprint = G_->GetBlueprints()->GetWeaponBlueprint(s.weapon);
+            if (blueprint && blueprint->name != s.weapon) blueprint = nullptr;
+            ProjectileFactory *weapon = nullptr;
+            if (s.source == SOURCE_WEAPON && own->weaponSystem)
+            {
+                std::vector<ProjectileFactory*> list = own->GetWeaponList();
+                if (s.slot < (int)list.size() && list[s.slot]->blueprint && list[s.slot]->blueprint->name == s.weapon) weapon = list[s.slot];
+            }
+            else if (s.source == SOURCE_ARTILLERY && s.slot < (int)own->artillerySystems.size() && own->artillerySystems[s.slot])
+            {
+                ProjectileFactory *candidate = own->artillerySystems[s.slot]->projectileFactory;
+                if (candidate && candidate->blueprint && candidate->blueprint->name == s.weapon) weapon = candidate;
+            }
+            bool needsWeapon = s.source == SOURCE_WEAPON || s.source == SOURCE_ARTILLERY;
+            if (!blueprint || blueprint->type != s.type || !Networked(s.type) || (needsWeapon && !weapon))
+            {
+                Log("Match: replay: our shot %u from %s %s %d isn't on our ship", s.netId, s.weapon.c_str(), SourceName(s.source), s.slot);
+                return;
+            }
+
+            // Where it starts, as the opponent's game built it from the same message (CreateIncomingShot), here from our
+            // ship at theirs: our weapon's (or artillery's) mount, as ProjectileFactory::Update; our drone's place in
+            // their space; or where our ship was hit, for a crystal shard.
+            bool fromDrone = s.source == SOURCE_DRONE;
+            Pointf position = s.origin;
+            float heading = fromDrone ? s.droneAim : s.shardHeading, entryAngle = s.shardEntry;
+            if (weapon)
+            {
+                Point fireLocation = weapon->weaponVisual.GetFireLocation() + weapon->localPosition;
+                if (s.type == WEAPON_MISSILES)
+                {
+                    if (weapon->currentFiringAngle == 0.f) fireLocation.x += 16;
+                    else if (weapon->currentFiringAngle == 270.f) fireLocation.y -= 16;
+                }
+                position = Pointf((float)fireLocation.x, (float)fireLocation.y);
+                heading = weapon->currentFiringAngle;
+                entryAngle = weapon->currentEntryAngle;
+            }
+            int space = fromDrone ? 1 : 0;
+            Projectile *projectile = nullptr;
+            switch (s.type)
+            {
+            case WEAPON_LASER:
+            case WEAPON_BURST:
+            {
+                LaserBlast *laser = new LaserBlast(position, space, 1, s.target);
+                if (fromDrone) laser->heading = -1.f;
+                else if (!weapon) laser->heading = heading;   // as a shard is made
+                laser->OnInit();
+                projectile = laser;
+                break;
+            }
+            case WEAPON_MISSILES:
+                projectile = new Missile(position, space, 1, s.target, heading);
+                break;
+            case WEAPON_BEAM:
+            {
+                BeamWeapon *beam = new BeamWeapon(position, space, 1, s.target, s.target2, blueprint->length, &replica->_targetable, heading);
+                if (weapon) beam->SetWeaponAnimation(&weapon->weaponVisual);
+                projectile = beam;
+                break;
+            }
+            default:
+            {
+                BombProjectile *bomb = new BombProjectile(position, space, 1, s.target);
+                bomb->superShieldBypass = s.bombBypass;
+                projectile = bomb;
+                break;
+            }
+            }
+            if (!fromDrone) projectile->entryAngle = entryAngle;
+            projectile->Initialize(*blueprint);
+            if (!fromDrone) projectile->heading = heading;
+            projectile->ownerId = 0;
+            if (s.type == WEAPON_BURST && !blueprint->miniProjectiles.empty()) MakeShard(projectile, blueprint, s.shard, s.fakeShard);
+            else if (weapon) projectile->flight_animation = weapon->flight_animation;
+            if (s.source == SOURCE_SHARD) projectile->damage.crystalShard = true;
+            world->space.AddProjectile(projectile);
+
+            // The weapon fires once per volley: a flak volley's shards leave together.
+            double now = WallMs();
+            int timing = TimingSlot(s.source, s.slot);
+            bool sameVolley = s.type == WEAPON_BURST && timing >= 0 && now - g_replayLastFireMs[timing] < 100.0;
+            if (timing >= 0) g_replayLastFireMs[timing] = now;
+            if (!sameVolley)
+            {
+                if (weapon) weapon->weaponVisual.StartFire();
+                PlayLaunchSound(blueprint);
+            }
+
+            // It waits at their ship for the opponent's verdict (MSG_RESULT, recorded as it came), as ours do in a duel.
+            OutShot shot;
+            shot.projectile = projectile;
+            shot.selfId = projectile->selfId;
+            shot.netId = s.netId;
+            shot.slot = s.slot;
+            shot.type = s.type;
+            shot.weapon = s.weapon;
+            shot.spawnMs = now;
+            shot.source = s.source;
+            shot.drone = fromDrone;
+            shot.fair = s.fair;
+            m.out.push_back(shot);
+            ++m.shotsSent;
+        }
+
+        void OnReplayPause(double ms)
+        {
+            // FTL's world stood still: the waits for verdicts (a beam's too) start that much later, and the opponent's
+            // shots waiting to come in leave that much later.
+            for (OutShot &shot : g_match.out)
+            {
+                if (shot.holdStartMs >= 0.0) shot.holdStartMs += ms;
+                if (shot.goneMs >= 0.0) shot.goneMs += ms;
+            }
+            for (InShot &shot : g_match.in)
+            {
+                if (shot.holdStartMs >= 0.0) shot.holdStartMs += ms;
+                if (!shot.released) shot.releaseAt += ms;
+            }
+        }
+
+        void ReplayOwnResult(const uint8_t *data, size_t size)
+        {
+            if (!Net::Replaying()) return;
+            Reader r(data, size);
+            uint32_t netId = r.U32();
+            uint8_t outcome = r.U8();
+            int damage = r.I8();
+            Pointf point;
+            if (outcome == OUTCOME_DOWNED)
+            {
+                point.x = r.F32();
+                point.y = r.F32();
+            }
+            if (!r.Ok()) return;
+            for (InShot &shot : g_match.in)
+            {
+                if (shot.netId != netId) continue;
+                if (shot.recorded == PENDING)
+                {
+                    shot.recorded = outcome;
+                    shot.recordedDamage = damage;
+                    shot.recordedPoint = point;
+                    shot.recordedMs = WallMs();
+                }
+                return;
+            }
+        }
+
+        // A projectile shot down: its explosion, as FTL's (and its sound).
+        static void Explode(Projectile *projectile)
+        {
+            if (!projectile || projectile->startedDeath) return;
+            projectile->death_animation.Start(true);
+            projectile->startedDeath = true;
+            projectile->missed = true;
+            if (!projectile->hitSolidSound.empty()) G_->GetSoundControl()->PlaySoundMix(projectile->hitSolidSound, -1.f, false);
+        }
+
+        static bool InSpace(const Projectile *projectile)
+        {
+            WorldManager *world = G_->GetWorld();
+            return world && projectile &&
+                   std::find(world->space.projectiles.begin(), world->space.projectiles.end(), projectile) != world->space.projectiles.end();
+        }
+
+        void ReplayOwnShotDowned(const uint8_t *data, size_t size)
+        {
+            if (!Net::Replaying()) return;
+            Reader r(data, size);
+            uint32_t netId = r.U32();
+            r.F32();
+            r.F32();
+            if (!r.Ok()) return;
+            for (OutShot &shot : g_match.out)
+            {
+                if (shot.netId != netId) continue;
+                if (shot.verdict == PENDING)
+                {
+                    shot.verdict = OUTCOME_DOWNED;
+                    shot.verdictMs = WallMs();
+                }
+                if (!shot.exploded && InSpace(shot.projectile) && shot.projectile->selfId == shot.selfId)
+                {
+                    shot.exploded = true;
+                    Explode(shot.projectile);
+                    Drones::EndVisualShotsNear(shot.projectile->position.x, shot.projectile->position.y, shot.projectile->currentSpace);
+                }
+                return;
+            }
+        }
+
         // The most evasion a ship can have with its engines' power (FTL's: 5 a bar, 3 from the sixth on), its crew
         // at their best (piloting and engines manned by masters: 10 each) and its cloak (60): for a verdict on a ship
         // whose crew we don't see.
@@ -1940,13 +2194,7 @@ namespace Duels
             Projectile *projectile = shot.projectile;
             if (!projectile || shot.exploded) return;
             shot.exploded = true;
-            if (!projectile->startedDeath)
-            {
-                projectile->death_animation.Start(true);
-                projectile->startedDeath = true;
-                projectile->missed = true;
-                if (!projectile->hitSolidSound.empty()) G_->GetSoundControl()->PlaySoundMix(projectile->hitSolidSound, -1.f, false);
-            }
+            Explode(projectile);
             Drones::EndVisualShotsNear(projectile->position.x, projectile->position.y, projectile->currentSpace);
         }
 
@@ -1966,9 +2214,40 @@ namespace Duels
             return false;
         }
 
+        // A replay (roadmap 5.1): a shot or a hazard reaching our ship, the recorder's. Their shot plays out the recorder's
+        // verdict, and waits for it just outside the decision as ours wait at their ship; ours never hit our own ship;
+        // anything else (a rock, the battery's shot) shows its explosion and does nothing: the recorder's states have
+        // what it did.
+        static bool ReplayHitsOwnShip(Projectile *projectile, ShipManager *own)
+        {
+            if (FindOut(projectile)) return false;
+            InShot *shot = FindIn(projectile);
+            if (!shot)
+            {
+                g_forced.projectile = projectile;
+                g_forced.shipId = 0;
+                g_forced.verdict = OUTCOME_HIT;
+                g_forced.cosmetic = true;
+                return true;
+            }
+            if (shot->recorded == OUTCOME_DOWNED) return false;   // it explodes where that happened (TrackShots)
+            if (shot->recorded == PENDING)
+            {
+                if (!WouldDecide(projectile, own)) return true;
+                if (shot->holdStartMs < 0.0) shot->holdStartMs = WallMs();
+                projectile->position = projectile->last_position;
+                return false;
+            }
+            g_forced.projectile = projectile;
+            g_forced.shipId = 0;
+            g_forced.verdict = shot->recorded;
+            g_forced.damage = shot->recordedDamage;
+            return true;
+        }
+
         bool BeginCollisionCheck(Projectile *projectile, Collideable *other)
         {
-            g_forced = nullptr;
+            g_forced = Forced();
             ShipManager *replica = G_->GetShipManager(1);
             if (!replica) return true;
             if (g_match.replicaReady && GetState().aiOff[1])
@@ -1988,6 +2267,15 @@ namespace Duels
                     return Drones::IsOwnDroneShot(projectile) || Drones::IsOwnDroneShot(hit);
                 }
             }
+            // A replay (roadmap 5.1): every shot's end is in the recording.
+            if (Net::Replaying() && g_match.replicaReady)
+            {
+                ShipManager *own = G_->GetShipManager(0);
+                if (own && other == &own->_collideable && IsDriven(0)) return ReplayHitsOwnShip(projectile, own);
+                // Ours (the recorder's) meet nothing in our space: what they ran into there came as a message. Theirs
+                // meet nothing but our ship.
+                if (projectile->currentSpace == 0 && (FindOut(projectile) || FindIn(projectile))) return false;
+            }
             if (other != &replica->_collideable) return true;
             OutShot *shot = FindOut(projectile);
             if (!shot) return true;
@@ -2005,13 +2293,16 @@ namespace Duels
                 projectile->position = projectile->last_position;
                 return false;
             }
-            g_forced = shot;
+            g_forced.projectile = projectile;
+            g_forced.shipId = 1;
+            g_forced.verdict = shot->verdict;
+            g_forced.damage = shot->damage;
             return true;
         }
 
         void EndCollisionCheck()
         {
-            g_forced = nullptr;
+            g_forced = Forced();
         }
 
         // A bomb appears in its target room and goes off after a short delay; the dodge is rolled when it appears
@@ -2019,7 +2310,29 @@ namespace Duels
         // would go off until the defender's verdict is here, then goes off or misses as the defender's did.
         bool BeginBombCheck(BombProjectile *bomb, Collideable *other)
         {
-            g_forced = nullptr;
+            g_forced = Forced();
+            // A replay (roadmap 5.1): their bomb in our ship goes off, or misses, as it did in the recorder's game.
+            ShipManager *own = G_->GetShipManager(0);
+            if (Net::Replaying() && own && other == &own->_collideable && bomb->currentSpace == 0 && IsDriven(0))
+            {
+                InShot *in = FindIn(bomb);
+                if (!in || bomb->explosiveDelay > 0.f || bomb->startedDeath || bomb->bMissed) return true;
+                if (in->recorded == PENDING)
+                {
+                    if (in->holdStartMs < 0.0) in->holdStartMs = WallMs();
+                    return false;
+                }
+                if (in->recorded == OUTCOME_MISS || in->recorded == OUTCOME_GONE)
+                {
+                    bomb->bMissed = true;
+                    own->damMessages.push_back(new DamageMessage(1.f, bomb->position, DamageMessage::MISS));
+                }
+                g_forced.projectile = bomb;
+                g_forced.shipId = 0;
+                g_forced.verdict = in->recorded;
+                g_forced.damage = in->recordedDamage;
+                return true;
+            }
             ShipManager *replica = G_->GetShipManager(1);
             if (!replica || other != &replica->_collideable || bomb->currentSpace != 1) return true;
             OutShot *shot = FindOut(bomb);
@@ -2036,12 +2349,23 @@ namespace Duels
                 bomb->bMissed = true;
                 replica->damMessages.push_back(new DamageMessage(1.f, bomb->position, DamageMessage::MISS));
             }
-            g_forced = shot;
+            g_forced.projectile = bomb;
+            g_forced.shipId = 1;
+            g_forced.verdict = shot->verdict;
+            g_forced.damage = shot->damage;
             return true;
         }
 
         bool ForcedDodge(ShipManager *ship, bool &dodged)
         {
+            if (ship && ship->iShipId == 0 && Net::Replaying())
+            {
+                // A replay: their bomb in our ship is decided when it goes off, as the recorder's game had it.
+                InShot *in = FindIn(CustomDamageManager::currentProjectile);
+                if (!in || in->type != WEAPON_BOMB) return false;
+                dodged = false;
+                return true;
+            }
             if (!ship || ship->iShipId != 1) return false;
             OutShot *shot = FindOut(CustomDamageManager::currentProjectile);
             if (!shot || shot->type != WEAPON_BOMB) return false;
@@ -2078,6 +2402,11 @@ namespace Duels
             if (!ship || ship->iShipId != 0) return false;
             InShot *shot = FindIn(CustomDamageManager::currentProjectile);
             if (!shot) return false;
+            if (Net::Replaying())
+            {
+                dodged = shot->recorded == OUTCOME_MISS;   // the recorder's game rolled it
+                return true;
+            }
             if (shot->rolled)
             {
                 dodged = shot->dodged;   // asked again for the same shot
@@ -2097,7 +2426,7 @@ namespace Duels
 
         void ObserveDodge(ShipManager *ship, bool dodged)
         {
-            if (!ship || ship->iShipId != 0 || !dodged) return;
+            if (!ship || ship->iShipId != 0 || !dodged || Net::Replaying()) return;
             InShot *shot = FindIn(CustomDamageManager::currentProjectile);
             if (shot && shot->type == WEAPON_BOMB && shot->outcome == PENDING) SendResult(*shot, OUTCOME_MISS, 0);
         }
@@ -2106,9 +2435,20 @@ namespace Duels
         // draws it. It still runs with no damage, so the beam looks and sounds as it does.
         void MuteBeamDamage(ShipManager *ship, Damage &damage)
         {
-            if (!ship || ship->iShipId != 1) return;
-            OutShot *shot = FindOut(CustomDamageManager::currentProjectile);
-            if (!shot || shot->type != WEAPON_BEAM) return;
+            if (!ship) return;
+            int type = -1;
+            if (ship->iShipId == 1)
+            {
+                OutShot *shot = FindOut(CustomDamageManager::currentProjectile);
+                if (shot) type = shot->type;
+            }
+            else if (ship->iShipId == 0 && Net::Replaying())
+            {
+                // A replay (roadmap 5.1): their beam sweeps our ship as the recorder's; its states have what it did.
+                InShot *shot = FindIn(CustomDamageManager::currentProjectile);
+                if (shot) type = shot->type;
+            }
+            if (type != WEAPON_BEAM) return;
             damage.iDamage = 0;
             damage.iShieldPiercing = 0;
             damage.fireChance = 0;
@@ -2126,7 +2466,7 @@ namespace Duels
         // The opponent's beam sweeping our ship: its verdict (for the trace) is sent when it is over.
         void ObserveBeam(ShipManager *ship, bool hit, int hullBefore)
         {
-            if (!ship || ship->iShipId != 0) return;
+            if (!ship || ship->iShipId != 0 || Net::Replaying()) return;
             InShot *shot = FindIn(CustomDamageManager::currentProjectile);
             if (!shot || shot->type != WEAPON_BEAM) return;
             shot->beamHit = shot->beamHit || hit;
@@ -2135,13 +2475,14 @@ namespace Duels
 
         static bool ForcedApplies(ShipManager *ship)
         {
-            return g_forced && ship && ship->iShipId == 1 && CustomDamageManager::currentProjectile == g_forced->projectile;
+            return g_forced.projectile && ship && ship->iShipId == g_forced.shipId && CustomDamageManager::currentProjectile == g_forced.projectile;
         }
 
         bool ForcedShieldResponse(ShipManager *ship, Pointf start, Pointf finish, const Damage &damage,
                                   CollisionResponse &response)
         {
-            if (!ForcedApplies(ship)) return false;
+            // A hazard at our ship in a replay meets the shields as FTL has it (the next state has their layers).
+            if (!ForcedApplies(ship) || g_forced.cosmetic) return false;
             response.collision_type = 0;
             response.point = Pointf(-2147483648.f, -2147483648.f);
             response.damage = 0;
@@ -2153,7 +2494,7 @@ namespace Duels
                             shields->CollisionTest(finish.x, finish.y, damage).collision_type != 0;
             if (!crossing) return true;
 
-            switch (g_forced->verdict)
+            switch (g_forced.verdict)
             {
             case OUTCOME_MISS:
             case OUTCOME_GONE:
@@ -2179,10 +2520,15 @@ namespace Duels
         bool ForcedDamageArea(ShipManager *ship, Pointf location, bool &hit)
         {
             if (!ForcedApplies(ship)) return false;
-            switch (g_forced->verdict)
+            if (g_forced.cosmetic)
+            {
+                hit = true;   // a hazard at our ship in a replay: its explosion only
+                return true;
+            }
+            switch (g_forced.verdict)
             {
             case OUTCOME_HIT:
-                if (g_forced->damage > 0) ship->damMessages.push_back(new DamageMessage(1.f, g_forced->damage, location, false));
+                if (g_forced.damage > 0) ship->damMessages.push_back(new DamageMessage(1.f, g_forced.damage, location, false));
                 hit = true;
                 break;
             case OUTCOME_SHIELD:
@@ -2198,7 +2544,7 @@ namespace Duels
 
         void ObserveShield(ShipManager *ship, const CollisionResponse &response)
         {
-            if (!ship || ship->iShipId != 0) return;
+            if (!ship || ship->iShipId != 0 || Net::Replaying()) return;
             InShot *shot = FindIn(CustomDamageManager::currentProjectile);
             if (!shot || shot->outcome != PENDING) return;
             if (shot->type == WEAPON_BEAM)
@@ -2215,7 +2561,7 @@ namespace Duels
 
         void ObserveDamageArea(ShipManager *ship, bool hit, int hullBefore)
         {
-            if (!ship || ship->iShipId != 0) return;
+            if (!ship || ship->iShipId != 0 || Net::Replaying()) return;
             InShot *shot = FindIn(CustomDamageManager::currentProjectile);
             if (!shot || shot->outcome != PENDING) return;
             SendResult(*shot, hit ? OUTCOME_HIT : OUTCOME_MISS, hit ? std::max(0, hullBefore - ship->ship.hullIntegrity.first) : 0);
@@ -2238,6 +2584,33 @@ namespace Duels
             }
             m.out.clear();
             m.in.clear();
+        }
+
+        // A replay (roadmap 5.1): their shot at our ship ends as it did in the recorder's game. Shot down there (by one of
+        // the recorder's defense drones, or into a drone): it explodes about where that happened, as ours do.
+        static void TrackReplayedInShot(InShot &shot, double now)
+        {
+            Projectile *projectile = shot.projectile;
+            if (shot.recorded == OUTCOME_DOWNED && !shot.exploded)
+            {
+                float dx = projectile->position.x - shot.recordedPoint.x, dy = projectile->position.y - shot.recordedPoint.y;
+                float distance = std::sqrt(dx * dx + dy * dy);
+                bool passed = distance > shot.downDistance + 0.5f;
+                shot.downDistance = std::min(shot.downDistance, distance);
+                if (projectile->currentSpace == 0 &&
+                    (distance < 15.f || passed || shot.holdStartMs >= 0.0 || now - shot.recordedMs > 500.0))
+                {
+                    shot.exploded = true;
+                    Explode(projectile);
+                }
+            }
+            if (shot.recorded == PENDING && shot.holdStartMs >= 0.0 && now - shot.holdStartMs > HOLD_TIMEOUT_MS)
+            {
+                shot.recorded = OUTCOME_MISS;
+                shot.recordedMs = now;
+                ++g_match.holdTimeouts;
+                Log("Match: replay: no verdict for their shot %u after %.0f ms; shown as a miss", shot.netId, HOLD_TIMEOUT_MS);
+            }
         }
 
         static void TrackShots(double now)
@@ -2332,6 +2705,12 @@ namespace Duels
             {
                 InShot &shot = m.in[i];
                 bool alive = live.count(shot.projectile) && shot.projectile->selfId == shot.selfId;
+                if (alive && Net::Replaying())
+                {
+                    TrackReplayedInShot(shot, now);
+                    ++i;
+                    continue;
+                }
                 if (alive)
                 {
                     Projectile *projectile = shot.projectile;
@@ -2351,7 +2730,13 @@ namespace Duels
                     ++i;
                     continue;
                 }
-                if (shot.outcome == PENDING && shot.type == WEAPON_BEAM)
+                if (Net::Replaying())
+                {
+                    shot.outcome = shot.recorded;
+                    shot.damage = shot.recordedDamage;
+                    shot.decisionMs = shot.recordedMs;
+                }
+                else if (shot.outcome == PENDING && shot.type == WEAPON_BEAM)
                 {
                     // (DamageBeam returns false even when it did damage.)
                     bool hit = shot.beamHit || shot.damage > 0;
@@ -2803,7 +3188,8 @@ namespace Duels
                 TraceSync(now);
             }
             Rounds::OnFrame(now);
-            TrackShots(now);
+            // A replay's pause stops FTL's world (roadmap 5.1): no shot moves, none waits for its verdict.
+            if (!Demo::ReplayPaused()) TrackShots(now);
         }
 
         const std::string &PlayerName()

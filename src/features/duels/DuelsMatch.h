@@ -73,6 +73,14 @@ namespace Duels
         // And its full states (KIND_FULL_STATE): our ship's hull, shields, systems, weapons, cloak, battery, crew and
         // rooms follow them as the opponent's copy follows its owner's (its drones come with a later stage).
         void ReplayOwnState(const uint8_t *data, size_t size);
+        // Its shots (MSG_SHOT as it sent them) leave our ship as they left its, and wait at the opponent's ship for the
+        // opponent's verdict (recorded as it came); its verdicts on the opponent's shots (MSG_RESULT) decide them at our
+        // ship; its shots that ran into something in its own space (MSG_SHOT_DOWNED) explode there.
+        void ReplayOwnShot(const uint8_t *data, size_t size);
+        void ReplayOwnResult(const uint8_t *data, size_t size);
+        void ReplayOwnShotDowned(const uint8_t *data, size_t size);
+        // A replay's pause (FTL's world stood still for ms): the shots' waits move on by it.
+        void OnReplayPause(double ms);
         // A ship our game doesn't decide but follows: the opponent's copy (ship 1, once built), and in a replay our ship
         // too, once the recorder's states drive it.
         bool IsDriven(int shipId);
