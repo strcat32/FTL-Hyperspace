@@ -11,6 +11,7 @@
 #include "DuelsBoarding.h"
 #include "DuelsConfig.h"
 #include "DuelsCrew.h"
+#include "DuelsDemo.h"
 #include "DuelsDrones.h"
 #include "DuelsFair.h"
 #include "DuelsVision.h"
@@ -788,15 +789,12 @@ namespace Duels
                 PowerManager::GetPowerManager(1)->batteryPower.second);
         }
 
-        static void SendState(double now)
+        // Our ship's state. record: for a demo (roadmap 5.1), written right after the one that goes, with
+        // Vision::FullScope (all in sight) and without the crew ids' bookkeeping or the roster.
+        static void WriteOwnState(Writer &w, ShipManager *ship, double now, uint16_t seq, bool record)
         {
-            ShipManager *ship = G_->GetShipManager(0);
-            if (!ship) return;
-            // What the opponent can see of our ship now (roadmap 4.5).
-            Vision::Update();
-            Writer w;
             w.F64(now);
-            w.U16(++g_match.stateSeq);
+            w.U16(seq);
             // What the receiver sees of our ship: what follows holds back the rest (255 or -1: not seen).
             w.U8(Vision::Flags());
             w.I16((int16_t)Fair::CheatHull(ship->ship.hullIntegrity.first));
@@ -877,13 +875,13 @@ namespace Duels
             // Drones: power, launch, wreck and where they are (DuelsDrones.cpp).
             Drones::WriteState(w);
             // Crew: where each one is and how they are (DuelsCrew.cpp); who is on board goes first, when it changed.
-            if (Crew::RosterChanged())
+            if (!record && Crew::RosterChanged())
             {
                 Writer roster;
                 Crew::WriteRoster(roster);
                 Net::Send(Crew::MSG_CREW_ROSTER, roster, true);
             }
-            Crew::WriteState(w);
+            Crew::WriteState(w, record);
             // Rooms: oxygen, fires, breaches, doors, lockdowns (DuelsRooms.cpp).
             Rooms::WriteState(w);
             // Hacking: how far our pulse has run (DuelsHacking.cpp); mind control: our control's timer (DuelsMind.cpp).
@@ -891,8 +889,26 @@ namespace Duels
             Mind::WriteState(w);
             // The match: the damage our ship took this round (DuelsRounds.cpp).
             Rounds::WriteState(w);
+        }
 
+        static void SendState(double now)
+        {
+            ShipManager *ship = G_->GetShipManager(0);
+            if (!ship) return;
+            // What the opponent can see of our ship now (roadmap 4.5).
+            Vision::Update();
+            Writer w;
+            uint16_t seq = ++g_match.stateSeq;
+            WriteOwnState(w, ship, now, seq, false);
             Net::Send(MSG_STATE, w, false);
+            // A demo has our ship with all in sight (roadmap 5.1).
+            if (Demo::Recording())
+            {
+                Vision::FullScope full;
+                Writer record;
+                WriteOwnState(record, ship, now, seq, true);
+                Demo::FullState(record);
+            }
             g_match.lastStateSent = now;
             g_match.stateDirty = false;
         }
@@ -2449,6 +2465,8 @@ namespace Duels
                     return;
                 }
                 ResetMatch();
+                // A demo of the match (roadmap 5.1), from its first message on.
+                Demo::Begin(Net::IsHost(), Net::IsHost() ? Net::OwnName() : Net::PeerName(), Net::IsHost() ? Net::PeerName() : Net::OwnName());
                 Fair::OnConnected(false);
                 // No pause in a duel, from the first preparation on (rules, section 1): the store and the menus
                 // would pause this game.
@@ -2494,12 +2512,14 @@ namespace Duels
                 // opponent's ship leaves (it used to stay as an FTL enemy, and its artillery went on firing).
                 Headline("Disconnected: " + reason);
                 FlushShotLog();
+                Demo::End("disconnected: " + reason);
                 Rounds::OnDisconnected(opponentGone);
                 ResetMatch();
             }
 
             void OnMessage(uint8_t type, Reader &reader) override
             {
+                Demo::Received(type, reader.Position(), reader.Remaining());
                 switch (type)
                 {
                 case MSG_CHAT:
@@ -2726,6 +2746,7 @@ namespace Duels
         void Leave()
         {
             FlushShotLog();
+            Demo::End("left the duel");
             Net::Leave("left the duel");
             ResetMatch();
             Ai::Stop();   // a match against the AI (roadmap 3.6)

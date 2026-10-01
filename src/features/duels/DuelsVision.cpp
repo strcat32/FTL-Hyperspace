@@ -14,6 +14,21 @@ namespace Duels
     {
         static Seen g_seen, g_logged;
         static bool g_loggedOnce = false;
+        static int g_fullScopes = 0;
+
+        // Everything seen: the interior, the crew, the charge, the power, every room.
+        static const Seen &AllSeen()
+        {
+            static Seen all;
+            all.interior = all.lifeforms = all.charge = all.power = true;
+            ShipManager *own = G_->GetShipManager(0);
+            all.rooms.assign(own ? own->ship.vRoomList.size() : 0, true);
+            all.sensors = g_seen.sensors;
+            return all;
+        }
+
+        FullScope::FullScope() { ++g_fullScopes; }
+        FullScope::~FullScope() { --g_fullScopes; }
 
         // One of their crew at their sensors' console, as far as we see it (a hidden puppet there may be long gone).
         static bool SensorsManned(ShipManager *replica, ShipSystem *sensors)
@@ -100,18 +115,19 @@ namespace Duels
 
         const Seen &Current()
         {
-            return g_seen;
+            return g_fullScopes > 0 ? AllSeen() : g_seen;
         }
 
         uint8_t Flags()
         {
-            return (uint8_t)((g_seen.interior ? SEES_INTERIOR : 0) | (g_seen.lifeforms ? SEES_LIFEFORMS : 0) |
-                             (g_seen.charge ? SEES_CHARGE : 0) | (g_seen.power ? SEES_POWER : 0));
+            const Seen &seen = Current();
+            return (uint8_t)((seen.interior ? SEES_INTERIOR : 0) | (seen.lifeforms ? SEES_LIFEFORMS : 0) |
+                             (seen.charge ? SEES_CHARGE : 0) | (seen.power ? SEES_POWER : 0));
         }
 
         bool PowerHidden(int systemType, bool needsPower)
         {
-            if (g_seen.power) return false;
+            if (g_fullScopes > 0 || g_seen.power) return false;
             switch (systemType)
             {
                 case SYS_SHIELDS:

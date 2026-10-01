@@ -87,6 +87,7 @@ namespace Duels
             std::map<uint16_t, Puppet> away;
             std::map<const CrewMember*, uint16_t> heldIds;
             std::map<const CrewMember*, uint16_t> prevIds;   // our crew's ids one state earlier (for crew just gone aboard)
+            std::vector<uint16_t> deadGuestsSent;            // the guests the latest state reported dead (for a demo's)
             std::vector<std::pair<uint16_t, Sample>> pendingAway;
             uint32_t boarded = 0, guestsMade = 0;
         };
@@ -153,6 +154,16 @@ namespace Duels
             }
             g_crew.ownIds.swap(ids);
             g_crew.prevIds.swap(ids);
+            std::sort(list.begin(), list.end(),
+                      [](const std::pair<uint16_t, CrewMember*> &a, const std::pair<uint16_t, CrewMember*> &b) { return a.first < b.first; });
+            return list;
+        }
+
+        // Our crew with the ids the latest state gave them, without changing them (a demo's full state).
+        static std::vector<std::pair<uint16_t, CrewMember*>> KnownOwnCrew()
+        {
+            std::vector<std::pair<uint16_t, CrewMember*>> list;
+            for (const std::pair<const CrewMember*, uint16_t> &entry : g_crew.ownIds) list.push_back(std::make_pair(entry.second, const_cast<CrewMember*>(entry.first)));
             std::sort(list.begin(), list.end(),
                       [](const std::pair<uint16_t, CrewMember*> &a, const std::pair<uint16_t, CrewMember*> &b) { return a.first < b.first; });
             return list;
@@ -234,11 +245,11 @@ namespace Duels
             return nullptr;
         }
 
-        void WriteState(Writer &w)
+        void WriteState(Writer &w, bool record)
         {
             // Only those the opponent can see (roadmap 4.5): their puppets of the others stay as last seen (FTL draws
             // none of them where its player can't see).
-            std::vector<std::pair<uint16_t, CrewMember*>> crew = OwnCrew();
+            std::vector<std::pair<uint16_t, CrewMember*>> crew = record ? KnownOwnCrew() : OwnCrew();
             const Vision::Seen &seen = Vision::Current();
             crew.erase(std::remove_if(crew.begin(), crew.end(),
                                       [&](const std::pair<uint16_t, CrewMember*> &entry) { return !seen.Crew(entry.second->iRoomId); }),
@@ -247,18 +258,32 @@ namespace Duels
             for (const std::pair<uint16_t, CrewMember*> &entry : crew) WriteEntry(w, entry.first, entry.second);
             // Guests: their crew aboard our ship, by their ids. One that died and is gone says so once more.
             std::vector<std::pair<uint16_t, CrewMember*>> guests;
-            for (auto it = g_crew.guests.begin(); it != g_crew.guests.end();)
+            if (record)
             {
-                CrewMember *live = LiveGuest(it->first);
-                if (live)
+                for (const std::pair<const uint16_t, CrewMember*> &entry : g_crew.guests)
                 {
-                    guests.push_back(std::make_pair(it->first, live));
-                    ++it;
+                    CrewMember *live = LiveGuest(entry.first);
+                    if (live) guests.push_back(std::make_pair(entry.first, live));
                 }
-                else
+                for (uint16_t id : g_crew.deadGuestsSent) guests.push_back(std::make_pair(id, (CrewMember*)nullptr));
+            }
+            else
+            {
+                g_crew.deadGuestsSent.clear();
+                for (auto it = g_crew.guests.begin(); it != g_crew.guests.end();)
                 {
-                    guests.push_back(std::make_pair(it->first, (CrewMember*)nullptr));
-                    it = g_crew.guests.erase(it);
+                    CrewMember *live = LiveGuest(it->first);
+                    if (live)
+                    {
+                        guests.push_back(std::make_pair(it->first, live));
+                        ++it;
+                    }
+                    else
+                    {
+                        guests.push_back(std::make_pair(it->first, (CrewMember*)nullptr));
+                        g_crew.deadGuestsSent.push_back(it->first);
+                        it = g_crew.guests.erase(it);
+                    }
                 }
             }
             w.U8((uint8_t)guests.size());

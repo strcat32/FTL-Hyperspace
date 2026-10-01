@@ -31,7 +31,9 @@ namespace Duels
         void WriteRoster(Writer &w);
         // After a lost connection: the roster goes again with the next state.
         void SendRosterAgain();
-        void WriteState(Writer &w);
+        // record: our ship's full state for a demo, written right after the one that goes (DuelsDemo.cpp): the same
+        // ids, without the ids' bookkeeping, and with the guests that state reported dead.
+        void WriteState(Writer &w, bool record = false);
 
         // Their side: the roster makes the puppets; the state moves them (localTime: when the owner sent it, on our
         // clock).

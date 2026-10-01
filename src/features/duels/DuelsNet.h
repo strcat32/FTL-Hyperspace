@@ -129,6 +129,10 @@ namespace Duels
         bool IsConnected();
         bool IsHost();
         std::string PeerName();
+        // Ours, as SetIdentity gave them (a demo's header, DuelsDemo.cpp).
+        std::string OwnName();
+        std::string OwnVersion();
+        std::string OwnBuild();
         std::string Status();
 
         // The connection's numbers, for the on-screen network display (DuelsHud.cpp). Counters run since connecting.

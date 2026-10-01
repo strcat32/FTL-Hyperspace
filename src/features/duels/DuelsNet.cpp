@@ -1,5 +1,6 @@
 #include "DuelsNet.h"
 #include "Duels.h"
+#include "DuelsDemo.h"
 #include "DuelsLink.h"
 #include "DuelsRelay.h"
 #include "DuelsSocket.h"
@@ -987,6 +988,9 @@ namespace Duels
         bool IsConnected() { return g_session.phase == Phase::Connected; }
         bool IsHost() { return g_session.host; }
         std::string PeerName() { return g_session.peerName; }
+        std::string OwnName() { return g_session.name; }
+        std::string OwnVersion() { return g_session.version; }
+        std::string OwnBuild() { return g_session.build; }
 
         Numbers GetNumbers()
         {
@@ -1044,6 +1048,7 @@ namespace Duels
         bool Send(uint8_t type, const Writer &body, bool reliable)
         {
             if (g_session.phase != Phase::Connected || type < FIRST_GAME_MESSAGE) return false;
+            Demo::Sent(type, body.data.data(), body.data.size());
             Writer message;
             message.U8(type);
             message.Bytes(body.data.data(), body.data.size());

@@ -8,6 +8,7 @@
 #include "DuelsMind.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
+#include "DuelsDemo.h"
 #include "DuelsDrones.h"
 #include "DuelsEnvironment.h"
 #include "DuelsFair.h"
@@ -79,6 +80,7 @@ HOOK_METHOD(CApp, OnExit, () -> void)
 {
     LOG_HOOK("HOOK_METHOD -> CApp::OnExit -> Begin (DuelsHooks.cpp)\n")
     Duels::Log("Game exiting");
+    Duels::Demo::End("the game closed");
     Duels::Shutdown();
     super();
 }

@@ -39,6 +39,12 @@ namespace Duels
 
         // Each state we send (DuelsMatch.cpp): worked out anew; a change goes to the log.
         const Seen &Update();
+        // While one exists, everything counts as seen (a demo records our own ship's full state, DuelsDemo.cpp).
+        struct FullScope
+        {
+            FullScope();
+            ~FullScope();
+        };
         const Seen &Current();
         void Reset();
         // For the trace (duels_sync.csv): "i" interior, "l" lifeforms, "c" charge, "p" power, then the rooms seen.
