@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsAccount.h"
 #include "DuelsConfig.h"
 #include "DuelsLobby.h"
 #include "DuelsReplayList.h"
@@ -52,6 +53,8 @@ namespace Duels
             bool guideLoaded = false;
             Style::Box ok, guideButton, check, up, down, close, field;
             Style::Box panelHost, panelJoin, panelReplays, panelName, panelGuide;   // the title screen's panel
+            Style::Box panelAccount;                 // SIGN IN, CANCEL or SIGN OUT (the master, roadmap BG)
+            bool titleShown = false;                 // the title screen was there last frame (the rating asked on its return)
         };
 
         static MenuState g;
@@ -455,7 +458,7 @@ namespace Duels
         // takes the empty left side.
         // ---------------------------------------------------------------------------------------------------------
 
-        static const float PX = 70.f, PY = 330.f, PW = 380.f, PH = 286.f;
+        static const float PX = 70.f, PY = 330.f, PW = 380.f, PH = 326.f;
 
         // FTL's menu shows its title screen: not the hangar, the options, the stats, the credits or a question.
         static bool OnTitle()
@@ -483,6 +486,30 @@ namespace Duels
             BigButton(g.panelHost, PX + 30.f, PY + 30.f, PW - 60.f, 50.f, "HOST DUEL", 63);
             BigButton(g.panelJoin, PX + 30.f, PY + 94.f, PW - 60.f, 50.f, "JOIN DUEL", 63);
             BigButton(g.panelReplays, PX + 30.f, PY + 158.f, PW - 60.f, 50.f, "REPLAYS", 63);
+            // The player's Steam account at the master (roadmap BG): ranked play needs it.
+            {
+                Account::View a = Account::GetView();
+                float ay = PY + 226.f;
+                std::string line, button;
+                if (a.state == Account::State::SignedIn)
+                {
+                    line = "Steam: " + Match::ScreenName(a.name) + (a.ratingKnown ? ", rating " + std::to_string(a.rating) : std::string());
+                    button = "SIGN OUT";
+                }
+                else if (a.state == Account::State::Linking)
+                {
+                    line = a.code.empty() ? std::string("Asking the master for a code") : "Sign in through Steam in your browser";
+                    button = "CANCEL";
+                }
+                else
+                {
+                    line = a.message.empty() ? std::string("Steam: not signed in (unranked only)") : a.message;
+                    button = "SIGN IN";
+                }
+                CSurface::GL_SetColor(Rgb(206, 210, 216));
+                freetype::easy_printAutoNewlines(TEXT, PX + 30.f, ay + 7.f, (int)(PW - 60.f - 110.f), line);
+                BigButton(g.panelAccount, PX + PW - 30.f - 100.f, ay, 100.f, 28.f, button, TEXT);
+            }
             float y = PY + PH - 50.f;
             CSurface::GL_SetColor(Rgb(206, 210, 216));
             freetype::easy_print(TEXT, PX + 30.f, y + 7.f, "You: " + Match::ScreenName(Match::PlayerName()));
@@ -497,6 +524,13 @@ namespace Duels
             else if (g.panelReplays.Contains(x, y)) ReplayList::Open();
             else if (g.panelName.Contains(x, y)) OpenName(false);
             else if (g.panelGuide.Contains(x, y)) OpenGuide(Window::None);
+            else if (g.panelAccount.Contains(x, y))
+            {
+                Account::State state = Account::GetView().state;
+                if (state == Account::State::SignedIn) Account::SignOut();
+                else if (state == Account::State::Linking) Account::CancelSignIn();
+                else Account::StartSignIn();
+            }
             else return false;
             return true;
         }
@@ -512,10 +546,12 @@ namespace Duels
                 else if (!g.tutorialShown && Config::Value("tutorial") != "off") OpenTutorial();
             }
             bool title = OnTitle();
+            if (title && !g.titleShown) Account::Refresh();   // back on the title screen: the rating again (after a match)
+            g.titleShown = title;
             if (title) RenderPanel();
             else
             {
-                g.panelHost.w = g.panelJoin.w = g.panelReplays.w = g.panelName.w = g.panelGuide.w = 0.f;   // not there: no clicks
+                g.panelHost.w = g.panelJoin.w = g.panelReplays.w = g.panelName.w = g.panelGuide.w = g.panelAccount.w = 0.f;   // not there: no clicks
             }
             Lobby::Render();
             ReplayList::Render();

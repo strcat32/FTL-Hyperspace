@@ -29,6 +29,17 @@ namespace Duels
 
         static Settings g_settings;
 
+        // The master as a relay: written as a web address ("http://127.0.0.1:8099"), its host; else as written.
+        static std::string MasterHost(const std::string &master)
+        {
+            size_t scheme = master.find("://");
+            if (scheme == std::string::npos) return master;
+            std::string rest = master.substr(scheme + 3);
+            rest = rest.substr(0, rest.find('/'));
+            if (!rest.empty() && rest[0] == '[') return rest.substr(0, rest.find(']') + 1);
+            return rest.substr(0, rest.find(':'));
+        }
+
         static std::string Trim(const std::string &text)
         {
             size_t start = text.find_first_not_of(" \t\r");
@@ -71,8 +82,8 @@ namespace Duels
             size_t own = s.relays.size();
             {
                 // The master after the file's own relays (the same server with the default port written out is the
-                // same relay).
-                std::string plain = s.master, withPort = plain + ":47700";
+                // same relay; a master written as a web address: its host).
+                std::string plain = MasterHost(s.master), withPort = plain + ":47700";
                 if (std::find(s.relays.begin(), s.relays.end(), plain) == s.relays.end() &&
                     std::find(s.relays.begin(), s.relays.end(), withPort) == s.relays.end())
                 {
@@ -191,7 +202,18 @@ namespace Duels
         bool IsPublicRelay(const std::string &server)
         {
             Load();
-            return HostOf(server) == HostOf(g_settings.master);
+            return HostOf(server) == HostOf(MasterHost(g_settings.master));
+        }
+
+        std::string MasterUrl()
+        {
+            std::string master = Master();
+            if (master.compare(0, 7, "http://") == 0 || master.compare(0, 8, "https://") == 0)
+            {
+                while (!master.empty() && master.back() == '/') master.pop_back();
+                return master;
+            }
+            return "https://" + master;
         }
 
         const std::vector<std::string> &Relays()

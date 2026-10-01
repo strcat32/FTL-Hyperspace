@@ -1,5 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
+#include "DuelsAccount.h"
 #include "DuelsConsole.h"
 #include "DuelsMatch.h"
 #include "DuelsScreen.h"
@@ -153,6 +154,7 @@ namespace Duels
         MuteForTests();
         PlaceOnTestDisplay();
         Match::OnFrame(WallMs());
+        Account::Frame();   // the master's answers (roadmap BG)
         HeldMouseOnFrame();
         View::OnFrame();
         Screen::OnFrame();

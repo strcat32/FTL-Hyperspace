@@ -241,8 +241,9 @@ elseif(WIN32)
     # OpenGL, just raw OpenGL goodness
     target_link_libraries(Hyperspace PRIVATE OpenGL::GL)
 
-    # FTL: Duels netcode (src/features/duels/DuelsSocket.cpp)
-    target_link_libraries(Hyperspace PRIVATE ws2_32)
+    # FTL: Duels netcode (src/features/duels/DuelsSocket.cpp); HTTPS to the master server and the browser for its
+    # sign-in (DuelsHttp.cpp, DuelsAccount.cpp)
+    target_link_libraries(Hyperspace PRIVATE ws2_32 winhttp shell32)
 
     target_compile_definitions(Hyperspace PRIVATE BUILD_DLL)
 endif()

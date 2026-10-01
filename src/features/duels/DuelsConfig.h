@@ -34,6 +34,9 @@ namespace Duels
         // The master server (roadmap AZ): duels.cfg's, or ftl-duels.link for a file without one (then written into it,
         // when the settings come from the file).
         const std::string &Master();
+        // Its web address (roadmap BG): https://<master>, or the address as written when it is one ("http://127.0.0.1:8099",
+        // a test's stand-in master: its host is the relay then).
+        std::string MasterUrl();
         // The relay servers: the file's, in its order, then the master (the project's public relay).
         const std::vector<std::string> &Relays();
         // The server is the master's (the project's public relay).
