@@ -36,9 +36,9 @@ namespace Duels
             uint8_t count = 1;
         };
 
-        // The host: a round's stock. Weapons first, then two or three of drones, augments, systems and crew
-        // (three sections in rounds 1-2, four later), three items each, drawn as FTL's stores draw them (weight
-        // 6 - rarity) within the round's price cap for weapons and drones; missiles and drone parts.
+        // The host: a round's stock. A page for each kind, every round (roadmap AP): weapons, drones, augments,
+        // systems and crew, six of each, drawn as FTL's stores draw them (weight 6 - rarity) within the round's price
+        // cap for weapons and drones; missiles and drone parts.
         std::vector<ShopItem> MakeStock(int round, std::mt19937 &random);
 
         // The match starts: who the captain is (the first crew member; they always return, rules section 2).

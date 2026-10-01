@@ -47,6 +47,7 @@ namespace Duels
 
         static RefitState g_refit;
         static const char *const STORE_ID = "FTL_DUELS_ROUND";
+        static const int PAGE_ITEMS = 6;     // a kind's page in the shop: two sections of three (AP)
         static const int STORE_LOWER = 20;   // px below FTL's place (AQ)
         // FTL's place for the store's tabbed window, taken before the first move (the window keeps ours afterwards).
         static bool g_storePlaced = false;
@@ -169,13 +170,10 @@ namespace Duels
             // The price cap for weapons and drones (rules, section 7): 55, 65, 75, 85, then none.
             static const int CAPS[] = {55, 65, 75, 85};
             int cap = round >= 1 && round <= 4 ? CAPS[round - 1] : 0;
-            std::vector<uint8_t> others = {KIND_DRONE, KIND_AUGMENT, KIND_SYSTEM, KIND_CREW};
-            std::shuffle(others.begin(), others.end(), random);
-            std::vector<uint8_t> kinds = {KIND_WEAPON};
-            int sections = round <= 2 ? 3 : 4;
-            for (int i = 0; i < sections - 1 && i < (int)others.size(); ++i) kinds.push_back(others[i]);
+            // Every kind every round, each on a page of its own (AP), in this order.
+            static const uint8_t KINDS[] = {KIND_WEAPON, KIND_DRONE, KIND_AUGMENT, KIND_SYSTEM, KIND_CREW};
 
-            for (uint8_t kind : kinds)
+            for (uint8_t kind : KINDS)
             {
                 std::vector<Candidate> pool;
                 switch (kind)
@@ -187,7 +185,7 @@ namespace Duels
                 case KIND_CREW: pool = Pool(blueprints->crewBlueprints, 0, kind); break;
                 default: break;
                 }
-                for (const Candidate &candidate : Draw(pool, 3, random))
+                for (const Candidate &candidate : Draw(pool, PAGE_ITEMS, random))
                 {
                     ShopItem item;
                     item.kind = kind;
@@ -580,7 +578,18 @@ namespace Duels
                 entry.stock = -1;
                 categories[item.kind].items.push_back(entry);
             }
-            for (uint8_t kind : order) definition.categories[-1].push_back(categories[kind]);
+            // A page of its own for each kind (AP): Hyperspace's store puts two sections on a page and shows three items
+            // in a section, so each kind comes as two sections, its items shared out between them.
+            for (uint8_t kind : order)
+            {
+                const StoreCategory &all = categories[kind];
+                StoreCategory first = all, second = all;
+                size_t half = (all.items.size() + 1) / 2;
+                first.items.assign(all.items.begin(), all.items.begin() + half);
+                second.items.assign(all.items.begin() + half, all.items.end());
+                definition.categories[-1].push_back(first);
+                definition.categories[-1].push_back(second);
+            }
 
             // Hyperspace's custom store builds it (at most three items per section are shown).
             CustomStore::instance->RegisterStoreDefinition(STORE_ID, definition);
