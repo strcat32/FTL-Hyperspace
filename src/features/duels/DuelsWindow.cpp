@@ -165,8 +165,10 @@ namespace Duels
             }
             else
             {
-                add("DRAW ROUND", "draw round", s.canOfferRoundDraw, false);
-                add("DRAW MATCH", "draw match", s.canOfferMatchDraw, false);
+                // Our offer stands until we take it back (AT): its button does that.
+                bool backRound = s.weOfferDraw && !s.drawIsMatch, backMatch = s.weOfferDraw && s.drawIsMatch;
+                add(backRound ? "TAKE BACK" : "DRAW ROUND", backRound ? "draw back" : "draw round", backRound || s.canOfferRoundDraw, false);
+                add(backMatch ? "TAKE BACK" : "DRAW MATCH", backMatch ? "draw back" : "draw match", backMatch || s.canOfferMatchDraw, false);
             }
             // Once the match is over there is nothing to forfeit: LOBBY leaves the run for the room list (after the end
             // screen's STAY, roadmap 3.5 part 5).

@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsAi.h"
+#include "DuelsLobby.h"
 #include "DuelsMatch.h"
 #include "DuelsRounds.h"
 #include "DuelsShipControl.h"
@@ -24,6 +25,8 @@ namespace Duels
         {
             bool active = false;
             std::string blueprint;       // the AI's ship
+            double startMs = 0.0;        // when the match began
+            bool boxSeen = false;        // FTL's first message box came (no pause once it is gone)
             int round = 0;
             bool spawned = false;        // its ship came this round
             bool defeated = false;       // its defeat is reported this round
@@ -89,6 +92,7 @@ namespace Duels
         {
             g = AiState();
             g.active = true;
+            g.startMs = WallMs();
             g.blueprint = blueprint;
             if (g.blueprint.empty())
             {
@@ -98,9 +102,6 @@ namespace Duels
             }
             // FTL's own ship AI flies it (a duel before it had the opponent's replaced by its owner's game).
             GetState().aiOff[1] = false;
-            // No pause, as in a duel (rules, section 1): the rounds run on the clock, and a game paused by the store, a
-            // menu or a window without focus would stand still while they go on.
-            GetState().noPause = true;
             Log("Ai: a match against FTL's AI in %s (%s)", g.blueprint.c_str(), ShipTitle(g.blueprint).c_str());
             Rounds::StartLocal();
         }
@@ -143,7 +144,7 @@ namespace Duels
 
         bool ShipStands()
         {
-            return g.spawned && G_->GetShipManager(1) != nullptr;
+            return g.active && g.spawned && G_->GetShipManager(1) != nullptr;
         }
 
         // The AI's crew: its ship's own, wherever they are (boarders on ours too), drones not.
@@ -595,6 +596,21 @@ namespace Duels
             Rounds::Phase phase = Rounds::GetPhase();
             ShipManager *ship = G_->GetShipManager(1);
 
+            // No pause, as in a duel (rules, section 1): the rounds run on the clock, and a game paused by the store, a
+            // menu or a window without focus would stand still while they go on. From the moment FTL's first message
+            // box is gone (DuelsLobby.cpp answers it; without a box, after 1.5 s): FTL answers a message box only while
+            // its game is paused.
+            CommandGui *gui = G_->GetWorld() ? G_->GetWorld()->commandGui : nullptr;
+            if (gui && !GetState().noPause)
+            {
+                g.boxSeen = g.boxSeen || gui->choiceBox.bOpen || Lobby::FirstBoxAnswered();
+                if (!gui->choiceBox.bOpen && (g.boxSeen || WallMs() - g.startMs > 1500.0))
+                {
+                    GetState().noPause = true;
+                    Log("Ai: no pause from now on");
+                }
+            }
+
             // The ships meet: the AI's ship comes, fitted as it has bought (not a target yet: the fight hasn't begun).
             if (phase == Rounds::Phase::Starting && !g.spawned)
             {
@@ -604,6 +620,7 @@ namespace Duels
                 {
                     g.spawned = true;
                     FitShip(ship);
+                    Match::ShowOpponent(ship);
                     // A player ship's blueprint has no boarding AI (FTL's enemies with a teleporter have one): without
                     // it the AI would never use its teleporter. FTL's ShipAI takes it at its start (its target kept).
                     WorldManager *world = G_->GetWorld();

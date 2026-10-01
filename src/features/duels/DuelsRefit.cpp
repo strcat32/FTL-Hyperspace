@@ -47,6 +47,10 @@ namespace Duels
 
         static RefitState g_refit;
         static const char *const STORE_ID = "FTL_DUELS_ROUND";
+        static const int STORE_LOWER = 20;   // px below FTL's place (AQ)
+        // FTL's place for the store's tabbed window, taken before the first move (the window keeps ours afterwards).
+        static bool g_storePlaced = false;
+        static int g_ftlStoreX = 0, g_ftlStoreY = 0;
 
         static CommandGui *Gui()
         {
@@ -583,6 +587,15 @@ namespace Duels
             CustomStore::instance->forceCustomStore = STORE_ID;
             Store *store = gui->CreateNewStore(world->starMap.worldLevel);
             CustomStore::instance->forceCustomStore = "";
+            // A little lower than FTL has it (roadmap AQ): the score panel (DuelsMatchUi.cpp) covered its BUY tab.
+            if (!g_storePlaced)
+            {
+                g_storePlaced = true;
+                g_ftlStoreX = gui->storeScreens.position.x;
+                g_ftlStoreY = gui->storeScreens.position.y;
+                Log("Refit: FTL's store window at %d,%d; ours %d px lower", g_ftlStoreX, g_ftlStoreY, STORE_LOWER);
+            }
+            gui->storeScreens.SetPosition(Point(g_ftlStoreX, g_ftlStoreY + STORE_LOWER));
             ++g_refit.shops;
             Log("Refit: round %d's shop is open (%u items)%s", round, (unsigned)stock.size(), store ? "" : ", but no store came");
         }

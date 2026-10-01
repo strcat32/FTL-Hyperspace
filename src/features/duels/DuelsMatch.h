@@ -67,6 +67,9 @@ namespace Duels
         };
         Loadout TakeLoadout(ShipManager *ship);
         void FitShip(ShipManager *ship, const Loadout &loadout);
+        // A player ship as the opponent's (the replica, the AI's ship): its shields where a player ship has them, and
+        // our combat drones' orbits around them (DuelsView.cpp; the enemy window's layout goes by SetDuelOpponent).
+        void ShowOpponent(ShipManager *ship);
 
         const std::string &PlayerName();
         // Players' names (roadmap AG): the name prompt and the name command take up to NAME_MAX characters, and the

@@ -272,8 +272,8 @@ namespace Duels
             else if (s.phase == Rounds::Phase::Starting || s.phase == Rounds::Phase::Fight)
             {
                 float x = FIGHT_SPLIT, y = FIGHT_TOP;
-                // A draw offer (AH): ours keeps the button pressed down while it is open; the other player's makes it
-                // "DRAW?", flashing (a click accepts). No text under it: the chat log has the offer.
+                // A draw offer (AH): ours keeps the button pressed down while it stands (a click takes it back, AT); the
+                // other player's makes it "DRAW?", flashing (a click accepts). No text under it: the chat log has it.
                 bool blink = (long long)(WallMs() / 400.0) % 2 == 0;
                 if (s.weOfferDraw)
                 {
@@ -494,7 +494,7 @@ namespace Duels
             std::string command, message;
             Rounds::Summary s = Rounds::GetSummary();
             if (g.ready.Contains(x, y)) command = s.ready ? "ready off" : "ready";
-            else if (g.draw.Contains(x, y)) command = s.drawToAnswer ? "draw yes" : "draw round";
+            else if (g.draw.Contains(x, y)) command = s.drawToAnswer ? "draw yes" : s.weOfferDraw ? "draw back" : "draw round";
             else if (g.concede.Contains(x, y))
             {
                 if (WallMs() >= g.concedeArmedUntil)

@@ -12,6 +12,7 @@
 #include "DuelsScript.h"
 #include "DuelsRefit.h"
 #include "DuelsTrace.h"
+#include "DuelsWindow.h"
 #include "DuelsWire.h"
 
 #include <algorithm>
@@ -30,7 +31,6 @@ namespace Duels
         static const double STARTING_LEAD_MS = 1500.0;   // the fight begins this long after both ships stand
         static const double ENDING_MS = 3000.0;          // the first ship's explosion; shots in the air still count
         static const double RESULT_MS = 6000.0;          // the round's result on screen before the next preparation
-        static const double DRAW_OFFER_MS = 15000.0;     // time to accept a draw offer (rules, section 3)
         static const double DRAW_AGAIN_MS = 60000.0;     // after a declined offer, the same player waits this long
         static const float HULL_WEIGHT = 0.65f;          // the damage score: hull 0.65, crew 0.35 (rules, section 3)
         static const float SCORE_TIE = 0.05f;            // damage scores closer than this are equal
@@ -48,7 +48,8 @@ namespace Duels
             EV_DRAW_OFFER = 5,   // arg: DRAW_ROUND or DRAW_MATCH
             EV_DRAW_ANSWER = 6,  // arg: 1 accepted, 0 declined
             EV_UNREADY = 7,      // Ready taken back (the preparation goes on to its end)
-            EV_ESCAPE = 8        // we jumped away with a charged FTL drive (roadmap AD)
+            EV_ESCAPE = 8,       // we jumped away with a charged FTL drive (roadmap AD)
+            EV_DRAW_BACK = 9     // our draw offer taken back (roadmap AT)
         };
 
         enum Reason : uint8_t
@@ -170,6 +171,8 @@ namespace Duels
 
             double pausedSince = -1.0;      // the connection was lost then (our clock): the match is paused
             uint32_t eventsSent = 0, eventsReceived = 0, statesSent = 0, statesReceived = 0;
+            // Guest: we answered the host's draw offer (its end then is no taking back).
+            bool drawAnswered = false;
             double lastSecondsShown = -1.0;
             std::mt19937 random;            // host: the shops' stock
         };
@@ -543,6 +546,8 @@ namespace Duels
             g.peerLevels[0] = g.peerLevels[1] = 1.f;
             Refit::OpenShop(d.round, d.shop);
             if (g.local) Ai::OnPrep(d.round, d.scrap, d.shop, d.settings.permadeath);
+            // The match begins: the Duels window (the room's code, the waiting) makes way; DUELS opens it again (AM).
+            if (d.round == 1 && ::Duels::Window::IsOpen()) ::Duels::Window::Close();
             Announce("Round " + std::to_string(d.round) + " of " + std::to_string(d.settings.rounds) + ": preparation, " +
                      std::to_string(d.settings.prepSeconds) + " s (" + std::to_string(d.scrap) + " scrap, shop and upgrades)");
             // Revealed now, so that the players can prepare for it (rules, section 5).
@@ -849,17 +854,26 @@ namespace Duels
                 bool matchOk = arg == DRAW_MATCH && (d.phase == Phase::Prep || d.phase == Phase::Starting || d.phase == Phase::Fight);
                 if (d.drawBy == NOBODY && (roundOk || matchOk) && now - g.lastOffer[player] >= DRAW_AGAIN_MS)
                 {
+                    // It stands until it is answered or taken back (AT); the round's end ends it.
                     d.drawBy = player;
                     d.drawScope = arg;
-                    d.drawEnd = now + DRAW_OFFER_MS;
+                    d.drawEnd = -1.0;
                     g.lastOffer[player] = now;
                     g.dirty = true;
                     Announce(player == g.me ? std::string("You offer a draw for the ") + (arg == DRAW_MATCH ? "match" : "round")
                                             : Who(player) + " offers a draw for the " + (arg == DRAW_MATCH ? "match" : "round") +
-                                                  (arg == DRAW_MATCH ? ": accept in the Duels window (15 s)" : ": the DRAW button accepts (15 s)"));
+                                                  (arg == DRAW_MATCH ? ": accept in the Duels window" : ": the DRAW button accepts"));
                 }
                 break;
             }
+            case EV_DRAW_BACK:
+                if (d.drawBy == player)
+                {
+                    ClearDraw();
+                    g.dirty = true;
+                    Announce(player == g.me ? std::string("You take back your draw offer") : Who(player) + " takes back the draw offer");
+                }
+                break;
             case EV_DRAW_ANSWER:
                 if (d.drawBy == Other(player))
                 {
@@ -922,12 +936,6 @@ namespace Duels
         static void HostFrame(double now)
         {
             Data &d = g.data;
-            if (d.drawBy != NOBODY && d.drawEnd >= 0.0 && now >= d.drawEnd)
-            {
-                ClearDraw();
-                g.dirty = true;
-                Announce("The draw offer ran out");
-            }
             switch (d.phase)
             {
             case Phase::Prep:
@@ -1165,6 +1173,7 @@ namespace Duels
                     return;
                 }
                 uint8_t drawBefore = g.data.drawBy;
+                Phase phaseBefore = g.data.phase;
                 bool readyBefore = g.data.ready[HOST];
                 // The host moved the fight's start on by a pause (a lost connection): the environment's schedule too.
                 if (g.fightBegun && data.round == g.data.round && data.fightStart >= 0.0 && g.data.fightStart >= 0.0 &&
@@ -1176,8 +1185,14 @@ namespace Duels
                 Net::SetMatchToken(data.phase == Phase::MatchOver ? 0 : data.token);
                 if (data.drawBy == HOST && drawBefore != HOST)
                 {
+                    g.drawAnswered = false;
                     Announce(Who(HOST) + " offers a draw for the " + (data.drawScope == DRAW_MATCH ? "match" : "round") +
-                             (data.drawScope == DRAW_MATCH ? ": accept in the Duels window (15 s)" : ": the DRAW button accepts (15 s)"));
+                             (data.drawScope == DRAW_MATCH ? ": accept in the Duels window" : ": the DRAW button accepts"));
+                }
+                // The host's offer gone in the same phase, unanswered: taken back (AT).
+                if (drawBefore == HOST && data.drawBy == NOBODY && data.phase == phaseBefore && !g.drawAnswered)
+                {
+                    Announce(Who(HOST) + " takes back the draw offer");
                 }
                 if (data.ready[HOST] && !readyBefore && data.phase == Phase::Prep) Announce(Who(HOST) + " is ready");
                 ApplyLocal();
@@ -1519,15 +1534,23 @@ namespace Duels
             }
             if (verb == "draw")
             {
+                if (ArgIs(cmd, 1, "back"))
+                {
+                    if (d.drawBy != g.me) { message = "no draw offer of yours to take back"; return false; }
+                    OwnEvent(EV_DRAW_BACK, 0);
+                    message = "draw offer taken back";
+                    return true;
+                }
                 if (ArgIs(cmd, 1, "yes") || ArgIs(cmd, 1, "no"))
                 {
                     if (d.drawBy != Other(g.me)) { message = "no draw offer to answer"; return false; }
+                    g.drawAnswered = true;
                     OwnEvent(EV_DRAW_ANSWER, ArgIs(cmd, 1, "yes") ? 1 : 0);
                     message = ArgIs(cmd, 1, "yes") ? "draw accepted" : "draw declined";
                     return true;
                 }
                 uint8_t scope = ArgIs(cmd, 1, "match") ? DRAW_MATCH : ArgIs(cmd, 1, "round") || cmd.args.size() == 1 ? DRAW_ROUND : DRAW_NONE;
-                if (scope == DRAW_NONE) { message = "usage: draw [round|match] | draw yes|no"; return false; }
+                if (scope == DRAW_NONE) { message = "usage: draw [round|match] | draw yes|no | draw back"; return false; }
                 if (d.drawBy != NOBODY) { message = "a draw offer is already open"; return false; }
                 OwnEvent(EV_DRAW_OFFER, scope);
                 message = std::string("draw offered for the ") + (scope == DRAW_MATCH ? "match" : "round");
@@ -1540,14 +1563,6 @@ namespace Duels
         // ---------------------------------------------------------------------------------------------------------
         // On screen and in the status
         // ---------------------------------------------------------------------------------------------------------
-
-        static std::string Clock(double ms)
-        {
-            int seconds = (int)std::ceil(std::max(0.0, ms) / 1000.0);
-            char buffer[16];
-            snprintf(buffer, sizeof(buffer), "%d:%02d", seconds / 60, seconds % 60);
-            return buffer;
-        }
 
         std::string Status()
         {
@@ -1655,6 +1670,7 @@ namespace Duels
             s.canOfferMatchDraw = running && noOffer && (d.phase == Phase::Prep || d.phase == Phase::Starting || d.phase == Phase::Fight);
             s.drawToAnswer = running && d.drawBy == them;
             s.weOfferDraw = running && d.drawBy == g.me;
+            s.drawIsMatch = d.drawScope == DRAW_MATCH;
             s.phase = d.phase;
             s.round = d.round;
             s.rounds = d.settings.rounds;
@@ -1671,8 +1687,8 @@ namespace Duels
             {
                 s.envName = Environment::KindName(d.env.kind);
             }
-            // The timer that counts now: a lost connection's wait first, then the preparation, a draw offer, and the
-            // anti-stall timer in its last minute.
+            // The timer that counts now: a lost connection's wait first, then the preparation, and the anti-stall timer
+            // in its last minute (a draw offer has no time limit, AT).
             double now = Now(), waitMs;
             bool cutOff;
             if (Net::Reconnecting(waitMs, cutOff))
@@ -1687,11 +1703,6 @@ namespace Duels
                 s.countdownLabel = "Fight in";
                 s.countdownMs = FromHost(d.phaseEnd) - now;
             }
-            else if (d.phase == Phase::Fight && d.drawBy != NOBODY && d.drawEnd >= 0.0)
-            {
-                s.countdownLabel = "Draw offer";
-                s.countdownMs = FromHost(d.drawEnd) - now;
-            }
             else if (d.phase == Phase::Fight && g.fightBegun && d.stallEnd >= 0.0 && FromHost(d.stallEnd) - now < 60000.0)
             {
                 s.countdownLabel = "No progress";
@@ -1700,7 +1711,7 @@ namespace Duels
             if (d.drawBy != NOBODY)
             {
                 s.drawText = (d.drawBy == g.me ? std::string("You offer") : Who(them) + " offers") + " a draw for the " +
-                             (d.drawScope == DRAW_MATCH ? "match" : "round") + " (" + Clock(FromHost(d.drawEnd) - Now()) + ")";
+                             (d.drawScope == DRAW_MATCH ? "match" : "round");
             }
             return s;
         }

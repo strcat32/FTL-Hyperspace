@@ -84,7 +84,7 @@ namespace Duels
         bool Escape(std::string &message);
 
         // Player verbs: match [rounds <n>|prep <seconds>|permadeath on|off|free|rounds], ready, forfeit, concede,
-        // draw round|match|yes|no.
+        // draw round|match|yes|no|back (a draw offer stands until it is answered or taken back, or the round ends).
         bool IsVerb(const std::string &verb);
         bool RunVerb(const Command &cmd, std::string &message);
 
@@ -128,6 +128,7 @@ namespace Duels
             std::string points[2];          // "1.5"
             bool opponentReady = false;
             bool weOfferDraw = false;       // our draw offer is open (the round's or the match's)
+            bool drawIsMatch = false;       // the open offer is for the match
             bool canUnready = false;
             std::string envName;            // the next fight's environment in the preparation ("a sun"), or ""
             // The timer that runs now: its label and the time left (ms); msLeft < 0: none.
@@ -138,7 +139,7 @@ namespace Duels
         };
         Summary GetSummary();
         // A player's action, as its verb: "ready", "ready off", "forfeit", "concede", "draw round", "draw match",
-        // "draw yes", "draw no".
+        // "draw yes", "draw no", "draw back".
         bool Act(const std::string &command, std::string &message);
     }
 }

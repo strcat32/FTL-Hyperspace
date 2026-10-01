@@ -369,6 +369,21 @@ namespace Duels
             Log("Match: replica augments: %s", list.empty() ? "none" : list.c_str());
         }
 
+        void ShowOpponent(ShipManager *ship)
+        {
+            if (!ship) return;
+            View::UsePlayerShieldPosition(ship);
+            // Combat drones already bound to it took their waypoint from its shields before they moved; they take a
+            // new one around the right ellipse (else the first shot can start inside the shields).
+            if (ShipManager *own = G_->GetShipManager(0))
+            {
+                for (SpaceDrone *drone : own->spaceDrones)
+                {
+                    if (drone->type == 1 && drone->movementTarget == &ship->_targetable) drone->SetMovementTarget(&ship->_targetable);
+                }
+            }
+        }
+
         Loadout TakeLoadout(ShipManager *ship)
         {
             Loadout loadout;
@@ -583,18 +598,7 @@ namespace Duels
             state.noPause = true;
 
             FitShip(replica, loadout);
-
-
-            View::UsePlayerShieldPosition(replica);
-            // Combat drones already bound to it took their waypoint from its shields before they moved; they take a
-            // new one around the right ellipse (else the first shot can start inside the shields).
-            if (ShipManager *own = G_->GetShipManager(0))
-            {
-                for (SpaceDrone *drone : own->spaceDrones)
-                {
-                    if (drone->type == 1 && drone->movementTarget == &replica->_targetable) drone->SetMovementTarget(&replica->_targetable);
-                }
-            }
+            ShowOpponent(replica);
             g_match.opponentShip = blueprint;
             g_match.replicaReady = true;
             Rounds::OnReplicaBuilt(replica);
@@ -2388,8 +2392,9 @@ namespace Duels
         {
             Init();
             Net::Update(now);
-            // The enemy window fits and mirrors the opponent's ship while it is a duel replica.
-            View::SetDuelOpponent(g_match.replicaReady && G_->GetShipManager(1) != nullptr);
+            // The enemy window fits and mirrors the opponent's ship while it is a duel replica, or the AI's ship in a
+            // match against the AI (roadmap AN).
+            View::SetDuelOpponent((g_match.replicaReady || Ai::ShipStands()) && G_->GetShipManager(1) != nullptr);
             // A match against the AI runs in this game alone (roadmap 3.6): the frame without the network's part.
             if (!Net::IsConnected() && !Rounds::IsLocal()) return;
 

@@ -91,9 +91,10 @@ namespace Duels
             size_t attemptIndex = 0;
             bool attempting = false;
 
-            // FTL's first message box at a run's start.
+            // FTL's first message box at a run's start: its choice taken until the box is gone.
             bool inRun = false;
-            double closeBoxUntilMs = 0.0;
+            double closeBoxUntilMs = 0.0, nextBoxKeyMs = 0.0;
+            int boxKeys = 0;
 
             // LOBBY: FTL's main menu asked for, then the room list there.
             bool toMenu = false, listOnMenu = false;
@@ -787,6 +788,11 @@ namespace Duels
             Log("Lobby: to the lobby: the duel left, FTL's main menu, then the room list");
         }
 
+        bool FirstBoxAnswered()
+        {
+            return g.inRun && g.boxKeys > 0;
+        }
+
         bool TakeMenuRequest()
         {
             bool asked = g.toMenu;
@@ -804,18 +810,30 @@ namespace Duels
                 OpenJoin();
             }
             bool inRun = InRun();
-            if (inRun && !g.inRun) g.closeBoxUntilMs = WallMs() + 5000.0;   // a run begins
+            if (inRun && !g.inRun)
+            {
+                // A run begins.
+                g.closeBoxUntilMs = WallMs() + 10000.0;
+                g.nextBoxKeyMs = 0.0;
+                g.boxKeys = 0;
+            }
             g.inRun = inRun;
             if (inRun && WallMs() < g.closeBoxUntilMs)
             {
                 // FTL's first message box (its story): the tutorial box explained the duel instead. Its only choice, as
-                // the player's click.
+                // the player's key, again until the box is gone. (FTL answers a message box only while its game is
+                // paused: a match against the AI has no pause once the box is gone, DuelsAi.cpp.)
                 ChoiceBox &box = G_->GetWorld()->commandGui->choiceBox;
-                if (box.bOpen && box.choices.size() == 1)
+                if (box.bOpen && box.choices.size() == 1 && WallMs() >= g.nextBoxKeyMs)
                 {
                     box.KeyDown(SDLK_1);
+                    g.nextBoxKeyMs = WallMs() + 300.0;
+                    ++g.boxKeys;
+                }
+                else if (!box.bOpen && g.boxKeys > 0)
+                {
+                    Log("Lobby: FTL's first message box closed (%d key%s)", g.boxKeys, g.boxKeys == 1 ? "" : "s");
                     g.closeBoxUntilMs = 0.0;
-                    Log("Lobby: FTL's first message box closed");
                 }
             }
 
@@ -838,7 +856,6 @@ namespace Duels
                 g.pending = Pending::None;
                 Ai::Start(AiShipBlueprint());
                 Console::Feed("A match against " + Ai::Name() + " (FTL's AI, on this computer)");
-                ::Duels::Window::Open();
                 return;
             }
             if (!g.attempting)

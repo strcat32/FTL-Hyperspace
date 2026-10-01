@@ -29,8 +29,10 @@ namespace Duels
 
         // Every frame: a room waits for the run the hangar starts (the menu gone, our ship there), then opens or is
         // joined; back from the hangar to the menu drops it. At a run's start FTL's first message box (its story) is
-        // closed: the tutorial box explained the duel instead.
+        // closed: the tutorial box explained the duel instead. FirstBoxAnswered: its choice was given in this run (the
+        // box goes then; a match against the AI has no pause from that moment, as FTL answers boxes only in a pause).
         void OnFrame();
+        bool FirstBoxAnswered();
 
         // Test verbs, through "menu": host, join (the windows), choose (their CHOOSE SHIP), cancel, code <code|@file>
         // and password <password> (the fields), refresh and pick <code|@file> (the list: a click on that room's row),

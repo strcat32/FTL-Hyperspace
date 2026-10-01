@@ -24,10 +24,11 @@ namespace Duels
         std::string Name();
 
         // DuelsRounds.cpp: a round's preparation begins, with the round's scrap and stock (the AI is ready at once; it
-        // shops when its ship comes); its ship is there and fitted (the ships meet); every frame of the match (the ship
-        // when the ships meet, its defeat, its damage and levels, what it has left); the round is over (after
-        // Refit::EndOfRound: whose crew is where comes from FTL's own ship ids here, as the duel's crew registries are
-        // the network's: boarders go home or die with a destroyed ship, and the AI's crew for the next round).
+        // shops when its ship comes); its ship is there and fitted (the ships meet; the enemy window shows it as a
+        // duel's opponent); every frame of the match (the ship when the ships meet, its defeat, its damage and levels,
+        // what it has left); the round is over (after Refit::EndOfRound: whose crew is where comes from FTL's own ship
+        // ids here, as the duel's crew registries are the network's: boarders go home or die with a destroyed ship, and
+        // the AI's crew for the next round).
         void OnPrep(int round, int scrap, const std::vector<Refit::ShopItem> &stock, bool permadeath);
         bool ShipStands();
         void OnFrame();

@@ -23,8 +23,8 @@ namespace Duels
         bool LButtonDown(int x, int y);
         bool KeyDown(int key);
         bool IsOpen();
-        // Opens it (the menu's HOST DUEL and JOIN DUEL, once the run began: the room's code is there); closes it (the end
-        // screen comes over the game).
+        // Opens it (the menu's HOST DUEL and JOIN DUEL, once the run began: the room's code is there); closes it (the
+        // match begins, roadmap AM; the end screen comes over the game).
         void Open();
         void Close();
         // Test verb: duels open|close | duels click <x> <y> (a left click there, in FTL's 1280 x 720 coordinates) |
