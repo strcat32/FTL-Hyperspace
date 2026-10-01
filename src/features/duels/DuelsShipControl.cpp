@@ -479,7 +479,8 @@ namespace Duels
         size_t at = cmd.text.find("keys");
         if (!gui || at == std::string::npos)
         {
-            message = "usage: keys <text with {f1} {tab} {console} {chat} {enter} {esc} {up} {down} {pgup} {pgdn} {back}>";
+            message = "usage: keys <text with {f1} {tab} {console} {chat} {enter} {esc} {up} {down} {left} {right} {home} {space} "
+                      "{pgup} {pgdn} {back} {a}..{z}>";
             return false;
         }
         // In the main menu the keys go to the menu (ours over FTL's), as the game sends them.
@@ -526,6 +527,12 @@ namespace Duels
                 else if (key == "space") keyDown(SDLK_SPACE);   // the key only (a typed space is a plain " ")
                 else if (key == "pgup") keyDown(SDLK_PAGEUP);
                 else if (key == "pgdn") keyDown(SDLK_PAGEDOWN);
+                else if (key.size() == 1 && key[0] >= 'a' && key[0] <= 'z')
+                {
+                    // A letter key, as the game sends it: the key, then the character.
+                    keyDown((SDLKey)key[0]);
+                    textInput(key[0]);
+                }
                 else if (key == "enter") textEvent(CEvent::TEXT_CONFIRM);
                 else if (key == "back") textEvent(CEvent::TEXT_BACKSPACE);
                 else

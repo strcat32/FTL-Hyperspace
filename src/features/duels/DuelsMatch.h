@@ -81,6 +81,9 @@ namespace Duels
         void ReplayOwnShotDowned(const uint8_t *data, size_t size);
         // Its own chat lines (MSG_CHAT as it sent them), under its name.
         void ReplayChat(const std::string &name, const uint8_t *data, size_t size);
+        // The other ship's next state counts even when older than the last one (a replay changing the states the other
+        // ship follows: full sensors on or off, roadmap BA).
+        void ReplayRestate();
         // A ship our game doesn't decide but follows: the opponent's copy (ship 1, once built), and in a replay our ship
         // too, once the recorder's states drive it.
         bool IsDriven(int shipId);
@@ -179,8 +182,12 @@ namespace Duels
         // numbers: 2 the enemy's interior, 3 its power use, 4 its weapons' charge.
         bool SensorsAllow(const ShipManager *ship, int vision);
         // After ShipManager::CheckVision for the replica (FTL's blackout reads the sensors itself): its rooms dark where
-        // their state's vision says we don't see inside, but for the rooms our crew light up (FTL's tempVision).
+        // their state's vision says we don't see inside, but for the rooms our crew light up (FTL's tempVision). In a
+        // replay with full sensors (roadmap BA) every room of both ships is lit.
         void ClampVision(ShipManager *ship);
+        // A replay with full sensors (BA): FTL shows the opponent's power and weapons' charge too, whatever our ship's
+        // sensors (the DoSensorsProvide hook asks for our ship before FTL does).
+        bool FullSensors(const ShipManager *ship);
 
         // Beams (ShipManager::DamageBeam): ours sweeps the replica without damage; the defender's is reported when over.
         void MuteBeamDamage(ShipManager *ship, Damage &damage);

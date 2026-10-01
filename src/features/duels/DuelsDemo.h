@@ -23,7 +23,7 @@ namespace Duels
         static const uint8_t COMPRESSION_DEFLATE = 1;
         static const uint8_t FROM_HOST = 0, FROM_GUEST = 1;
         static const uint8_t KIND_MESSAGE = 0;      // a message between the games, as it went
-        static const uint8_t KIND_FULL_STATE = 1;   // the recorder's own state without the vision (never sent)
+        static const uint8_t KIND_FULL_STATE = 1;   // a player's own state without the vision (never sent; BA joins the other's)
         static const uint8_t KIND_MARKER = 2;       // MARK_*
         static const uint8_t MARK_HEADER = 0, MARK_END = 1;
         static const uint8_t MARK_STATUS = 2;       // the match's status as it changes (BB): ranked (u8), why not (str)
@@ -34,7 +34,8 @@ namespace Duels
         void End(const std::string &why);
         bool Recording();
 
-        // Net::Send and the listener: each game message as it passes (our own states go as full states instead).
+        // Net::Send and the listener: each game message as it passes (our own states too, as they went: the opponent's
+        // view in a replay, BA; in full they come with FullState).
         void Sent(uint8_t type, const uint8_t *data, size_t size);
         void Received(uint8_t type, const uint8_t *data, size_t size);
         // Our own ship's state as the opponent would get it with all in sight (DuelsMatch.cpp writes it after the one
@@ -64,12 +65,16 @@ namespace Duels
         // Test verb: demo (its state), demo on|off (record the next matches or not), demo stop (close the file now).
         bool RunVerb(const Command &cmd, std::string &message);
 
-        // Replay (roadmap 5.1, docs/design/demos.md, stages 1-4): a demo played back in this game, in Net's replay mode.
-        // Its records come at their times. What the opponent sent goes to the listener as if received (its ship, its
-        // states, its crew, its shots and verdicts, the chat; the match's flow when it hosted). Of what the recorder
-        // sent: its ship's loadout (our ship becomes its ship, Match::ReplayOwnLoadout), its full states and roster (our
-        // ship follows them), its shots and its verdicts on the opponent's (Match::ReplayOwnShot, ReplayOwnResult), the
-        // match's flow when it hosted, the chat. Boarding, hacking, mind control and drones wait for a later stage.
+        // Replay (roadmap 5.1, docs/design/demos.md, stages 1-5): a demo played back in this game, in Net's replay mode.
+        // Its records come at their times, from one player's side (BA): our ship is theirs. What the other player sent
+        // goes to the listener as if received (their ship, its states, its crew, their shots and verdicts, the chat; the
+        // match's flow when they hosted). Of what the shown player sent: their ship's loadout (our ship becomes their
+        // ship, Match::ReplayOwnLoadout), their full states and roster (our ship follows them), their crew going aboard
+        // and back, their drones' shots, their shots and verdicts on the other's (Match::ReplayOwnShot, ReplayOwnResult),
+        // the match's flow when they hosted, the chat. The recorder's side is shown first; the other player's needs their
+        // full states: their demo of the match, found in the same folder (or named: `replay <file> with <file>`), joins
+        // its full states at the demo's times. With full sensors the other ship follows the other player's full states,
+        // and everything of both ships is in sight (Match::FullSensors).
         bool StartReplay(const std::string &path, std::string &message);
         void ReplayFrame(double now);   // Net::Update while it replays: a seek's arrival, the replay's end
         // A replay's pause is FTL's pause too: the world stands still (CommandGui::IsPaused), and the replay's clock.
@@ -90,6 +95,9 @@ namespace Duels
             double positionMs = 0.0, lengthMs = 0.0, speed = 1.0;
             std::string hostName, guestName;
             bool recorderHost = true;
+            bool viewedHost = true;          // whose side the screen shows (BA): our ship is theirs
+            bool bothSides = false;          // both players' full states are there: the other's view, full sensors
+            bool fullSensors = false;
             int ranked = -1;              // the recorded match's status: 1 ranked, 0 unranked, -1 not known (an older demo)
             std::string unrankedWhy;
         };
@@ -103,11 +111,17 @@ namespace Duels
         // True while a replay starts again by itself (stop, a seek back): the lost connection and the new one that this
         // is in Net's replay mode stay out of the feed (DuelsMatch.cpp, DuelsRounds.cpp).
         bool ReplayRestarting();
+        // The other player's side (BA): the replay starts again from there and runs to where it was. Full sensors on or
+        // off, at once. Both need both players' full states (ReplayView::bothSides); the feed says so otherwise.
+        void ReplaySwitchView();
+        void ReplaySetFullSensors(bool on);
+        bool ReplayFullSensors();
         void ReplaySeekTo(double ms);
         void ReplayStep(double ms);
         void ReplaySpeedStep(int direction);
-        // Test verb: replay <file> | replay pause | replay resume | replay stop | replay speed 0.5|1|2|4|8 |
-        // replay seek <s>|+<s>|-<s> | replay (its state).
+        // Test verb: replay <file> [with <file>] [view host|guest] | replay pause | replay resume | replay stop |
+        // replay speed 0.5|1|2|4|8 | replay seek <s>|+<s>|-<s> | replay view host|guest | replay sensors full|seen |
+        // replay (its state).
         bool RunReplayVerb(const Command &cmd, std::string &message);
     }
 }

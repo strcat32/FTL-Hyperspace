@@ -501,10 +501,11 @@ HOOK_METHOD_PRIORITY(BombProjectile, CollisionCheck, -2000, (Collideable *other)
 
 // A bomb's dodge roll, when it appears in its target room.
 // What FTL shows of the opponent's ship follows what their game sent (roadmap 4.5): FTL's sensor levels, but no more
-// than their state's vision.
+// than their state's vision. A replay with full sensors shows everything (roadmap BA).
 HOOK_METHOD_PRIORITY(ShipManager, DoSensorsProvide, -2000, (int vision) -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::DoSensorsProvide -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Match::FullSensors(this)) return true;
     return super(vision) && Duels::Match::SensorsAllow(this, vision);
 }
 

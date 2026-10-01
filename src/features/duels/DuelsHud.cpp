@@ -165,8 +165,8 @@ namespace Duels
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
-        // The line at the top middle, above the jump and ship buttons: a replay (roadmap AW: "REPLAY  Host vs Guest",
-        // gold), the match's status (BB: RANKED in green, UNRANKED in grey; in a replay the recorded match's), and debug
+        // The line at the top middle, above the jump and ship buttons: a replay (roadmap AW, BD: "REPLAY" in gold; the
+        // score panel names the players), the match's status (BB: RANKED in green, UNRANKED in grey; in a replay the recorded match's), and debug
         // mode (roadmap T: a red "DEBUG MODE!" in both players' games; either one's debug mode gives both the test
         // commands, and such a match is unranked).
         static void RenderStatusLine()
@@ -181,7 +181,7 @@ namespace Duels
             Demo::ReplayView replay = Demo::GetReplayView();
             if (replay.active)
             {
-                parts.push_back({"REPLAY  " + Match::ScreenName(replay.hostName) + " vs " + Match::ScreenName(replay.guestName), gold});
+                parts.push_back({"REPLAY", gold});
                 if (replay.ranked >= 0) parts.push_back({replay.ranked ? "RANKED" : "UNRANKED", replay.ranked ? green : grey});
             }
             else if (Rounds::InMatch())

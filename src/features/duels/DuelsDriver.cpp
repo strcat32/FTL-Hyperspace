@@ -653,7 +653,7 @@ namespace Duels
             }
             else if (ArgIs(cmd, 1, "replay"))
             {
-                // click replay start|back|play|on|speed|line: a replay's control (roadmap AW).
+                // click replay stop|back|play|on|speed|line|view|sensors: a replay's control (roadmap AW, BC, BA).
                 std::string control = cmd.args.size() > 2 ? cmd.args[2] : "";
                 if (!ReplayUi::ControlCentre(control, x, y)) { message = "no replay control '" + control + "' on the screen"; return false; }
             }

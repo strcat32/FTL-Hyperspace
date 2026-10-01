@@ -257,8 +257,8 @@ namespace Duels
             return player == HOST ? GUEST : HOST;
         }
 
-        // A replay (roadmap 5.1, AW): nobody is "you"; each player goes by the recorded name, and the screen shows the
-        // recorder's side.
+        // A replay (roadmap 5.1, AW): nobody is "you"; each player goes by the recorded name, and the screen shows one
+        // player's side (the recorder's, or the other's: BA).
         static bool You(uint8_t player)
         {
             return player == g.me && !Net::Replaying();
@@ -267,7 +267,7 @@ namespace Duels
         static uint8_t Viewer()
         {
             if (!Net::Replaying()) return g.me;
-            return Demo::GetReplayView().recorderHost ? HOST : GUEST;
+            return Demo::GetReplayView().viewedHost ? HOST : GUEST;
         }
 
         static std::string Upper(std::string text)

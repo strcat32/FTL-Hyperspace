@@ -21,6 +21,7 @@
 #include <cstring>
 #include <ctime>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 #include <boost/filesystem.hpp>
 #include <zlib.h>
@@ -74,6 +75,11 @@ namespace Duels
             std::string path, hostName, guestName;
             uint8_t recorder = FROM_HOST;
             std::vector<DemoRecord> records;
+            std::string partnerPath;            // the other player's demo of the match, its full states joined (BA)
+            bool hasFull[2] = {false, false};   // full states of the host's ship, of the guest's
+            bool hasSeen[2] = {false, false};   // each one's states as they went to the other (sent, or received)
+            uint8_t viewed = FROM_HOST;         // whose side the screen shows: our ship is theirs (BA)
+            bool fullSensors = false;           // the other ship by its full states, all in sight (BA)
             size_t next = 0;
             double startMs = 0.0;            // the demo's start, on the replay's clock
             double firstMs = 0.0;            // its first state of our ship (ms in the demo): no seek goes further back
@@ -259,8 +265,9 @@ namespace Duels
 
         void Sent(uint8_t type, const uint8_t *data, size_t size)
         {
-            // Our states go as full states (FullState): the one that went shows less.
-            if (!g.file || type == MSG_STATE) return;
+            // Our states too, as they went (what the opponent saw of our ship: their view in a replay, BA); in full they
+            // come with FullState.
+            if (!g.file) return;
             ++g.sent;
             Record(g.host ? FROM_HOST : FROM_GUEST, KIND_MESSAGE, type, data, size);
         }
@@ -304,8 +311,10 @@ namespace Duels
             return (uint32_t)data[pos] | ((uint32_t)data[pos + 1] << 8) | ((uint32_t)data[pos + 2] << 16) | ((uint32_t)data[pos + 3] << 24);
         }
 
-        // A demo file's records (any version of the game's), the first the header.
-        static bool ReadRecords(const std::string &path, std::vector<DemoRecord> &records, std::string &message)
+        // A demo file's records (any version of the game's), the first the header; with a limit, those in its first bytes
+        // only (its header: 4096).
+        static bool ReadRecords(const std::string &path, std::vector<DemoRecord> &records, std::string &message,
+                                size_t limit = (size_t)-1)
         {
             FILE *file = std::fopen(path.c_str(), "rb");
             if (!file)
@@ -353,6 +362,7 @@ namespace Duels
                     result = inflate(&z, Z_NO_FLUSH);
                     data.insert(data.end(), buffer, buffer + (sizeof(buffer) - z.avail_out));
                     if (z.avail_in == 0 && z.avail_out != 0) break;   // a demo cut short: what is there
+                    if (data.size() >= limit) break;
                 }
                 inflateEnd(&z);
             }
@@ -380,26 +390,48 @@ namespace Duels
             return true;
         }
 
+        // A demo's header: who recorded it, the players, when.
+        struct Header
+        {
+            uint16_t protocol = 0;
+            std::string version;
+            uint8_t recorder = FROM_HOST;
+            std::string hostName, guestName;
+            uint32_t startUtc = 0;
+        };
+
+        static bool ReadHeader(const DemoRecord &record, Header &h)
+        {
+            Reader r(record.data);
+            h.protocol = r.U16();
+            h.version = r.Str();
+            r.Str();   // the build
+            r.Str();   // the game data's hash
+            h.recorder = r.U8();
+            h.hostName = r.Str();
+            h.guestName = r.Str();
+            h.startUtc = r.U32();
+            return r.Ok();
+        }
+
         static bool ReadDemo(const std::string &path, ReplayState &out, std::string &message)
         {
             if (!ReadRecords(path, out.records, message)) return false;
-            Reader header(out.records[0].data);
-            uint16_t protocol = header.U16();
-            std::string version = header.Str(), build = header.Str(), dataHash = header.Str();
-            out.recorder = header.U8();
-            out.hostName = header.Str();
-            out.guestName = header.Str();
-            if (!header.Ok())
+            Header h;
+            if (!ReadHeader(out.records[0], h))
             {
                 message = "the demo's header is broken";
                 return false;
             }
-            if (protocol != Net::PROTOCOL_VERSION)
+            if (h.protocol != Net::PROTOCOL_VERSION)
             {
-                message = "the demo is from protocol " + std::to_string(protocol) + " (" + version + "), this game plays " +
+                message = "the demo is from protocol " + std::to_string(h.protocol) + " (" + h.version + "), this game plays " +
                           std::to_string(Net::PROTOCOL_VERSION);
                 return false;
             }
+            out.recorder = h.recorder;
+            out.hostName = h.hostName;
+            out.guestName = h.guestName;
             out.path = path;
             return true;
         }
@@ -426,21 +458,16 @@ namespace Duels
         {
             std::vector<DemoRecord> records;
             if (!ReadRecords(info.path, records, info.problem)) return;
-            Reader header(records[0].data);
-            uint16_t protocol = header.U16();
-            std::string version = header.Str();
-            header.Str();
-            header.Str();
-            header.U8();
-            info.hostName = header.Str();
-            info.guestName = header.Str();
-            info.startUtc = header.U32();
-            if (!header.Ok())
+            Header h;
+            if (!ReadHeader(records[0], h))
             {
                 info.problem = "the demo's header is broken";
                 return;
             }
-            if (protocol != Net::PROTOCOL_VERSION) info.problem = "from version " + version + ": this game plays only its own version's demos";
+            info.hostName = h.hostName;
+            info.guestName = h.guestName;
+            info.startUtc = h.startUtc;
+            if (h.protocol != Net::PROTOCOL_VERSION) info.problem = "from version " + h.version + ": this game plays only its own version's demos";
             for (const DemoRecord &record : records)
             {
                 if (record.kind == KIND_MESSAGE && record.type == LIST_MSG_LOADOUT)
@@ -490,74 +517,256 @@ namespace Duels
             Log("Demo: %s", on ? "the next matches are recorded" : "the next matches aren't recorded");
         }
 
-        bool StartReplay(const std::string &path, std::string &message)
+        static uint8_t Other(uint8_t side)
         {
-            if (g.file) End("a replay begins");
-            ReplayState replay;
-            if (!ReadDemo(NewestDemo(path), replay, message)) return false;
-            const std::string opponent = replay.recorder == FROM_HOST ? replay.guestName : replay.hostName;
-            Log("Demo: replaying %s (%u records, %.0f s; recorded by the %s, %s vs %s)", path.c_str(), (unsigned)replay.records.size(),
-                replay.records.back().ms / 1000.0, replay.recorder == FROM_HOST ? "host" : "guest", replay.hostName.c_str(),
-                replay.guestName.c_str());
+            return side == FROM_HOST ? FROM_GUEST : FROM_HOST;
+        }
+
+        static const char *SideName(uint8_t side)
+        {
+            return side == FROM_HOST ? "host" : "guest";
+        }
+
+        // The other player's demo of the same match (roadmap BA): its full states join the replay's, so that it can show
+        // that player's side too. It is the same match when its full states are the states the replay's demo got from
+        // that player (each one's time of sending and number, its first 10 bytes, the same). Its times become the
+        // replay's by the smallest difference between a state's writing there and its coming here (the demos' starts
+        // apart, and the fastest delivery).
+        static bool JoinPartner(ReplayState &replay, const std::string &path, std::string &why)
+        {
+            std::vector<DemoRecord> records;
+            Header h;
+            if (!ReadRecords(path, records, why)) return false;
+            if (!ReadHeader(records[0], h) || h.protocol != Net::PROTOCOL_VERSION)
+            {
+                why = "not a demo of this version";
+                return false;
+            }
+            if (h.recorder == replay.recorder || h.hostName != replay.hostName || h.guestName != replay.guestName)
+            {
+                why = "not the other player's demo of this match";
+                return false;
+            }
+            const uint8_t side = h.recorder;
+            std::unordered_map<std::string, uint32_t> received;
+            for (const DemoRecord &record : replay.records)
+            {
+                if (record.kind == KIND_MESSAGE && record.type == MSG_STATE && record.from == side && record.data.size() >= 10)
+                    received.emplace(std::string((const char *)record.data.data(), 10), record.ms);
+            }
+            int64_t offset = 0;
+            size_t full = 0, matched = 0;
+            for (const DemoRecord &record : records)
+            {
+                if (record.kind != KIND_FULL_STATE || record.from != side || record.data.size() < 10) continue;
+                ++full;
+                auto found = received.find(std::string((const char *)record.data.data(), 10));
+                if (found == received.end()) continue;
+                int64_t difference = (int64_t)found->second - (int64_t)record.ms;
+                offset = matched == 0 ? difference : std::min(offset, difference);
+                ++matched;
+            }
+            if (matched < 10 || matched * 2 < std::min(received.size(), full))
+            {
+                why = "not the same match (" + std::to_string(matched) + " of its " + std::to_string(full) + " states came to this one)";
+                return false;
+            }
+            const int64_t end = replay.records.back().ms;
+            size_t joined = 0;
+            for (DemoRecord &record : records)
+            {
+                if (record.kind != KIND_FULL_STATE || record.from != side) continue;
+                int64_t ms = (int64_t)record.ms + offset;
+                if (ms < 0 || ms >= end) continue;
+                record.ms = (uint32_t)ms;
+                replay.records.push_back(std::move(record));
+                ++joined;
+            }
+            // In time order: the header stays first; records of one time keep their order (the demo's own first).
+            std::stable_sort(replay.records.begin() + 1, replay.records.end(),
+                             [](const DemoRecord &a, const DemoRecord &b) { return a.ms < b.ms; });
+            replay.partnerPath = path;
+            Log("Demo: joined %s: %u full states of the %s's ship (%u of %u matched, %+d ms)", path.c_str(), (unsigned)joined,
+                SideName(side), (unsigned)matched, (unsigned)full, (int)offset);
+            return true;
+        }
+
+        // The other player's demo of the match in the same folder, if one is there: the players' names in its file name,
+        // recorded by the other one, begun within a quarter of an hour (their clocks may be apart), then the same match
+        // by its states (JoinPartner).
+        static void FindPartner(ReplayState &replay)
+        {
+            namespace fs = boost::filesystem;
+            boost::system::error_code error;
+            const fs::path own(replay.path);
+            fs::path folder = own.parent_path();
+            if (folder.empty()) folder = ".";
+            Header ours;
+            if (!ReadHeader(replay.records[0], ours)) return;
+            const std::string players = "-" + FileWord(replay.hostName) + "-vs-" + FileWord(replay.guestName);
+            for (fs::directory_iterator it(folder, error), end; !error && it != end; it.increment(error))
+            {
+                const std::string name = it->path().filename().string();
+                if (name.size() <= 8 || name.compare(name.size() - 8, 8, ".ftldemo") != 0) continue;
+                if (name == own.filename().string() || name.find(players) == std::string::npos) continue;
+                std::vector<DemoRecord> head;
+                std::string why;
+                Header h;
+                if (!ReadRecords(it->path().string(), head, why, 4096) || !ReadHeader(head[0], h)) continue;
+                if (h.recorder == replay.recorder || h.hostName != replay.hostName || h.guestName != replay.guestName) continue;
+                if (std::llabs((long long)h.startUtc - (long long)ours.startUtc) > 900) continue;
+                if (JoinPartner(replay, it->path().string(), why)) return;
+                Log("Demo: %s isn't the other demo of this match (%s)", name.c_str(), why.c_str());
+            }
+        }
+
+        // A demo for a replay, and the other player's demo of the match if there is one (`partner`: that one).
+        static bool Load(const std::string &path, const std::string &partner, ReplayState &out, std::string &message)
+        {
+            if (!ReadDemo(NewestDemo(path), out, message)) return false;
+            if (!partner.empty())
+            {
+                std::string why, partnerPath = NewestDemo(partner);
+                if (!JoinPartner(out, partnerPath, why))
+                {
+                    message = partnerPath + " doesn't join: " + why;
+                    return false;
+                }
+            }
+            else
+            {
+                FindPartner(out);
+            }
+            for (const DemoRecord &record : out.records)
+            {
+                if (record.from > FROM_GUEST) continue;
+                if (record.kind == KIND_FULL_STATE) out.hasFull[record.from] = true;
+                else if (record.kind == KIND_MESSAGE && record.type == MSG_STATE) out.hasSeen[record.from] = true;
+            }
+            return true;
+        }
+
+        // A loaded demo from its start, from one player's side (BA; the recorder's when the other's full states aren't
+        // there). Each start says so in the log ("Demo: replaying": tools/compare-replay.py counts from the last).
+        static void Run(ReplayState &&replay, uint8_t viewed, bool fullSensors)
+        {
+            if (viewed > FROM_GUEST || !replay.hasFull[viewed]) viewed = replay.recorder;
+            const uint8_t other = Other(viewed);
+            const std::string opponent = other == FROM_HOST ? replay.hostName : replay.guestName;
+            Log("Demo: replaying %s (%u records, %.0f s; recorded by the %s, %s vs %s; the %s's side%s%s)", replay.path.c_str(),
+                (unsigned)replay.records.size(), replay.records.back().ms / 1000.0, SideName(replay.recorder), replay.hostName.c_str(),
+                replay.guestName.c_str(), SideName(viewed), fullSensors && replay.hasFull[other] ? ", full sensors" : "",
+                replay.partnerPath.empty() ? "" : ", with the other's demo");
             // A replay that runs ends first (another one, or this one going back to its start).
             Net::BeginReplay(opponent);
             g_replay = std::move(replay);
             g_replay.active = true;
+            g_replay.viewed = viewed;
+            g_replay.fullSensors = fullSensors && g_replay.hasFull[other];
             // Its clock: FTL's world time from now on (DuelsTrace.h); the demo starts now.
             ReplayClockOn();
             g_replay.startMs = WallMs();
-            // The recorded clocks against ours, from the first state each side sent: the recorder's full states went as
-            // they were written; the opponent's states as they came (their latency in it, as the recorder saw them).
-            // The match's times are the host's: the recorder's own, if it hosted.
-            double recorderClock = 0.0, peerClock = 0.0;
-            bool haveRecorder = false, havePeer = false;
+            // The recorded clocks against ours, from each player's first state: a recorder's own states were written as
+            // they went, the other's came with their latency (as the recorder saw them), joined full states with the
+            // fastest delivery's. The opponent's is the other player's; the match's times are the host's.
+            double clock[2] = {0.0, 0.0};
+            bool have[2] = {false, false};
             for (const DemoRecord &record : g_replay.records)
             {
-                if (record.data.size() < sizeof(double)) continue;
-                bool ownState = record.kind == KIND_FULL_STATE && record.from == g_replay.recorder && !haveRecorder;
-                bool peerState = record.kind == KIND_MESSAGE && record.type == MSG_STATE && record.from != g_replay.recorder && !havePeer;
-                if (!ownState && !peerState) continue;
+                bool state = record.kind == KIND_FULL_STATE || (record.kind == KIND_MESSAGE && record.type == MSG_STATE);
+                if (!state || record.from > FROM_GUEST || have[record.from] || record.data.size() < sizeof(double)) continue;
                 double sentAt;
                 std::memcpy(&sentAt, record.data.data(), sizeof(sentAt));
-                double clock = sentAt - (g_replay.startMs + record.ms);
-                if (ownState)
-                {
-                    recorderClock = clock;
-                    haveRecorder = true;
-                }
-                else
-                {
-                    peerClock = clock;
-                    havePeer = true;
-                }
-                if (haveRecorder && havePeer) break;
+                clock[record.from] = sentAt - (g_replay.startMs + record.ms);
+                have[record.from] = true;
+                if (have[FROM_HOST] && have[FROM_GUEST]) break;
             }
-            Net::SetReplayClock(peerClock);
-            Net::SetReplayHostClock(g_replay.recorder == FROM_HOST ? recorderClock : peerClock);
-            // Its start for the controls: before our ship's first state the ships aren't fitted yet.
+            Net::SetReplayClock(clock[other]);
+            Net::SetReplayHostClock(clock[FROM_HOST]);
+            // Its start for the controls: before the shown player's first state the ships aren't fitted yet.
             for (const DemoRecord &record : g_replay.records)
             {
-                if (record.kind != KIND_FULL_STATE || record.from != g_replay.recorder) continue;
+                if (record.kind != KIND_FULL_STATE || record.from != viewed) continue;
                 g_replay.firstMs = record.ms;
                 break;
             }
-            message = "replaying " + path + " (" + std::to_string(g_replay.records.size()) + " records, " +
-                      std::to_string((int)(g_replay.records.back().ms / 1000)) + " s), " + opponent + " as the opponent";
+        }
+
+        // view: FROM_HOST or FROM_GUEST, or -1 for the recorder's side.
+        static bool Start(const std::string &path, const std::string &partner, int view, std::string &message)
+        {
+            if (g.file) End("a replay begins");
+            ReplayState replay;
+            if (!Load(path, partner, replay, message)) return false;
+            const uint8_t viewed = view == FROM_HOST || view == FROM_GUEST ? (uint8_t)view : replay.recorder;
+            Run(std::move(replay), viewed, false);
+            const std::string opponent = Other(g_replay.viewed) == FROM_HOST ? g_replay.hostName : g_replay.guestName;
+            message = "replaying " + g_replay.path + " (" + std::to_string(g_replay.records.size()) + " records, " +
+                      std::to_string((int)(g_replay.records.back().ms / 1000)) + " s), the " + SideName(g_replay.viewed) + "'s side, " +
+                      opponent + " as the opponent" + (g_replay.partnerPath.empty() ? "" : ", with the other's demo");
             return true;
+        }
+
+        bool StartReplay(const std::string &path, std::string &message)
+        {
+            return Start(path, "", -1, message);
+        }
+
+        // The replay from its start again as it was loaded (a seek back, the other side): nothing is read again, and the
+        // feed stays quiet (ReplayRestarting); its lines are from later in the demo, its own come again as it runs.
+        static void Restart(uint8_t viewed, bool fullSensors)
+        {
+            ReplayState replay;
+            replay.path = g_replay.path;
+            replay.hostName = g_replay.hostName;
+            replay.guestName = g_replay.guestName;
+            replay.recorder = g_replay.recorder;
+            replay.partnerPath = g_replay.partnerPath;
+            for (int side = 0; side < 2; ++side)
+            {
+                replay.hasFull[side] = g_replay.hasFull[side];
+                replay.hasSeen[side] = g_replay.hasSeen[side];
+            }
+            replay.records = std::move(g_replay.records);
+            const double speed = g_replay.speed;
+            g_replay.active = false;
+            g_replay.records.clear();
+            g_restarting = true;
+            Run(std::move(replay), viewed, fullSensors);
+            g_restarting = false;
+            g_replay.speed = speed;
+            Console::ClearFeed();
         }
 
         static const uint8_t MSG_CHAT = 16, MSG_LOADOUT = 17, MSG_READY = 18, MSG_SHOT = 20, MSG_RESULT = 21, MSG_SHOT_DOWNED = 23,
                              MSG_DRONE_SHOT = 25, MSG_CREW_ROSTER = 26, MSG_SETTINGS = 27, MSG_BOARD = 32, MSG_RECALL = 33,
                              MSG_MATCH = 38, MSG_MATCH_EVENT = 39;
 
+        // The other ship follows the other player's full states (full sensors, or a demo without their states as they
+        // went) or their states as they went.
+        static bool OtherInFull()
+        {
+            return g_replay.fullSensors || !g_replay.hasSeen[Other(g_replay.viewed)];
+        }
+
         // One record, its time come.
         static void Play(const DemoRecord &record)
         {
+            const bool fromViewed = record.from == g_replay.viewed;
             if (record.kind == KIND_FULL_STATE)
             {
-                // Our ship (the recorder's) follows its own states (stage 3: the ship, its crew and rooms).
-                Match::ReplayOwnState(record.data.data(), record.data.size());
-                ++g_replay.ownStates;
+                // Our ship (the shown player's) follows its own states (stage 3: the ship, its crew and rooms); the other
+                // ship its own with full sensors (BA), as if they came.
+                if (fromViewed)
+                {
+                    Match::ReplayOwnState(record.data.data(), record.data.size());
+                    ++g_replay.ownStates;
+                }
+                else if (OtherInFull())
+                {
+                    Net::Deliver(MSG_STATE, record.data.data(), record.data.size());
+                    ++g_replay.delivered;
+                }
                 return;
             }
             if (record.kind == KIND_MARKER)
@@ -577,10 +786,21 @@ namespace Duels
                 return;
             }
             if (record.kind != KIND_MESSAGE) return;
-            bool fromRecorder = record.from == g_replay.recorder;
-            bool fromHost = record.from == FROM_HOST;
-            bool matchFlow = record.type == MSG_SETTINGS || record.type == MSG_MATCH || record.type == MSG_MATCH_EVENT;
-            if (fromRecorder)
+            if (record.type == MSG_STATE)
+            {
+                // A state as it went: the other ship's as the shown player's game got it (ours follows its full states).
+                if (fromViewed || OtherInFull())
+                {
+                    ++g_replay.held;
+                    return;
+                }
+                Net::Deliver(record.type, record.data.data(), record.data.size());
+                ++g_replay.delivered;
+                return;
+            }
+            const bool fromHost = record.from == FROM_HOST;
+            const bool matchFlow = record.type == MSG_SETTINGS || record.type == MSG_MATCH || record.type == MSG_MATCH_EVENT;
+            if (fromViewed)
             {
                 if (record.type == MSG_LOADOUT)
                 {
@@ -615,7 +835,7 @@ namespace Duels
                 else if (record.type == MSG_CHAT)
                 {
                     // Its own chat lines under its name (the opponent's come under theirs, as received).
-                    Match::ReplayChat(g_replay.recorder == FROM_HOST ? g_replay.hostName : g_replay.guestName, record.data.data(),
+                    Match::ReplayChat(g_replay.viewed == FROM_HOST ? g_replay.hostName : g_replay.guestName, record.data.data(),
                                       record.data.size());
                     ++g_replay.delivered;
                 }
@@ -630,7 +850,7 @@ namespace Duels
                 }
                 return;
             }
-            bool shown = record.type == MSG_CHAT || record.type == MSG_LOADOUT || record.type == MSG_READY || record.type == MSG_STATE ||
+            bool shown = record.type == MSG_CHAT || record.type == MSG_LOADOUT || record.type == MSG_READY ||
                          record.type == MSG_CREW_ROSTER || record.type == MSG_SHOT || record.type == MSG_RESULT ||
                          record.type == MSG_SHOT_DOWNED || record.type == MSG_DRONE_SHOT || record.type == MSG_BOARD ||
                          record.type == MSG_RECALL || (matchFlow && fromHost);
@@ -702,7 +922,8 @@ namespace Duels
             double t = WallMs() - g_replay.startMs;
             out << "replay: " << g_replay.path << ", " << (int)(t / 1000.0) << " of " << (int)(g_replay.records.back().ms / 1000) << " s"
                 << (g_replay.ended ? " (at its end)" : g_replay.paused ? " (paused)" : "") << (g_replay.seekTo >= 0.0 ? " (seeking)" : "")
-                << ", speed " << g_replay.speed
+                << ", speed " << g_replay.speed << ", the " << SideName(g_replay.viewed) << "'s side"
+                << (g_replay.fullSensors ? ", full sensors" : "") << (g_replay.partnerPath.empty() ? "" : ", both demos")
                 << ", record " << g_replay.next << " of " << g_replay.records.size() << ", " << g_replay.delivered << " played, "
                 << g_replay.held << " held";
             return out.str();
@@ -715,18 +936,7 @@ namespace Duels
             target = std::max(std::min(g_replay.firstMs, length), std::min(target, length));
             double position = WallMs() - g_replay.startMs;
             bool paused = g_replay.paused && !g_replay.ended;   // from the end: on, playing
-            if (target < position)
-            {
-                std::string path = g_replay.path;
-                double speed = g_replay.speed;
-                g_restarting = true;
-                bool started = StartReplay(path, message);
-                g_restarting = false;
-                if (!started) return false;
-                g_replay.speed = speed;
-                // The feed's lines are from later in the demo; its own come again as it runs there.
-                Console::ClearFeed();
-            }
+            if (target < position) Restart(g_replay.viewed, g_replay.fullSensors);
             g_replay.seekTo = target;
             g_replay.pauseAfterSeek = paused;
             g_replay.paused = false;
@@ -748,6 +958,9 @@ namespace Duels
             v.hostName = g_replay.hostName;
             v.guestName = g_replay.guestName;
             v.recorderHost = g_replay.recorder == FROM_HOST;
+            v.viewedHost = g_replay.viewed == FROM_HOST;
+            v.bothSides = g_replay.hasFull[FROM_HOST] && g_replay.hasFull[FROM_GUEST];
+            v.fullSensors = g_replay.fullSensors;
             v.ranked = g_replay.ranked;
             v.unrankedWhy = g_replay.unrankedWhy;
             return v;
@@ -777,6 +990,55 @@ namespace Duels
             if (!g_replay.active) return;
             std::string message;
             if (Seek(0.0, message)) g_replay.pauseAfterSeek = true;
+        }
+
+        void ReplaySwitchView()
+        {
+            if (!g_replay.active) return;
+            const uint8_t side = Other(g_replay.viewed);
+            if (!g_replay.hasFull[side])
+            {
+                Console::Feed("The other player's view needs their demo of this match in the same folder.");
+                return;
+            }
+            // From the start again from that side, on to where it was (or was going), paused or playing as it was.
+            const bool seeking = g_replay.seekTo >= 0.0;
+            const double target = seeking ? g_replay.seekTo : std::min(WallMs() - g_replay.startMs, (double)g_replay.records.back().ms);
+            const bool paused = seeking ? g_replay.pauseAfterSeek : g_replay.paused && !g_replay.ended;
+            Restart(side, g_replay.fullSensors);
+            g_replay.seekTo = std::max(g_replay.firstMs, target);
+            g_replay.pauseAfterSeek = paused;
+            g_replay.paused = false;
+            Log("Demo: the %s's side, on to %.1f s", SideName(side), g_replay.seekTo / 1000.0);
+        }
+
+        void ReplaySetFullSensors(bool on)
+        {
+            if (!g_replay.active || on == g_replay.fullSensors) return;
+            const uint8_t other = Other(g_replay.viewed);
+            if (on && !g_replay.hasFull[other])
+            {
+                Console::Feed("Full sensors need the other player's demo of this match in the same folder.");
+                return;
+            }
+            g_replay.fullSensors = on;
+            // The other ship by the chosen states at once, the last one before now (paused, the next would wait): it
+            // counts even when older than the last one taken (Match::ReplayRestate).
+            for (size_t i = std::min(g_replay.next, g_replay.records.size()); i-- > 1;)
+            {
+                const DemoRecord &record = g_replay.records[i];
+                bool chosen = OtherInFull() ? record.kind == KIND_FULL_STATE : (record.kind == KIND_MESSAGE && record.type == MSG_STATE);
+                if (record.from != other || !chosen) continue;
+                Match::ReplayRestate();
+                Net::Deliver(MSG_STATE, record.data.data(), record.data.size());
+                break;
+            }
+            Log("Demo: full sensors %s", on ? "on (the other ship as it was, all in sight)" : "off (the other ship as the shown player saw it)");
+        }
+
+        bool ReplayFullSensors()
+        {
+            return g_replay.active && g_replay.fullSensors;
         }
 
         void ReplaySeekTo(double ms)
@@ -875,9 +1137,69 @@ namespace Duels
                 message = "replay stopped";
                 return true;
             }
-            std::string path = cmd.raw.size() > 1 ? cmd.raw[1] : "";
-            for (size_t i = 2; i < cmd.raw.size(); ++i) path += " " + cmd.raw[i];
-            return StartReplay(path, message);
+            if (ArgIs(cmd, 1, "view"))
+            {
+                const bool host = ArgIs(cmd, 2, "host");
+                if (!g_replay.active || (!host && !ArgIs(cmd, 2, "guest")))
+                {
+                    message = "usage: replay view host|guest (while a replay runs)";
+                    return false;
+                }
+                const uint8_t side = host ? FROM_HOST : FROM_GUEST;
+                if (side != g_replay.viewed)
+                {
+                    if (!g_replay.hasFull[side])
+                    {
+                        message = "only the recorder's side: the other player's demo of the match isn't joined";
+                        return false;
+                    }
+                    ReplaySwitchView();
+                }
+                message = std::string("replay from the ") + SideName(side) + "'s side";
+                return true;
+            }
+            if (ArgIs(cmd, 1, "sensors"))
+            {
+                const bool full = ArgIs(cmd, 2, "full");
+                if (!g_replay.active || (!full && !ArgIs(cmd, 2, "seen")))
+                {
+                    message = "usage: replay sensors full|seen (while a replay runs)";
+                    return false;
+                }
+                if (full && !g_replay.hasFull[Other(g_replay.viewed)])
+                {
+                    message = "full sensors need the other player's demo of the match";
+                    return false;
+                }
+                ReplaySetFullSensors(full);
+                message = full ? "replay with full sensors" : "replay as the shown player saw it";
+                return true;
+            }
+            // replay <file> [with <file>] [view host|guest]: the words part it (a file's name may have spaces).
+            std::string path, partner, view;
+            std::string *part = &path;
+            for (size_t i = 1; i < cmd.raw.size() && i < cmd.args.size(); ++i)
+            {
+                if (cmd.args[i] == "with")
+                {
+                    part = &partner;
+                    continue;
+                }
+                if (cmd.args[i] == "view")
+                {
+                    part = &view;
+                    continue;
+                }
+                if (!part->empty()) *part += " ";
+                *part += part == &view ? cmd.args[i] : cmd.raw[i];
+            }
+            const int side = view == "host" ? FROM_HOST : view == "guest" ? FROM_GUEST : -1;
+            if (path.empty() || (!view.empty() && side < 0))
+            {
+                message = "usage: replay <file> [with <file>] [view host|guest]";
+                return false;
+            }
+            return Start(path, partner, side, message);
         }
 
         bool RunVerb(const Command &cmd, std::string &message)

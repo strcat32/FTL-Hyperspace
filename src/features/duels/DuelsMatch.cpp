@@ -2379,6 +2379,15 @@ namespace Duels
 
         void ClampVision(ShipManager *ship)
         {
+            // A replay with full sensors (roadmap BA): every room of both ships lit (FTL draws the crew in lit rooms).
+            if (ship && Demo::ReplayFullSensors() && (ship == G_->GetShipManager(0) || ship == G_->GetShipManager(1)))
+            {
+                for (Room *room : ship->ship.vRoomList)
+                {
+                    if (room) room->bBlackedOut = false;
+                }
+                return;
+            }
             if (!ship || ship->iShipId != 1 || !Net::IsConnected() || !g_match.replicaReady || ship != G_->GetShipManager(1)) return;
             if (g_match.peerVision & Vision::SEES_INTERIOR) return;
             for (Room *room : ship->ship.vRoomList)
@@ -2387,6 +2396,11 @@ namespace Duels
                 if (id < 0 || (id < (int)ship->tempVision.size() && ship->tempVision[id])) continue;
                 room->bBlackedOut = true;
             }
+        }
+
+        bool FullSensors(const ShipManager *ship)
+        {
+            return ship && ship->iShipId == 0 && Demo::ReplayFullSensors() && ship == G_->GetShipManager(0);
         }
 
         bool RolledDodge(ShipManager *ship, bool &dodged)
@@ -2975,6 +2989,11 @@ namespace Duels
             if (!r.Ok() || text.empty()) return;
             Log("Match: replay: chat from %s: %s", name.c_str(), text.c_str());
             Console::Chat(name, text);
+        }
+
+        void ReplayRestate()
+        {
+            g_match.havePeerState = false;
         }
 
         class Listener : public Net::Listener

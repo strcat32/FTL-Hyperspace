@@ -19,13 +19,16 @@ namespace Duels
         // The buttons show a media player's symbols, not words (roadmap BC); the time line has the room they left.
         static const float W_ICON = 30.f, W_SPEED = 42.f, W_LINE = 212.f;
         static const double STEP_MS = 10000.0;
+        // Under the enemy window (its bottom stays where FTL has it, DuelsView.cpp), above the drone box (from y 615) and
+        // left of the subsystems (from x 1030): whose side is shown, and full sensors (roadmap BA).
+        static const float SIDE_X = 852.f, SIDE_Y = 586.f, SIDE_H = 24.f, W_VIEW = 118.f, W_SENSORS = 118.f;
 
         enum class Icon { Stop, Back, Play, Pause, On };
 
         struct State
         {
             int mouseX = 0, mouseY = 0;
-            Style::Box stop, back, play, on, speed, line;
+            Style::Box stop, back, play, on, speed, line, view, sensors;
             double lengthMs = 0.0;
             bool shown = false;
         };
@@ -64,6 +67,18 @@ namespace Duels
             box.h = H;
             bool hover = box.Contains(g.mouseX, g.mouseY);
             Style::Button(x, BAR_Y, w, H, label, 12, hover ? Style::Look::Hover : Style::Look::Idle);
+        }
+
+        // A button under the enemy window (BA): off (grey) when the demo has one side only, held down while on.
+        static void SideButton(Style::Box &box, float x, float w, const std::string &label, bool available, bool on)
+        {
+            box.x = x;
+            box.y = SIDE_Y;
+            box.w = w;
+            box.h = SIDE_H;
+            bool hover = box.Contains(g.mouseX, g.mouseY);
+            Style::Look look = !available ? Style::Look::Off : on ? Style::Look::Pressed : hover ? Style::Look::Hover : Style::Look::Idle;
+            Style::Button(x, SIDE_Y, w, SIDE_H, label, 12, look);
         }
 
         // A button with a symbol in FTL's dark button letters: a box (stop), two triangles to the left (back), one
@@ -122,7 +137,7 @@ namespace Duels
         void Render()
         {
             g.shown = false;
-            g.stop.w = g.back.w = g.play.w = g.on.w = g.speed.w = g.line.w = 0.f;
+            g.stop.w = g.back.w = g.play.w = g.on.w = g.speed.w = g.line.w = g.view.w = g.sensors.w = 0.f;
             Demo::ReplayView v = Demo::GetReplayView();
             if (!v.active || !InGame()) return;
             g.shown = true;
@@ -147,6 +162,9 @@ namespace Duels
             CSurface::GL_SetColor(GL_Color(1.f, 1.f, 1.f, 1.f));
             freetype::easy_print(12, x + 6.f, BAR_Y + 8.f, time);
             CSurface::GL_SetColor(COLOR_WHITE);
+            // Whose side the screen shows, and full sensors: both need both players' full states (BA).
+            SideButton(g.view, SIDE_X, W_VIEW, v.viewedHost ? "HOST'S VIEW" : "GUEST'S VIEW", v.bothSides, false);
+            SideButton(g.sensors, SIDE_X + W_VIEW + GAP, W_SENSORS, "FULL SENSORS", v.bothSides, v.fullSensors);
         }
 
         bool LButtonDown(int x, int y)
@@ -157,6 +175,8 @@ namespace Duels
             else if (g.play.Contains(x, y)) Demo::ReplayPlayPause();
             else if (g.on.Contains(x, y)) Demo::ReplayStep(STEP_MS);
             else if (g.speed.Contains(x, y)) Demo::ReplaySpeedStep(0);
+            else if (g.view.Contains(x, y)) Demo::ReplaySwitchView();
+            else if (g.sensors.Contains(x, y)) Demo::ReplaySetFullSensors(!Demo::ReplayFullSensors());
             else if (g.line.Contains(x, y))
             {
                 double fraction = (x - (g.line.x + 6.f)) / std::max(1.f, g.line.w - 12.f);
@@ -183,6 +203,8 @@ namespace Duels
             case SDLK_UP: Demo::ReplaySpeedStep(1); return true;
             case SDLK_DOWN: Demo::ReplaySpeedStep(-1); return true;
             case SDLK_HOME: Demo::ReplaySeekTo(0.0); return true;
+            case SDLK_v: Demo::ReplaySwitchView(); return true;
+            case SDLK_f: Demo::ReplaySetFullSensors(!Demo::ReplayFullSensors()); return true;
             case SDLK_ESCAPE: return false;   // FTL's menu
             default: return true;             // nothing else reaches the game in a replay
             }
@@ -191,7 +213,8 @@ namespace Duels
         bool ControlCentre(const std::string &name, int &x, int &y)
         {
             const Style::Box *box = name == "stop" ? &g.stop : name == "back" ? &g.back : name == "play" ? &g.play
-                                  : name == "on" ? &g.on : name == "speed" ? &g.speed : name == "line" ? &g.line : nullptr;
+                                  : name == "on" ? &g.on : name == "speed" ? &g.speed : name == "line" ? &g.line
+                                  : name == "view" ? &g.view : name == "sensors" ? &g.sensors : nullptr;
             if (!g.shown || !box || box->w <= 0.f) return false;
             x = (int)(box->x + box->w / 2.f);
             y = (int)(box->y + box->h / 2.f);
