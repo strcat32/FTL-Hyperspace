@@ -43,6 +43,7 @@ namespace Duels
             std::string name = "player";
             std::string version;
             std::string build;
+            std::string dataHash;      // the game's data (roadmap 4.1)
 
             Phase phase = Phase::Idle;
             bool host = false;
@@ -176,6 +177,7 @@ namespace Duels
             writer.U8(g_session.debug ? 1 : 0);   // flags: 1 = debug mode
             writer.U32((uint32_t)(g_session.matchToken & 0xffffffffu));   // the match to continue (0: a new one)
             writer.U32((uint32_t)(g_session.matchToken >> 32));
+            writer.Str(g_session.dataHash);
         }
 
         // Pushes the link's packets through the simulated conditions to the socket (through the relay: inside its
@@ -323,6 +325,7 @@ namespace Duels
             uint8_t flags = reader.U8();
             uint64_t tokenLow = reader.U32();
             uint64_t tokenHigh = reader.U32();
+            std::string dataHash = reader.Str();
             if (!reader.Ok())
             {
                 problem = "malformed handshake";
@@ -336,6 +339,17 @@ namespace Duels
                 snprintf(buffer, sizeof(buffer), "version mismatch: FTL: Duels %s (protocol %u) vs %s (protocol %u)",
                          g_session.version.c_str(), (unsigned)PROTOCOL_VERSION, version.c_str(), (unsigned)protocol);
                 problem = buffer;
+                return false;
+            }
+            if (dataHash != g_session.dataHash)
+            {
+                // Changed weapons, drones, augments or ships would change the fight (roadmap 4.1, layer 5). (The text
+                // goes to the other side too: it names the host's and the guest's.)
+                std::string ours = g_session.dataHash.empty() ? std::string("-") : g_session.dataHash;
+                std::string theirs = dataHash.empty() ? std::string("-") : dataHash;
+                bool host = IsHost();
+                problem = "the game's data differs (weapons, drones, augments or player ships): the host's " + (host ? ours : theirs) +
+                          ", the guest's " + (host ? theirs : ours);
                 return false;
             }
             if (build != g_session.build)
@@ -441,6 +455,8 @@ namespace Duels
             g_session.version = version;
             g_session.build = build;
         }
+
+        void SetGameData(const std::string &hash) { g_session.dataHash = hash; }
 
         void SetDebugFlag(bool debug) { g_session.debug = debug; }
         bool PeerDebug() { return g_session.peerDebug; }

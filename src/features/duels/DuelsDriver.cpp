@@ -3,6 +3,7 @@
 #include "Duels.h"
 #include "DuelsConfig.h"
 #include "DuelsConsole.h"
+#include "DuelsFair.h"
 #include "DuelsHud.h"
 #include "DuelsMatch.h"
 #include "DuelsMenu.h"
@@ -745,6 +746,8 @@ namespace Duels
 
         // The Duels window (test verb: open, close, a click in it).
         if (verb == "duels") return Window::RunVerb(cmd.args, message);
+        // Fair play (roadmap 4.1): its state; a lying verdict for tests.
+        if (verb == "fair") return Fair::RunVerb(cmd, message);
         // Ours in the main menu (test verb: the name prompt, the tutorial box, the players' guide).
         if (verb == "menu") return Menu::RunVerb(cmd.args, message);
 

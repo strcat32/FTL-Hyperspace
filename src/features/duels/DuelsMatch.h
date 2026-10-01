@@ -106,6 +106,9 @@ namespace Duels
         // game does, and sends them); each shard of ours at the replica goes to the opponent like a shot. No ship breaks
         // one off once the round is decided (roadmap O: no new shots).
         bool AllowShards(const ShipManager *ship);
+        // ProjectileFactory::ReadyToFire: none of our weapons (nor the AI's, in a match against it) starts a new volley
+        // once the round is decided.
+        bool AllowNewShots(const ProjectileFactory *weapon);
         void OnOwnShard(Projectile *projectile);
 
         // ArtillerySystem::OnLoop: the replica's artillery never fires by itself (FTL would pick its own target); its
@@ -150,6 +153,9 @@ namespace Duels
         bool BeginBombCheck(BombProjectile *bomb, Collideable *other);
         bool ForcedDodge(ShipManager *ship, bool &dodged);
         void ObserveDodge(ShipManager *ship, bool dodged);
+        // The opponent's shot at our ship dodges by both players' hash chains (roadmap 4.1, DuelsFair.h), not by FTL's
+        // own roll; false when it can't (no chains yet): FTL rolls then.
+        bool RolledDodge(ShipManager *ship, bool &dodged);
 
         // Beams (ShipManager::DamageBeam): ours sweeps the replica without damage; the defender's is reported when over.
         void MuteBeamDamage(ShipManager *ship, Damage &damage);

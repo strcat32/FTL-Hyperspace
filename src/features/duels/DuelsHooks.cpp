@@ -398,6 +398,9 @@ HOOK_METHOD_PRIORITY(ProjectileFactory, ReadyToFire, -2000, () -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ProjectileFactory::ReadyToFire -> Begin (DuelsHooks.cpp)\n")
     bool ready = super();
+    // No new volley once the round is decided (roadmap O): a bomb still went 0.4 s after (the opponent's ship no longer
+    // hostile stops the others).
+    if (ready && !Duels::Match::AllowNewShots(this)) return false;
     if (!g_replicaArtilleryLoop || !ready) return ready;
     Duels::Match::OnReplicaArtilleryHeld();
     return false;
@@ -473,7 +476,7 @@ HOOK_METHOD_PRIORITY(ShipManager, GetDodged, -2000, () -> bool)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipManager::GetDodged -> Begin (DuelsHooks.cpp)\n")
     bool dodged = false;
     if (Duels::Match::ForcedDodge(this, dodged)) return dodged;
-    dodged = super();
+    if (!Duels::Match::RolledDodge(this, dodged)) dodged = super();
     Duels::Match::ObserveDodge(this, dodged);
     return dodged;
 }

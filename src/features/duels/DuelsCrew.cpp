@@ -303,6 +303,9 @@ namespace Duels
             CrewMember *crew = replica->AddCrewMemberFromString(puppet.roster.name, puppet.roster.species, false, room, false,
                                                                 puppet.roster.male);
             if (!crew) return;
+            // Its owner's name as it is: FTL shortens one that is too wide ("Frederi."), its owner's game didn't.
+            TextString name(puppet.roster.name, true);
+            crew->SetName(&name, true);
             puppet.crew = crew;
             puppet.placeNow = true;
             puppet.movingToRoom = puppet.movingToSlot = -1;

@@ -13,7 +13,7 @@ namespace Duels
     namespace Net
     {
         static const uint16_t DEFAULT_PORT = 47620;
-        static const uint16_t PROTOCOL_VERSION = 12;   // bump whenever a message changes
+        static const uint16_t PROTOCOL_VERSION = 13;   // bump whenever a message changes
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;
@@ -56,6 +56,9 @@ namespace Duels
         void SetListener(Listener *listener);
         // Sent in the handshake. Versions must match exactly; a different build only gets a warning in the log.
         void SetIdentity(const std::string &playerName, const std::string &version, const std::string &build);
+        // The hash of the game's data that decides a fight (roadmap 4.1, DuelsFair.cpp): both games of a duel must have
+        // the same, or the handshake fails ("" on both sides passes: the netcode tests).
+        void SetGameData(const std::string &hash);
         // Debug mode (Duels.h) goes with the handshake, so the other player knows.
         void SetDebugFlag(bool debug);
         bool PeerDebug();

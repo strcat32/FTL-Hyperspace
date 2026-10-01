@@ -11,6 +11,7 @@
 #include "DuelsConfig.h"
 #include "DuelsCrew.h"
 #include "DuelsDrones.h"
+#include "DuelsFair.h"
 #include "DuelsHacking.h"
 #include "DuelsAi.h"
 #include "DuelsMatch.h"
@@ -147,6 +148,7 @@ namespace Duels
             Pointf downPoint;           // "downed": where it exploded on the defender's screen
             float downDistance = 1.0e9f;
             bool exploded = false;
+            Fair::Value fair;           // our shot chain's value for it (roadmap 4.1)
         };
 
         // The opponent's projectile flying at our ship, created from their shot message.
@@ -173,6 +175,11 @@ namespace Duels
             bool released = false;
             uint8_t outcome = PENDING;
             int damage = 0;
+            // Its dodge (roadmap 4.1): the attacker's chain value, and our roll with both players' values.
+            Fair::Value fair;
+            bool rolled = false, dodged = false;
+            int evasion = 0;
+            Fair::Value fairVerdict;
         };
 
         struct MatchState
@@ -784,13 +791,13 @@ namespace Duels
             Writer w;
             w.F64(now);
             w.U16(++g_match.stateSeq);
-            w.I16((int16_t)ship->ship.hullIntegrity.first);
+            w.I16((int16_t)Fair::CheatHull(ship->ship.hullIntegrity.first));
 
             Shields *shields = ship->shieldSystem;
             w.Bool(shields != nullptr);
             if (shields)
             {
-                w.U8((uint8_t)std::max(0, shields->shields.power.first));
+                w.U8((uint8_t)std::max(0, Fair::CheatShieldLayers(shields->shields.power.first)));
                 w.F32(shields->shields.charger);
                 // The Zoltan super shield (Zoltan ships, the shield overcharger drone): its layers and their cap.
                 w.U8((uint8_t)std::max(0, std::min(shields->shields.power.super.first, 255)));
@@ -804,7 +811,7 @@ namespace Duels
             for (ShipSystem *system : ship->vSystemList)
             {
                 w.U8((uint8_t)system->iSystemType);
-                w.U8((uint8_t)std::max(0, PowerBars(system)));
+                w.U8((uint8_t)std::max(0, system->bNeedsPower && PowerBars(system) > 0 ? Fair::CheatPower(PowerBars(system)) : PowerBars(system)));
                 w.U8((uint8_t)std::max(0, system->healthState.first));
                 w.I8((int8_t)std::max(-1, std::min(system->iLockCount, 127)));
                 if (system->iLockCount > 0)
@@ -842,7 +849,10 @@ namespace Duels
             for (ProjectileFactory *weapon : weapons)
             {
                 w.Bool(weapon->powered);
-                w.F32(weapon->cooldown.first);
+                w.F32(Fair::CheatCharge(weapon->cooldown.first, weapon->cooldown.second));
+                // Its full charge as it is now: a manned weapons system shortens it and FTL rescales the charge with it
+                // (roadmap 4.1's charge check measures the share).
+                w.F32(weapon->cooldown.second);
             }
             // Artillery: each system's charge (power comes with the systems). It fires by itself when charged; its
             // shots come as MSG_SHOT, so the replica's never fires on its own.
@@ -910,12 +920,13 @@ namespace Duels
             bool cloakOn = hasCloak && r.Bool();
             float cloakTime = hasCloak ? r.F32() : 0.f;
             float cloakGoal = hasCloak ? r.F32() : 0.f;
-            struct WeaponState { bool powered; float charge; };
+            struct WeaponState { bool powered; float charge, full; };
             std::vector<WeaponState> weapons(r.U8());
             for (WeaponState &weapon : weapons)
             {
                 weapon.powered = r.Bool();
                 weapon.charge = r.F32();
+                weapon.full = r.F32();
             }
             std::vector<float> artilleryCharge(r.U8());
             for (float &charge : artilleryCharge) charge = r.F32();
@@ -929,6 +940,37 @@ namespace Duels
 
             ShipManager *replica = G_->GetShipManager(1);
             if (!replica || !g_match.replicaReady) return;
+
+            // Checked first, as it came (roadmap 4.1, layer 2): what the rules allow their ship.
+            {
+                Fair::StateCheck check;
+                check.sentAt = sentAt;
+                Rounds::Phase phase = Rounds::GetPhase();
+                check.fight = Rounds::FightBegun() && (phase == Rounds::Phase::Fight || Rounds::Free());
+                check.hull = hull;
+                if (hasShields)
+                {
+                    check.shieldLayers = shieldLayers;
+                    for (const SystemState &state : systems)
+                    {
+                        if (state.id == SYS_SHIELDS) check.shieldPower = state.power;
+                    }
+                }
+                // The systems that draw on the reactor (not the subsystems, not the bays: their bars are their weapons').
+                for (const SystemState &state : systems)
+                {
+                    ShipSystem *system = state.id < SYS_CUSTOM_FIRST ? replica->GetSystem(state.id) : nullptr;
+                    if (system && system->bNeedsPower) check.powerUsed += state.power;
+                }
+                PowerManager *power = PowerManager::GetPowerManager(1);
+                if (power) check.powerAvailable = power->currentPower.second + (batteryOn ? 4 : 0);
+                for (const WeaponState &weapon : weapons)
+                {
+                    check.charges.push_back(weapon.charge);
+                    check.cooldowns.push_back(weapon.full);
+                }
+                Fair::CheckState(check);
+            }
 
             replica->ship.hullIntegrity.first = std::min(hull, replica->ship.hullIntegrity.second);
 
@@ -1037,6 +1079,7 @@ namespace Duels
             shot.spawnMs = now;
             shot.source = source;
             shot.drone = source == SOURCE_DRONE;
+            shot.fair = Fair::NextShot();
             m.out.push_back(shot);
 
             // The flight in our own space before the shot crosses into theirs (the defender's copy leaves the replica
@@ -1096,6 +1139,8 @@ namespace Duels
                 w.F32(crystal ? crystal->heading : projectile->heading);
                 w.F32(crystal ? crystal->entryAngle : projectile->entryAngle);
             }
+            // Its value for the dodge roll (roadmap 4.1).
+            Fair::WriteValue(w, shot.fair);
             Net::Send(MSG_SHOT, w, true);
             ++m.shotsSent;
         }
@@ -1146,6 +1191,14 @@ namespace Duels
             if (phase == Rounds::Phase::Ending || phase == Rounds::Phase::RoundOver || phase == Rounds::Phase::MatchOver) return false;
             // The replica's shards come from its owner's game.
             return !ship || ship->iShipId != 1 || !Net::IsConnected() || !g_match.replicaReady;
+        }
+
+        bool AllowNewShots(const ProjectileFactory *weapon)
+        {
+            if (!weapon || !Rounds::InMatch()) return true;
+            if (weapon->iShipId != 0 && !(weapon->iShipId == 1 && Ai::Active())) return true;
+            Rounds::Phase phase = Rounds::GetPhase();
+            return phase != Rounds::Phase::Ending && phase != Rounds::Phase::RoundOver && phase != Rounds::Phase::MatchOver;
         }
 
         bool ReplicaArtillery(const ArtillerySystem *artillery)
@@ -1248,6 +1301,13 @@ namespace Duels
                 w.F32(point.x);
                 w.F32(point.y);
             }
+            // The dodge as rolled (roadmap 4.1): the evasion and our verdict chain's value, for the attacker to check.
+            w.Bool(shot.rolled);
+            if (shot.rolled)
+            {
+                w.U8((uint8_t)std::max(0, std::min(255, shot.evasion)));
+                Fair::WriteValue(w, shot.fairVerdict);
+            }
             Net::Send(MSG_RESULT, w, true);
             ++g_match.verdictsSent;
             g_match.stateDirty = true;   // the damage should arrive together with the verdict
@@ -1332,6 +1392,8 @@ namespace Duels
                 shardHeading = r.F32();
                 shardEntry = r.F32();
             }
+            Fair::Value fair;
+            Fair::ReadValue(r, fair);
             if (!r.Ok()) return;
             MatchState &m = g_match;
             ++m.shotsReceived;
@@ -1345,6 +1407,7 @@ namespace Duels
             shot.spawnMs = Net::HasClock() ? Net::PeerToLocalTime(peerSpawn) : now;
             shot.source = source;
             shot.drone = fromDrone;
+            shot.fair = fair;
 
             ShipManager *replica = G_->GetShipManager(1);
             ShipManager *own = G_->GetShipManager(0);
@@ -1552,11 +1615,26 @@ namespace Duels
                 point.x = r.F32();
                 point.y = r.F32();
             }
+            bool rolled = r.Bool();
+            int evasion = 0;
+            Fair::Value verdict;
+            if (rolled)
+            {
+                evasion = r.U8();
+                Fair::ReadValue(r, verdict);
+            }
             if (!r.Ok()) return;
             ++g_match.verdictsReceived;
             for (OutShot &shot : g_match.out)
             {
                 if (shot.netId != netId) continue;
+                if (rolled)
+                {
+                    // Their roll, checked (roadmap 4.1); the evasion against their ship as our copy of it has it now.
+                    ShipManager *replica = G_->GetShipManager(1);
+                    Fair::CheckRoll(shot.fair, verdict, evasion, outcome == OUTCOME_MISS, replica ? replica->GetDodgeFactor() : -1,
+                                    "shot " + std::to_string(netId) + " (" + shot.weapon + ")");
+                }
                 if (shot.verdict == PENDING)
                 {
                     shot.verdict = outcome;
@@ -1747,6 +1825,28 @@ namespace Duels
             OutShot *shot = FindOut(CustomDamageManager::currentProjectile);
             if (!shot || shot->type != WEAPON_BOMB) return false;
             dodged = false;   // decided when it goes off (BeginBombCheck)
+            return true;
+        }
+
+        bool RolledDodge(ShipManager *ship, bool &dodged)
+        {
+            if (!ship || ship->iShipId != 0) return false;
+            InShot *shot = FindIn(CustomDamageManager::currentProjectile);
+            if (!shot) return false;
+            if (shot->rolled)
+            {
+                dodged = shot->dodged;   // asked again for the same shot
+                return true;
+            }
+            int evasion = ship->GetDodgeFactor();
+            Fair::Value verdict;
+            bool rolledDodge = false;
+            if (!Fair::Roll(shot->fair, evasion, verdict, rolledDodge)) return false;
+            shot->rolled = true;
+            shot->dodged = rolledDodge;
+            shot->evasion = evasion;
+            shot->fairVerdict = verdict;
+            dodged = rolledDodge;
             return true;
         }
 
@@ -2246,11 +2346,13 @@ namespace Duels
                     g_match.peerReady = false;
                     g_match.stateDirty = true;
                     Crew::SendRosterAgain();
+                    Fair::OnConnected(true);
                     Headline(Net::PeerName() + " is back: the match goes on");
                     Rounds::OnConnected();
                     return;
                 }
                 ResetMatch();
+                Fair::OnConnected(false);
                 // No pause in a duel, from the first preparation on (rules, section 1): the store and the menus
                 // would pause this game.
                 GetState().noPause = true;
@@ -2337,6 +2439,9 @@ namespace Duels
                 case MSG_SHOT_DOWNED:
                     ApplyShotDowned(reader);
                     break;
+                case Fair::MSG_CHAINS:
+                    Fair::OnMessage(reader);
+                    break;
                 case Drones::MSG_DRONE_HIT:
                 case Drones::MSG_DRONE_SHOT:
                     Drones::OnMessage(type, reader);
@@ -2390,6 +2495,12 @@ namespace Duels
             if (!name.empty()) g_match.playerName = name;
             Net::SetListener(&g_listener);
             Net::SetIdentity(g_match.playerName, VERSION, BUILD_IDENTIFIER_HASH);
+        }
+
+        // Before a duel connects: the game's data goes into the handshake (roadmap 4.1; FTL has loaded it by then).
+        static void ShareGameData()
+        {
+            Net::SetGameData(Fair::GameDataHash());
         }
 
         void OnFrame(double now)
@@ -2484,6 +2595,7 @@ namespace Duels
         {
             Init();
             ResetMatch();
+            ShareGameData();
             return Net::Host(port, loopbackOnly, message);
         }
 
@@ -2491,6 +2603,7 @@ namespace Duels
         {
             Init();
             ResetMatch();
+            ShareGameData();
             return Net::Join(host, port, message);
         }
 
@@ -2499,6 +2612,7 @@ namespace Duels
         {
             Init();
             ResetMatch();
+            ShareGameData();
             return Net::HostRelay(server, port, roomName, password, listed, message);
         }
 
@@ -2507,6 +2621,7 @@ namespace Duels
         {
             Init();
             ResetMatch();
+            ShareGameData();
             return Net::JoinRelay(server, port, code, password, message);
         }
 
@@ -2585,7 +2700,7 @@ namespace Duels
                 << m.holdTimeouts << ", replica's last hull point kept " << m.hullKept << ", crystal shards lost before crossing "
                 << m.shardsLost << ", frames the replica's artillery was held back " << m.artilleryHeld << ", " << Drones::Status() << ", " << Crew::Status() << ", " << Rooms::Status()
                 << ", " << Bays::Status() << ", " << Hacking::Status() << ", " << Mind::Status() << ", " << Boarding::Status() << ", " << CrewXpStatus() << " (skill gains " << g_xpGains << " counted "
-                << g_xpCounted << ")";
+                << g_xpCounted << "), " << Fair::Status();
             return out.str();
         }
     }
