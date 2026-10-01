@@ -4,6 +4,7 @@
 #include "DuelsMatch.h"
 #include "DuelsRounds.h"
 #include "DuelsTrace.h"
+#include "DuelsTune.h"
 
 #include <algorithm>
 #include <cctype>
@@ -14,13 +15,10 @@ namespace Duels
     namespace Environment
     {
         // FTL's periods between flares and pulses, in ms (SpaceManager::SetFireLevel, SetPulsarLevel).
-        static const int SUN_MIN_MS = 28000, SUN_MAX_MS = 34000;
-        static const int PULSAR_MIN_MS = 11000, PULSAR_MAX_MS = 18000;
         // The first rock comes this long after the fight's start.
         static const int ROCKS_LEAD_MS = 2000;
         // FTL's anti-ship battery (SpaceManager::SetPlanetaryDefense, UpdatePDS): a shot at a random room of the target
         // every 20-25 s (its flash timer), and misses for show every 2-5 s between.
-        static const int BATTERY_MIN_MS = 20000, BATTERY_MAX_MS = 25000;
         static const int BATTERY_MISS_MIN_MS = 2000, BATTERY_MISS_MAX_MS = 5000;
 
         // FTL's asteroid generator (AsteroidGenerator::Initialize): the waves' lengths and the time between rocks, in
@@ -37,6 +35,15 @@ namespace Duels
         {
             int min, max;
         };
+
+        // A hazard's time between its events (the fine settings hazard.sun_s, hazard.pulsar_s, hazard.battery_s,
+        // roadmap BE: seconds, from and to; 28-34, 11-18, 20-25).
+        static Range TunedRange(const char *name)
+        {
+            std::vector<double> seconds = Tune::Numbers(name);
+            if (seconds.size() < 2) return Range{0, 0};
+            return Range{(int)(seconds[0] * 1000.0), (int)(seconds[1] * 1000.0)};
+        }
 
         struct Tier
         {
@@ -301,7 +308,7 @@ namespace Duels
 
         static void NextFlare()
         {
-            Range period = g.plan.kind == SUN ? Range{SUN_MIN_MS, SUN_MAX_MS} : Range{PULSAR_MIN_MS, PULSAR_MAX_MS};
+            Range period = g.plan.kind == SUN ? TunedRange("hazard.sun_s") : TunedRange("hazard.pulsar_s");
             g.nextFlareMs += g.flareNumbers.Between(period);
         }
 
@@ -359,7 +366,7 @@ namespace Duels
 
         static void NextShot()
         {
-            g.nextShotMs += g.shotNumbers.Between(Range{BATTERY_MIN_MS, BATTERY_MAX_MS});
+            g.nextShotMs += g.shotNumbers.Between(TunedRange("hazard.battery_s"));
             g.nextShotRoom = g.shotNumbers.Next();
         }
 

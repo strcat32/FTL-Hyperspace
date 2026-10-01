@@ -8,6 +8,7 @@
 #include "DuelsRefit.h"
 #include "DuelsRounds.h"
 #include "DuelsTrace.h"
+#include "DuelsTune.h"
 
 #include <algorithm>
 #include <cmath>
@@ -167,14 +168,18 @@ namespace Duels
             std::vector<ShopItem> stock;
             BlueprintManager *blueprints = G_->GetBlueprints();
             if (!blueprints) return stock;
-            // The price cap for weapons and drones (rules, section 7): 55, 65, 75, 85, then none.
-            static const int CAPS[] = {55, 65, 75, 85};
-            int cap = round >= 1 && round <= 4 ? CAPS[round - 1] : 0;
-            // Every kind every round, each on a page of its own (AP), in this order.
+            // The price cap for weapons and drones (rules, section 7; the fine setting shop.price_caps, roadmap BE): 55,
+            // 65, 75, 85, then none.
+            std::vector<double> caps = Tune::Numbers("shop.price_caps");
+            int cap = round >= 1 && round <= (int)caps.size() ? (int)caps[round - 1] : 0;
+            // Every kind every round (those shop.kinds names), each on a page of its own (AP), in this order.
             static const uint8_t KINDS[] = {KIND_WEAPON, KIND_DRONE, KIND_AUGMENT, KIND_SYSTEM, KIND_CREW};
+            static const char *const KIND_WORDS[] = {"weapons", "drones", "augments", "systems", "crew"};
 
-            for (uint8_t kind : KINDS)
+            for (size_t k = 0; k < sizeof(KINDS) / sizeof(KINDS[0]); ++k)
             {
+                const uint8_t kind = KINDS[k];
+                if (!Tune::HasWord("shop.kinds", KIND_WORDS[k])) continue;
                 std::vector<Candidate> pool;
                 switch (kind)
                 {
@@ -185,6 +190,9 @@ namespace Duels
                 case KIND_CREW: pool = Pool(blueprints->crewBlueprints, 0, kind); break;
                 default: break;
                 }
+                // Blueprints the shop never sells (shop.exclude).
+                pool.erase(std::remove_if(pool.begin(), pool.end(), [](const Candidate &candidate) { return Tune::HasWord("shop.exclude", candidate.name); }),
+                           pool.end());
                 for (const Candidate &candidate : Draw(pool, PAGE_ITEMS, random))
                 {
                     ShopItem item;
@@ -198,12 +206,12 @@ namespace Duels
             // prices.
             ShopItem missiles;
             missiles.kind = KIND_MISSILES;
-            missiles.count = 8;
-            stock.push_back(missiles);
+            missiles.count = (uint8_t)Tune::Number("shop.missiles");
+            if (missiles.count > 0) stock.push_back(missiles);
             ShopItem parts;
             parts.kind = KIND_DRONE_PARTS;
-            parts.count = 4;
-            stock.push_back(parts);
+            parts.count = (uint8_t)Tune::Number("shop.drone_parts");
+            if (parts.count > 0) stock.push_back(parts);
             return stock;
         }
 

@@ -15,6 +15,7 @@
 #include "DuelsRefit.h"
 #include "DuelsShips.h"
 #include "DuelsTrace.h"
+#include "DuelsTune.h"
 #include "DuelsWindow.h"
 #include "DuelsWire.h"
 
@@ -33,22 +34,25 @@ namespace Duels
 {
     namespace Rounds
     {
-        static const double STARTING_LEAD_MS = 1500.0;   // the fight begins this long after both ships stand
-        static const double ENDING_MS = 3000.0;          // the first ship's explosion; shots in the air still count
-        static const double RESULT_MS = 6000.0;          // the round's result on screen before the next preparation
-        static const double DRAW_AGAIN_MS = 60000.0;     // after a declined offer, the same player waits this long
+        // Fine settings (roadmap BE, DuelsTune.h; the match's, the host's): the fight begins this long after both ships
+        // stand; the first ship's explosion (shots in the air still count); the round's result on screen before the
+        // next preparation; after a declined draw offer the same player waits this long.
+        static double StartingLeadMs() { return Tune::Number("round.starting_s") * 1000.0; }
+        static double EndingMs() { return Tune::Number("round.ending_s") * 1000.0; }
+        static double ResultMs() { return Tune::Number("round.result_s") * 1000.0; }
+        static double DrawAgainMs() { return Tune::Number("draw.again_s") * 1000.0; }
         static const double TIMEOUT_LEAD_MS = 300.0;     // a timeout begins this long after it is taken: both games at once
-        static const float HULL_WEIGHT = 0.65f;          // the damage score: hull 0.65, crew 0.35 (rules, section 3)
+        static float HullWeight() { return (float)Tune::Number("score.hull_weight"); }   // the damage score: the hull's, the crew's the rest
         static const float SCORE_TIE = 0.05f;            // damage scores closer than this are equal
         // Anti-stall (rules, section 3): a new low of either player's hull or crew health (by more than this share of
-        // the round's start) restarts the timer; when it runs out, the lows decide, and a lead under 10 is a draw.
-        static const float STALL_STEP = 0.02f;
-        static const float STALL_DRAW_LEAD = 10.f;
+        // the round's start) restarts the timer; when it runs out, the lows decide, and a lead under this is a draw.
+        static float StallStep() { return (float)Tune::Number("stall.step"); }
+        static float StallDrawLead() { return (float)Tune::Number("stall.draw_lead"); }
         // The ship choice (roadmap 3.9; rules, section 4): a ban's time and the pick's, then the server bans or picks
-        // for the player; the bans leave this many types to pick from.
-        static const double BAN_MS = 20000.0;
-        static const double PICK_MS = 30000.0;
-        static const double REVEAL_MS = 4000.0;          // both ships on screen before round 1's preparation
+        // for the player; both ships on screen before round 1's preparation. The bans leave this many types to pick from.
+        static double BanMs() { return Tune::Number("choice.ban_s") * 1000.0; }
+        static double PickMs() { return Tune::Number("choice.pick_s") * 1000.0; }
+        static double RevealMs() { return Tune::Number("choice.reveal_s") * 1000.0; }
         static const int OFFER_SIZE = 3;
 
         // The third byte of an event is the round it belongs to; a ban's is its number in the choice instead.
@@ -198,7 +202,7 @@ namespace Duels
             {
                 float hull = hullPool > 0.f ? std::min(1.f, hullLost / hullPool) : 0.f;
                 float crew = crewPool > 0.f ? std::min(1.f, crewLost / crewPool) : 0.f;
-                return 100.f * (HULL_WEIGHT * hull + (1.f - HULL_WEIGHT) * crew);
+                return 100.f * (HullWeight() * hull + (1.f - HullWeight()) * crew);
             }
         };
 
@@ -358,9 +362,15 @@ namespace Duels
         }
 
         // The scrap a round brings (rules, section 7): 6 x (15 + 6 (k - 1)), and 10 more in round 1.
+        // The scrap a round brings (the fine setting shop.scrap, roadmap BE: a list; after it each round adds its last
+        // step: 100, 126, 162, then 36 more each round).
         static uint16_t ScrapFor(int round)
         {
-            return (uint16_t)(6 * (15 + 6 * (round - 1)) + (round == 1 ? 10 : 0));
+            std::vector<double> list = Tune::Numbers("shop.scrap");
+            if (list.empty() || round < 1) return 0;
+            if (round <= (int)list.size()) return (uint16_t)std::max(0.0, list[round - 1]);
+            double step = list.size() >= 2 ? list.back() - list[list.size() - 2] : 0.0;
+            return (uint16_t)std::max(0.0, std::min(65535.0, list.back() + step * (round - (int)list.size())));
         }
 
         // The ship choice (roadmap 3.9): a match's, unless each player brings their own ship (or it is a free fight).
@@ -743,7 +753,7 @@ namespace Duels
             g.bansShown = d.bans.size();
             // (The choice's window shows whose ban it is; the console's player learns it here.)
             uint8_t turn = BansDone(d) ? NOBODY : BannerOf(d, d.bans.size());
-            if (turn == g.me && g.turnShown != g.me && !Net::Replaying()) Log("Rounds: our ban ('ban <type>', %d s)", (int)(BAN_MS / 1000.0));
+            if (turn == g.me && g.turnShown != g.me && !Net::Replaying()) Log("Rounds: our ban ('ban <type>', %d s)", (int)(BanMs() / 1000.0));
             g.turnShown = turn;
             if (!d.offer.empty() && g.offerShown != d.offer.size())
             {
@@ -1087,7 +1097,7 @@ namespace Duels
                     d.offer.push_back(variants[std::uniform_int_distribution<size_t>(0, variants.size() - 1)(g.random)]);
                 }
             }
-            d.phaseEnd = Now() + PICK_MS;
+            d.phaseEnd = Now() + PickMs();
             g.dirty = true;
         }
 
@@ -1113,7 +1123,7 @@ namespace Duels
                 StartRound(1);
                 return;
             }
-            SetPhase(Phase::Choice, Now() + (d.offer.empty() ? BAN_MS : PICK_MS));
+            SetPhase(Phase::Choice, Now() + (d.offer.empty() ? BanMs() : PickMs()));
         }
 
         // Both have picked: both games learn both ships and show them; the first preparation begins with them.
@@ -1125,7 +1135,7 @@ namespace Duels
                 int pick = g.picks[player] >= 0 && g.picks[player] < (int)d.offer.size() ? g.picks[player] : 0;
                 d.ships[player] = d.offer.empty() ? std::string() : d.offer[pick];
             }
-            d.phaseEnd = Now() + REVEAL_MS;
+            d.phaseEnd = Now() + RevealMs();
             g.dirty = true;
         }
 
@@ -1140,7 +1150,7 @@ namespace Duels
             d.bans.push_back(ban);
             g.dirty = true;
             if (BansDone(d)) MakeOffer();
-            else d.phaseEnd = Now() + BAN_MS;
+            else d.phaseEnd = Now() + BanMs();
         }
 
         // Time is up (rules, section 4): the server bans a type at random for the player whose ban it is, or picks a
@@ -1202,7 +1212,7 @@ namespace Duels
             d.score[HOST] += result.dealt[HOST];
             d.score[GUEST] += result.dealt[GUEST];
             ClearDraw();
-            SetPhase(Phase::RoundOver, Now() + RESULT_MS);
+            SetPhase(Phase::RoundOver, Now() + ResultMs());
         }
 
         // One player has more points than the other can still reach (each round left is worth a point), or the rounds
@@ -1267,7 +1277,7 @@ namespace Duels
                     g.defeatAt[player] = now;
                     g.defeatReason[player] = arg == REASON_CREW ? REASON_CREW : REASON_DESTROYED;
                     Log("Rounds: %s is out (%s)", player == HOST ? "the host" : "the guest", ReasonText(g.defeatReason[player]));
-                    if (d.phase == Phase::Fight) SetPhase(Phase::Ending, now + ENDING_MS);
+                    if (d.phase == Phase::Fight) SetPhase(Phase::Ending, now + EndingMs());
                 }
                 break;
             case EV_FORFEIT:
@@ -1291,7 +1301,7 @@ namespace Duels
             {
                 bool roundOk = arg == DRAW_ROUND && (d.phase == Phase::Starting || d.phase == Phase::Fight);
                 bool matchOk = arg == DRAW_MATCH && (d.phase == Phase::Prep || d.phase == Phase::Starting || d.phase == Phase::Fight);
-                if (d.drawBy == NOBODY && (roundOk || matchOk) && now - g.lastOffer[player] >= DRAW_AGAIN_MS)
+                if (d.drawBy == NOBODY && (roundOk || matchOk) && now - g.lastOffer[player] >= DrawAgainMs())
                 {
                     // It stands until it is answered or taken back (AT); the round's end ends it.
                     d.drawBy = player;
@@ -1393,7 +1403,7 @@ namespace Duels
             {
                 for (int pool = 0; pool < 2; ++pool)
                 {
-                    if (levels[player][pool] < g.lows[player][pool] - STALL_STEP)
+                    if (levels[player][pool] < g.lows[player][pool] - StallStep())
                     {
                         g.lows[player][pool] = levels[player][pool];
                         newLow = true;
@@ -1410,11 +1420,11 @@ namespace Duels
             float score[2];
             for (int player = 0; player < 2; ++player)
             {
-                score[player] = 100.f * (HULL_WEIGHT * g.lows[player][0] + (1.f - HULL_WEIGHT) * g.lows[player][1]);
+                score[player] = 100.f * (HullWeight() * g.lows[player][0] + (1.f - HullWeight()) * g.lows[player][1]);
             }
             Log("Rounds: no new low for %u s: stall scores %.1f (host) %.1f (guest)", (unsigned)d.settings.stallSeconds, score[HOST],
                 score[GUEST]);
-            uint8_t winner = std::fabs(score[HOST] - score[GUEST]) < STALL_DRAW_LEAD ? NOBODY : score[HOST] > score[GUEST] ? HOST : GUEST;
+            uint8_t winner = std::fabs(score[HOST] - score[GUEST]) < StallDrawLead() ? NOBODY : score[HOST] > score[GUEST] ? HOST : GUEST;
             FinishRound(winner, REASON_STALL);
         }
 
@@ -1433,7 +1443,7 @@ namespace Duels
             case Phase::Starting:
                 if (g.local ? Ai::ShipStands() : Match::ShipsStand())
                 {
-                    d.fightStart = d.settings.free ? now : now + STARTING_LEAD_MS;
+                    d.fightStart = d.settings.free ? now : now + StartingLeadMs();
                     d.stallEnd = d.settings.stallSeconds > 0 ? d.fightStart + d.settings.stallSeconds * 1000.0 : -1.0;
                     for (float (&low)[2] : g.lows) low[0] = low[1] = 1.f;
                     SetPhase(Phase::Fight, -1.0);
@@ -1513,28 +1523,82 @@ namespace Duels
             if (!list.empty()) s.list = list;
         }
 
+        std::vector<std::pair<std::string, std::string>> SettingLines()
+        {
+            LoadSettings();
+            const Settings &s = g.settings;
+            std::string hazards = Environment::HazardsName(s.hazards);   // "sun, pulsar" or "none"
+            hazards.erase(std::remove(hazards.begin(), hazards.end(), ' '), hazards.end());
+            std::string list;
+            for (const std::string &ship : s.list) list += (list.empty() ? "" : ",") + ship;
+            return {{"match_rounds", std::to_string(s.rounds)},
+                    {"match_prep", std::to_string(s.prepSeconds)},
+                    {"match_stall", std::to_string(s.stallSeconds)},
+                    {"match_permadeath", s.permadeath ? "on" : "off"},
+                    {"match_free", s.free ? "on" : "off"},
+                    {"match_env", Environment::ModeName(s.env)},
+                    {"match_hazards", hazards},
+                    {"match_record", s.record ? "on" : "off"},
+                    {"match_timeouts", std::to_string(s.timeouts)},
+                    {"match_timeout_seconds", std::to_string(s.timeoutSeconds)},
+                    {"match_ships", s.ships == SHIPS_BANS ? "bans" : s.ships == SHIPS_LIST ? "list" : "own"},
+                    {"match_pool", Ships::TypesText(s.pool)},
+                    {"match_list", list}};
+        }
+
         // Kept for the next start; a test scenario leaves duels.cfg as it is (the next test starts from its own).
         static void SaveSettings()
         {
             if (!SettingsFromConfig()) return;
-            const Settings &s = g.settings;
-            Config::SaveValue("match_rounds", std::to_string(s.rounds));
-            Config::SaveValue("match_prep", std::to_string(s.prepSeconds));
-            Config::SaveValue("match_stall", std::to_string(s.stallSeconds));
-            Config::SaveValue("match_permadeath", s.permadeath ? "on" : "off");
-            Config::SaveValue("match_free", s.free ? "on" : "off");
-            Config::SaveValue("match_env", Environment::ModeName(s.env));
-            std::string hazards = Environment::HazardsName(s.hazards);   // "sun, pulsar" or "none"
-            hazards.erase(std::remove(hazards.begin(), hazards.end(), ' '), hazards.end());
-            Config::SaveValue("match_hazards", hazards);
-            Config::SaveValue("match_record", s.record ? "on" : "off");
-            Config::SaveValue("match_timeouts", std::to_string(s.timeouts));
-            Config::SaveValue("match_timeout_seconds", std::to_string(s.timeoutSeconds));
-            Config::SaveValue("match_ships", s.ships == SHIPS_BANS ? "bans" : s.ships == SHIPS_LIST ? "list" : "own");
-            Config::SaveValue("match_pool", Ships::TypesText(s.pool));
-            std::string list;
-            for (const std::string &ship : s.list) list += (list.empty() ? "" : ",") + ship;
-            Config::SaveValue("match_list", list);
+            for (const std::pair<std::string, std::string> &line : SettingLines()) Config::SaveValue(line.first, line.second);
+        }
+
+        void KeepSettings()
+        {
+            SaveSettings();
+        }
+
+        bool ApplySetting(const std::string &key, const std::string &value, std::string &why)
+        {
+            LoadSettings();
+            Settings &s = g.settings;
+            char *end = nullptr;
+            long number = std::strtol(value.c_str(), &end, 10);
+            const bool isNumber = !value.empty() && end && *end == '\0';
+            const bool onOff = value == "on" || value == "off";
+            uint8_t mode = 0, hazards = 0;
+            uint16_t pool = 0;
+            if (key == "match_rounds" && isNumber && number >= 1 && number <= 99) s.rounds = (uint8_t)number;
+            else if (key == "match_prep" && isNumber && number >= 0 && number <= 3600) s.prepSeconds = (uint16_t)number;
+            else if (key == "match_stall" && isNumber && number >= 0 && number <= 3600) s.stallSeconds = (uint16_t)number;
+            else if (key == "match_permadeath" && onOff) s.permadeath = value == "on";
+            else if (key == "match_free" && onOff) s.free = value == "on";
+            else if (key == "match_record" && onOff) s.record = value == "on";
+            else if (key == "match_env" && Environment::ParseMode(value, mode)) s.env = mode;
+            else if (key == "match_hazards" && Environment::ParseHazards(value, hazards)) s.hazards = hazards;
+            else if (key == "match_timeouts" && isNumber && number >= 0 && number <= 9) s.timeouts = (uint8_t)number;
+            else if (key == "match_timeout_seconds" && isNumber && number >= 5 && number <= 120) s.timeoutSeconds = (uint16_t)number;
+            else if (key == "match_ships" && (value == "own" || value == "bans" || value == "list"))
+                s.ships = value == "own" ? SHIPS_OWN : value == "list" ? SHIPS_LIST : SHIPS_BANS;
+            else if (key == "match_pool" && Ships::ParseTypes(value, pool)) s.pool = pool;
+            else if (key == "match_list")
+            {
+                std::vector<std::string> list;
+                std::stringstream ships(value);
+                std::string ship, blueprint;
+                while (std::getline(ships, ship, ','))
+                {
+                    if (!Ships::ParseShip(ship, blueprint)) { why = "no ship " + ship; return false; }
+                    list.push_back(blueprint);
+                }
+                s.list = list;
+            }
+            else
+            {
+                why = "not a match setting, or a value it can't take";
+                return false;
+            }
+            return true;
         }
 
         void Reset()
@@ -1657,7 +1721,7 @@ namespace Duels
         void OpponentState(float hullLost, float crewLost, float hullShare, float crewShare)
         {
             if (!g.local || !g.active || (g.data.phase != Phase::Fight && g.data.phase != Phase::Ending)) return;
-            g.peerTaken = 100.f * (HULL_WEIGHT * hullLost + (1.f - HULL_WEIGHT) * crewLost);
+            g.peerTaken = 100.f * (HullWeight() * hullLost + (1.f - HullWeight()) * crewLost);
             g.peerLevels[0] = hullShare;
             g.peerLevels[1] = crewShare;
         }
@@ -2411,6 +2475,8 @@ namespace Duels
             std::string reasons = GetState().debug ? "debug mode" : "";
             if (g.local) reasons += std::string(reasons.empty() ? "" : ", ") + "against the AI";
             if (!s.record) reasons += std::string(reasons.empty() ? "" : ", ") + "not recorded";
+            // A ranked match plays by the standard rules (roadmap BE, proposed): fine settings off their defaults.
+            if (Tune::Custom()) reasons += std::string(reasons.empty() ? "" : ", ") + "custom fine settings";
             return reasons;
         }
 

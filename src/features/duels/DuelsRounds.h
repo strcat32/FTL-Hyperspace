@@ -93,6 +93,11 @@ namespace Duels
         // Whether this match is ranked (roadmap BB), and why not: debug mode, against the AI, not recorded.
         bool Ranked(std::string &why);
         bool EscapeAllowed();
+        // The host's match settings as duels.cfg and a preset keep them ("match_rounds", "5": roadmap U, BE); one of them
+        // applied (false and why when it isn't one); them kept in duels.cfg (when the settings come from the file).
+        std::vector<std::pair<std::string, std::string>> SettingLines();
+        bool ApplySetting(const std::string &key, const std::string &value, std::string &why);
+        void KeepSettings();
         bool DriveReady();
         bool Escape(std::string &message);
 

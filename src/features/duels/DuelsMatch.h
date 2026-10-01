@@ -110,6 +110,7 @@ namespace Duels
         // Crew experience (rules, roadmap 2.3): in a duel each skill gain of the crew counts this many times. The
         // host's setting counts for both players; 1 is FTL's own pace.
         bool SetCrewXp(float factor, std::string &message);
+        float CrewXpSetting();   // ours, for the duels we host (a preset keeps it, roadmap BE)
         std::string CrewXpStatus();
         std::string Status();
 

@@ -90,6 +90,8 @@ namespace Duels
             return g_settings.playerName;
         }
 
+        static void WriteFile();
+
         // The setting's line replaced (older duplicates go), or added; then the file written back.
         static void WriteSetting(const std::string &name, const std::string &newValue)
         {
@@ -112,9 +114,29 @@ namespace Duels
                 }
                 s.lines.push_back(name + " " + newValue);
             }
+            WriteFile();
+        }
+
+        static void WriteFile()
+        {
             std::ofstream file(FILE_NAME, std::ios::trunc);
-            for (const std::string &line : s.lines) file << line << "\n";
+            for (const std::string &line : g_settings.lines) file << line << "\n";
             if (!file) Log("Config: cannot write %s", FILE_NAME);
+        }
+
+        void RemoveValue(const std::string &key)
+        {
+            Load();
+            Settings &s = g_settings;
+            if (!s.values.erase(key)) return;
+            s.lines.erase(std::remove_if(s.lines.begin(), s.lines.end(),
+                                         [&](const std::string &line)
+                                         {
+                                             std::string name, value;
+                                             return Split(line, name, value) && name == key;
+                                         }),
+                          s.lines.end());
+            WriteFile();
         }
 
         void SavePlayerName(const std::string &name)

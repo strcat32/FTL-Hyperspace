@@ -28,6 +28,8 @@ namespace Duels
         // Any one-value setting ("" when the file has none), and saving one (its line replaced, or added).
         std::string Value(const std::string &key);
         void SaveValue(const std::string &key, const std::string &value);
+        // A setting's lines gone from the file (a fine setting back at its default, DuelsTune.cpp).
+        void RemoveValue(const std::string &key);
 
         // The master server (roadmap AZ): duels.cfg's, or ftl-duels.link for a file without one (then written into it,
         // when the settings come from the file).

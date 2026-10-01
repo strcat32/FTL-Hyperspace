@@ -16,6 +16,7 @@
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
+#include "DuelsTune.h"
 #include "DuelsView.h"
 #include "DuelsWindow.h"
 
@@ -234,7 +235,7 @@ namespace Duels
         static const std::set<std::string> verbs = {
             "console", "debug", "host", "join", "leave", "lobby", "name", "net", "netstats", "note", "quit", "relay", "say",
             "screenshot", "status", "stop", "trace", "tracepower", "version", "window", "xp",
-            "match", "ready", "forfeit", "concede", "draw", "ban", "pick"};
+            "match", "ready", "forfeit", "concede", "draw", "ban", "pick", "timeout", "demo", "replay", "tune", "preset"};
         return verbs.count(verb) != 0;
     }
 
@@ -766,6 +767,9 @@ namespace Duels
         // Fair play (roadmap 4.1): its state; a lying verdict for tests.
         if (verb == "fair") return Fair::RunVerb(cmd, message);
         if (verb == "demo") return Demo::RunVerb(cmd, message);
+        // Fine settings and presets (roadmap BE).
+        if (verb == "tune") return Tune::RunVerb(cmd, message);
+        if (verb == "preset") return Tune::RunPresetVerb(cmd, message);
         if (verb == "replay") return Demo::RunReplayVerb(cmd, message);
         // Ours in the main menu (test verb: the name prompt, the tutorial box, the players' guide).
         if (verb == "menu") return Menu::RunVerb(cmd.args, message);

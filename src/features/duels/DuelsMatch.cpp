@@ -24,6 +24,7 @@
 #include "DuelsNet.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
+#include "DuelsTune.h"
 #include "DuelsView.h"
 #include "DuelsWire.h"
 
@@ -50,7 +51,7 @@ namespace Duels
             MSG_SHOT = 20,       // reliable: a projectile left one of our weapons
             MSG_RESULT = 21,     // reliable: the defender's verdict on a shot
             MSG_SHOT_DOWNED = 23, // reliable: our shot ran into something in our own space before it left
-            MSG_SETTINGS = 27,   // reliable, host to guest: the duel's settings (crew experience)
+            MSG_SETTINGS = 27,   // reliable, host to guest: the duel's settings (crew experience, the fine settings: BE)
             MSG_DEBUG = 40       // reliable, either way: this game's debug mode is on (roadmap T)
             // 22 (our hull reached 0) is gone: defeats go to the match flow (DuelsRounds.h, 38 and 39).
             // 24, 25: DuelsDrones.h
@@ -2871,10 +2872,13 @@ namespace Duels
             if (xp >= XP_MIN && xp <= XP_MAX) g_xpSetting = xp;
         }
 
+        // The host's crew experience and its fine settings that differ from the defaults (roadmap BE): the match plays by
+        // them in both games.
         static void SendSettings()
         {
             Writer w;
             w.F32(g_xpMatch);
+            Tune::WriteMatch(w);
             Net::Send(MSG_SETTINGS, w, true);
         }
 
@@ -2884,6 +2888,15 @@ namespace Duels
             if (!r.Ok() || !(xp >= XP_MIN && xp <= XP_MAX)) return;
             if (xp != g_xpMatch) Announce("crew experience " + XpText(xp) + " (the host's setting)");
             g_xpMatch = xp;
+            std::string note;
+            if (!Tune::ReadMatch(r, note)) Log("Match: the host's fine settings don't read");
+            if (!note.empty()) Log("Match: of the host's fine settings: %s", note.c_str());
+        }
+
+        float CrewXpSetting()
+        {
+            LoadXpSetting();
+            return g_xpSetting;
         }
 
         bool SetCrewXp(float factor, std::string &message)
@@ -3085,6 +3098,7 @@ namespace Duels
                 Demo::End("disconnected: " + reason);
                 Rounds::OnDisconnected(opponentGone);
                 ResetMatch();
+                Tune::EndMatch();   // our own fine settings again (roadmap BE)
             }
 
             void OnMessage(uint8_t type, Reader &reader) override
@@ -3345,6 +3359,7 @@ namespace Duels
             Demo::End("left the duel");
             Net::Leave("left the duel");
             ResetMatch();
+            Tune::EndMatch();
             Ai::Stop();   // a match against the AI (roadmap 3.6)
         }
 
