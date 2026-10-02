@@ -21,7 +21,7 @@ namespace Duels
 
         struct Job
         {
-            std::string method, url, body, bearer;
+            std::string method, url, body, bearer, contentType;
             Callback done;
             Response response;
         };
@@ -76,7 +76,7 @@ namespace Duels
                                         : nullptr;
             if (session) WinHttpSetTimeouts(session, 5000, 5000, 10000, 10000);
             std::wstring headers = L"Accept: application/json\r\n";
-            if (job.method == "POST") headers += L"Content-Type: application/json\r\n";
+            if (job.method == "POST") headers += L"Content-Type: " + Wide(job.contentType) + L"\r\n";
             if (!job.bearer.empty()) headers += L"Authorization: Bearer " + Wide(job.bearer) + L"\r\n";
             BOOL sent = request && WinHttpSendRequest(request, headers.c_str(), (DWORD)-1L,
                                                       job.body.empty() ? WINHTTP_NO_REQUEST_DATA : (LPVOID)job.body.data(),
@@ -120,7 +120,8 @@ namespace Duels
             return 0;
         }
 
-        void Send(const std::string &method, const std::string &url, const std::string &body, const std::string &bearer, Callback done)
+        void Send(const std::string &method, const std::string &url, const std::string &body, const std::string &bearer, Callback done,
+                  const std::string &contentType)
         {
             MakeLock();
             Job *job = new Job();
@@ -128,6 +129,7 @@ namespace Duels
             job->url = url;
             job->body = body;
             job->bearer = bearer;
+            job->contentType = contentType;
             job->done = done;
             HANDLE thread = CreateThread(nullptr, 0, Worker, job, 0, nullptr);
             if (!thread)
@@ -156,7 +158,7 @@ namespace Duels
             }
         }
 #else
-        void Send(const std::string &, const std::string &, const std::string &, const std::string &, Callback done)
+        void Send(const std::string &, const std::string &, const std::string &, const std::string &, Callback done, const std::string &)
         {
             Response response;
             response.error = "the master is reached on Windows only";

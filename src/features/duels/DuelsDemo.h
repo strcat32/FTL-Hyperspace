@@ -93,6 +93,9 @@ namespace Duels
         // its full states at the demo's times. With full sensors the other ship follows the other player's full states,
         // and everything of both ships is in sight (Match::FullSensors).
         bool StartReplay(const std::string &path, std::string &message);
+        // A ranked room's match: its ticket's nonce (Net::LastTicketNonce); its demo goes to the master when it is saved
+        // (roadmap BQ).
+        void SetTicket(const std::string &nonce);
         // A replay that runs ends (FTL's main menu, roadmap BO: it went on unseen behind the menu).
         void StopReplay(const std::string &why);
         void ReplayFrame(double now);   // Net::Update while it replays: a seek's arrival, the replay's end

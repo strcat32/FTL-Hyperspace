@@ -19,9 +19,10 @@ namespace Duels
         };
         using Callback = std::function<void(const Response &)>;
 
-        // A request (GET without a body, POST with one as JSON); bearer: an Authorization: Bearer header, if not empty.
-        // The answer comes to done in a later Frame, on the game's thread.
-        void Send(const std::string &method, const std::string &url, const std::string &body, const std::string &bearer, Callback done);
+        // A request (GET without a body, POST with one as JSON, or of the type given: a demo's bytes); bearer: an
+        // Authorization: Bearer header, if not empty. The answer comes to done in a later Frame, on the game's thread.
+        void Send(const std::string &method, const std::string &url, const std::string &body, const std::string &bearer, Callback done,
+                  const std::string &contentType = "application/json");
         void Frame();
         int Pending();   // requests not answered yet
 

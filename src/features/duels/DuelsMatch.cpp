@@ -3068,6 +3068,7 @@ namespace Duels
                 ResetMatch();
                 // A demo of the match (roadmap 5.1), from its first message on.
                 Demo::Begin(Net::IsHost(), Net::IsHost() ? Net::OwnName() : Net::PeerName(), Net::IsHost() ? Net::PeerName() : Net::OwnName());
+                if (Net::RoomRanked() && !Net::Replaying()) Demo::SetTicket(Net::LastTicketNonce());
                 Fair::OnConnected(false);
                 // No pause in a duel, from the first preparation on (rules, section 1): the store and the menus
                 // would pause this game.

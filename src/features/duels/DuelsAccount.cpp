@@ -8,6 +8,7 @@
 #include "DuelsTrace.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -44,6 +45,8 @@ namespace Duels
             std::vector<double> refreshAt;
             int ratingBefore = 0, matchesBefore = 0, ratingAfter = 0;
             bool changeKnown = false, awaitingChange = false;
+            // Ranked matches' demos on their way to the master (roadmap BQ): one at a time.
+            bool uploading = false;
         };
 
         static AccountState g;
@@ -153,6 +156,7 @@ namespace Duels
                                    Log("Account: the ranked match counted: rating %d -> %d", g.ratingBefore, g.ratingAfter);
                                }
                                Log("Account: %s, rating %d (RD %d), %d match(es)", g.name.c_str(), g.rating, g.rd, g.matches);
+                               UploadDemos();   // ranked matches' demos still waiting (a game closed too early)
                            }
                            else if (r.status == 401)
                            {
@@ -167,6 +171,69 @@ namespace Duels
                                Log("Account: no rating: %s", g.message.c_str());
                            }
                        });
+        }
+
+        // The first demo waiting for the master: demos\\<file>.upload (the ticket's nonce in it).
+        static std::string FirstUploadMarker()
+        {
+#ifdef _WIN32
+            WIN32_FIND_DATAA found;
+            HANDLE search = FindFirstFileA("demos\\*.upload", &found);
+            if (search == INVALID_HANDLE_VALUE) return std::string();
+            std::string name = std::string("demos\\") + found.cFileName;
+            FindClose(search);
+            return name;
+#else
+            return std::string();
+#endif
+        }
+
+        void UploadDemos()
+        {
+            Load();
+            if (g.state != State::SignedIn || g.uploading) return;
+            std::string marker = FirstUploadMarker();
+            if (marker.empty()) return;
+            std::string demo = marker.substr(0, marker.size() - std::string(".upload").size());
+            std::string nonce;
+            {
+                std::ifstream in(marker);
+                std::getline(in, nonce);
+            }
+            while (!nonce.empty() && std::isspace((unsigned char)nonce.back())) nonce.pop_back();
+            std::string body;
+            {
+                std::ifstream in(demo, std::ios::binary);
+                body.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            }
+            if (nonce.size() != 32 || body.size() < 16)
+            {
+                std::remove(marker.c_str());
+                Log("Account: %s can't go to the master (%s); left", demo.c_str(), body.empty() ? "no demo file" : "no ticket in its marker");
+                return;
+            }
+            g.uploading = true;
+            Log("Account: the ranked match's demo %s to the master (%u kB)", demo.c_str(), (unsigned)((body.size() + 1023) / 1024));
+            Http::Send("POST", Base() + "/api/demo?ticket=" + nonce, body, g.key,
+                       [marker, demo](const Http::Response &r)
+                       {
+                           g.uploading = false;
+                           if (r.status == 200 || r.status == 201)
+                           {
+                               std::remove(marker.c_str());
+                               Log("Account: the master has the demo %s", demo.c_str());
+                               UploadDemos();
+                           }
+                           else if (r.status == 400 || r.status == 404 || r.status == 413)
+                           {
+                               // It never will: not a demo, not this player's ticket, too large.
+                               std::remove(marker.c_str());
+                               Log("Account: the master won't take the demo %s: %s", demo.c_str(), ErrorOf(r).c_str());
+                               UploadDemos();
+                           }
+                           else Log("Account: the demo %s waits for the next start: %s", demo.c_str(), ErrorOf(r).c_str());
+                       },
+                       "application/octet-stream");
         }
 
         void StartSignIn()

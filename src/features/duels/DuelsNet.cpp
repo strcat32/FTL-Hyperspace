@@ -99,6 +99,7 @@ namespace Duels
             // which needs a new ticket); the match's result for the relay, until it has it; a disconnection waiting
             // for that.
             std::string ticket, ticketKey;
+            std::string lastTicketNonce;    // the nonce of the last ticket a room was opened or joined with (a demo's upload)
             bool backRanked = false;
             bool ticketAsked = false;
             bool resultQueued = false, resultAcked = false;
@@ -603,6 +604,7 @@ namespace Duels
             s.link.Reset(0, s.now);
             s.resultQueued = s.resultAcked = false;
             s.resultTries = 0;
+            if (s.ticket.size() >= 17) s.lastTicketNonce = s.ticket.substr(1, 16);
             s.relayClient.Create(s.name, s.version, roomName, password, listed, s.now, s.ticket, s.ticketKey);
             s.ticket.clear();
             s.ticketKey.clear();
@@ -636,6 +638,7 @@ namespace Duels
                 s.resultQueued = s.resultAcked = false;
                 s.resultTries = 0;
             }
+            if (s.ticket.size() >= 17) s.lastTicketNonce = s.ticket.substr(1, 16);
             s.relayClient.Join(code, password, s.name, s.version, s.now, s.ticket, s.ticketKey);
             s.ticket.clear();
             s.ticketKey.clear();
@@ -850,6 +853,7 @@ namespace Duels
         void SetTicketSource(std::function<void(const std::string &relay, TicketDone done)> source) { g_ticketSource = source; }
 
         bool RoomRanked() { return g_session.relay && g_session.relayClient.Ranked(); }
+        std::string LastTicketNonce() { return g_session.lastTicketNonce; }
         int PeerRating() { return g_session.relay ? g_session.relayClient.PeerRating() : 0; }
 
         std::string RelayName(const std::string &server, uint16_t port)

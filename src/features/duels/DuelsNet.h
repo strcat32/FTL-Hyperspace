@@ -100,6 +100,9 @@ namespace Duels
         // The room is ranked: both players came with a valid ticket (the relay says so). The other player's rating
         // from their ticket.
         bool RoomRanked();
+        // The nonce (16 bytes) of the last ticket a ranked room was opened or joined with: a ranked match's demo goes to
+        // the master under it (roadmap BQ).
+        std::string LastTicketNonce();
         int PeerRating();
         // A relay's name for the master's tickets: "server:port" (the port always).
         std::string RelayName(const std::string &server, uint16_t port);

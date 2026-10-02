@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsBoarding.h"
+#include "DuelsAccount.h"
 #include "DuelsConfig.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
@@ -59,6 +60,7 @@ namespace Duels
             uint32_t sent = 0, received = 0, fullStates = 0;
             int statusRanked = -1;          // the match's status as last recorded (BB)
             std::string statusWhy;
+            std::string ticketNonce;        // a ranked room's match: its ticket's nonce (the demo goes to the master, BQ)
         };
 
         static DemoState g;
@@ -204,6 +206,7 @@ namespace Duels
         void Begin(bool host, const std::string &hostName, const std::string &guestName)
         {
             if (g.file) End("a new match");
+            g.ticketNonce.clear();
             g_swap = SwapState();   // a new connection, a new swap (BA)
             if (!Enabled() || Net::Replaying()) return;
 #ifdef _WIN32
@@ -281,6 +284,32 @@ namespace Duels
             Log("Demo: saved %s (%s; %llu records, %u sent, %u received, %u full states; %.0f kB, %.0f kB in the file, %.0f s)",
                 g.path.c_str(), why.c_str(), (unsigned long long)g.records, g.sent, g.received, g.fullStates, g.rawBytes / 1024.0,
                 g.fileBytes / 1024.0, (WallMs() - g.startMs) / 1000.0);
+            // A ranked room's demo goes to the master (roadmap BQ: signed-in players download it from the match's page):
+            // it waits as <demo>.upload, its ticket's nonce in it, until the master has it (Account::UploadDemos; a game
+            // closed before that sends it at its next start).
+            if (g.ticketNonce.size() == 16)
+            {
+                static const char *const DIGITS = "0123456789abcdef";
+                std::string hex;
+                for (unsigned char c : g.ticketNonce)
+                {
+                    hex += DIGITS[c >> 4];
+                    hex += DIGITS[c & 15];
+                }
+                FILE *marker = std::fopen((g.path + ".upload").c_str(), "w");
+                if (marker)
+                {
+                    std::fprintf(marker, "%s\n", hex.c_str());
+                    std::fclose(marker);
+                }
+                g.ticketNonce.clear();
+                Account::UploadDemos();
+            }
+        }
+
+        void SetTicket(const std::string &nonce)
+        {
+            if (g.file && nonce.size() == 16) g.ticketNonce = nonce;
         }
 
         void NoteStatus(bool ranked, const std::string &why)

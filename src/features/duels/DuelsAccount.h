@@ -40,6 +40,8 @@ namespace Duels
         void SignOut();
         // The name and rating again from the master.
         void Refresh();
+        // Ranked matches' demos for the master (roadmap BQ): each waits as demos\<file>.upload until the master has it.
+        void UploadDemos();
         void Frame();
 
         // A ticket for a ranked room on a relay (the master's id of it, or "server:port"): its bytes and its key (both
