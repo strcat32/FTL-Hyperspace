@@ -24,6 +24,8 @@ namespace Duels
     void PlaceOnTestDisplay();
 
     bool SetGameWindowTitle(const char *title, std::string &details);
+    // The window's icon (and so the taskbar's) from an .ico file (roadmap 5.2); false if the window or the file isn't there.
+    bool SetGameWindowIcon(const char *file, std::string &details);
 
     // A file written in full takes another's place in one step (a crash never leaves half of one: DuelsRejoin.cpp).
     bool PutFileInPlace(const std::string &from, const std::string &to);

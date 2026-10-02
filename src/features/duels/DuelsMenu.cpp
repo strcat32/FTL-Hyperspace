@@ -17,6 +17,7 @@
 #include "../crash-detection/core/CrashDetector.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -1093,6 +1094,47 @@ HOOK_METHOD_PRIORITY(MainMenu, Open, -2000, () -> bool)
     bool ret = super();
     Duels::Menu::OnMenuOpen();
     return ret;
+}
+
+// The title screen (roadmap 5.2, the user 2026-10-02: "red/blue flash design"): the data mod's background (red against
+// blue, tools/make-menu-art.py) gets two Kestrels facing each other, FTL's own from the player's copy, and an electric
+// arc between them that flickers. Drawn with FTL's glow, right after the background: FTL's logo, buttons and windows
+// (OPTIONS, the credits) stay above, and so does the FTL: DUELS panel.
+static void RenderTitleShips()
+{
+    ResourceControl *resources = G_->GetResources();
+    GL_Texture *ship = resources ? resources->GetImageId("ship/kestral_base.png") : nullptr;
+    if (!ship || ship->width_ <= 0) return;
+    // The same numbers as tools/make-menu-art.py: 30 %, the red one's left edge at 452, the blue one's right edge at
+    // 952, both centred on y 400; they rise and fall a little, out of step.
+    const float scale = 0.30f, w = ship->width_ * scale, h = ship->height_ * scale, centreY = 400.f;
+    double seconds = Duels::RealMs() / 1000.0;
+    float bobLeft = 2.5f * (float)std::sin(seconds * 0.8), bobRight = 2.5f * (float)std::sin(seconds * 0.8 + 1.9);
+    CSurface::GL_BlitImage(ship, 452.f, centreY - h / 2.f + bobLeft, w, h, 0.f, GL_Color(1.f, 0.86f, 0.86f, 1.f), false);
+    CSurface::GL_BlitImage(ship, 952.f - w, centreY - h / 2.f + bobRight, w, h, 0.f, GL_Color(0.86f, 0.9f, 1.f, 1.f), true);
+    // The arc: one of three shapes, another every 50-130 ms, at a flickering strength.
+    static int arc = 0;
+    static float strength = 1.f;
+    static double nextMs = 0.0;
+    double now = Duels::RealMs();
+    if (now >= nextMs)
+    {
+        arc = std::rand() % 3;
+        strength = 0.5f + (float)(std::rand() % 50) / 100.f;
+        nextMs = now + 50.0 + std::rand() % 80;
+    }
+    GL_Texture *image = resources->GetImageId("main_menus/duels_arc_" + std::to_string(arc + 1) + ".png");
+    if (image && image->width_ > 0)
+        CSurface::GL_BlitImage(image, 627.f, 350.f, (float)image->width_, (float)image->height_, 0.f, GL_Color(1.f, 1.f, 1.f, strength), false);
+    CSurface::GL_SetColor(COLOR_WHITE);
+}
+
+HOOK_METHOD_PRIORITY(ResourceControl, RenderImage, -100, (GL_Texture *tex, int x, int y, int rotation, GL_Color color, float opacity, bool mirror) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ResourceControl::RenderImage -> Begin (DuelsMenu.cpp)\n")
+    CApp *app = G_->GetCApp();
+    if (tex && app && tex == app->menu.glowy && app->menu.bOpen) RenderTitleShips();
+    super(tex, x, y, rotation, color, opacity, mirror);
 }
 
 HOOK_METHOD_PRIORITY(MainMenu, OnRender, -2000, () -> void)

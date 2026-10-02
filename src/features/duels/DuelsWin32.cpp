@@ -87,6 +87,23 @@ namespace Duels
         return true;
     }
 
+    bool SetGameWindowIcon(const char *file, std::string &details)
+    {
+        HWND window = GameWindow();
+        if (!window) return false;
+        HICON big = (HICON)LoadImageA(NULL, file, IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_LOADFROMFILE);
+        HICON small = (HICON)LoadImageA(NULL, file, IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_LOADFROMFILE);
+        if (!big && !small)
+        {
+            details = std::string("no icon in ") + file;
+            return false;
+        }
+        if (big) SendMessageA(window, WM_SETICON, ICON_BIG, (LPARAM)big);
+        if (small) SendMessageA(window, WM_SETICON, ICON_SMALL, (LPARAM)small);
+        details = Describe(window);
+        return true;
+    }
+
     bool PutFileInPlace(const std::string &from, const std::string &to)
     {
         return MoveFileExA(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
@@ -162,6 +179,7 @@ namespace Duels
     bool MapToTestDisplay(int &, int &, int &, int &) { return false; }
     void PlaceOnTestDisplay() {}
     bool SetGameWindowTitle(const char *, std::string &details) { details = "not supported"; return false; }
+    bool SetGameWindowIcon(const char *, std::string &details) { details = "not supported"; return false; }
     bool PutFileInPlace(const std::string &from, const std::string &to) { return std::rename(from.c_str(), to.c_str()) == 0; }
 }
 

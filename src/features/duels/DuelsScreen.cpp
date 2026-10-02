@@ -236,6 +236,8 @@ namespace Duels
             {
                 std::string details;
                 titled = SetGameWindowTitle(WINDOW_TITLE, details);
+                // Its icon too (roadmap 5.2): the installer puts ftl-duels.ico next to the game (FTL's own stays without it).
+                if (titled && !SetGameWindowIcon("ftl-duels.ico", details)) Log("Screen: the window keeps FTL's icon (%s)", details.c_str());
             }
         }
     }
