@@ -890,6 +890,7 @@ namespace Duels
             g.taken = Damage();
             g.peerTaken = 0.f;
             g.peerLevels[0] = g.peerLevels[1] = 1.f;
+            if (!replay) Stats::PrepStarted(d.round == 1);   // what is bought now, for the statistics (CJ)
             if (!replay) Refit::OpenShop(d.round, d.shop);
             if (g.local) Ai::OnPrep(d.round, d.scrap, d.shop, d.settings.permadeath);
             // The match begins: the Duels window (the room's code, the waiting) makes way; DUELS opens it again (AM).
@@ -908,6 +909,7 @@ namespace Duels
         static void EnterStarting()
         {
             Refit::CloseShop();
+            Stats::PrepEnded();
             g.fightBegun = false;
             g.roundCleaned = false;
             g.defeatSent = false;
@@ -1049,6 +1051,7 @@ namespace Duels
             line.seconds = g.startedMs > 0.0 ? (int)((Now() - g.startedMs) / 1000.0) : 0;
             line.how = d.matchReason == REASON_LEFT ? std::string("left the match") : std::string(ReasonText(d.matchReason));
             Stats::Record(line);
+            Stats::SendSummary(line, Net::MatchToken());   // the master's statistics (roadmap CJ)
         }
 
         static void EnterMatchOver()

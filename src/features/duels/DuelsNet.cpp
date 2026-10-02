@@ -1336,6 +1336,7 @@ namespace Duels
         size_t PendingReliable() { return g_session.link.PendingReliable(); }
 
         void SetMatchToken(uint64_t token) { g_session.matchToken = token; }
+        uint64_t MatchToken() { return g_session.matchToken; }
         bool Resumed() { return g_session.resumed; }
         bool Cold() { return g_session.cold; }
         bool PeerCold() { return g_session.peerCold; }

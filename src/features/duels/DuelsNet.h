@@ -95,6 +95,8 @@ namespace Duels
         // Debug mode (Duels.h) goes with the handshake, so the other player knows.
         void SetDebugFlag(bool debug);
         bool PeerDebug();
+        // The match's token, both games' (0 before a match).
+        uint64_t MatchToken();
         // The other player's game switched debug mode on during the duel (MSG_DEBUG, DuelsMatch.cpp).
         void SetPeerDebug();
 

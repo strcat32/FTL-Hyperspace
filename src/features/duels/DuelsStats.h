@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,14 @@ namespace Duels
 
         // A finished match: a line at the end of the file.
         void Record(const MatchLine &line);
+
+        // The master's statistics (roadmap CJ; docs/design/stats.md in the FTL: Duels repository): what this game bought,
+        // round by round (its ship before a preparation against after it), and at the match's end its side of the match
+        // to the master (POST /api/summary): the ship, the result, rounds, length, damage, what it bought. Not for a
+        // match against the AI, a replay, a duel in debug mode or a test run; `send_stats off` in duels.cfg: never.
+        void PrepStarted(bool firstRound);
+        void PrepEnded();
+        void SendSummary(const MatchLine &line, uint64_t matchToken);
         // All of them, the oldest first (lines of other versions that don't read are left out).
         std::vector<MatchLine> Load();
     }

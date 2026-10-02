@@ -512,6 +512,13 @@ namespace Duels
             return out;
         }
 
+        bool MasterIsLocal()
+        {
+            Load();
+            std::string base = Base();
+            return base.compare(0, 17, "http://127.0.0.1:") == 0 || base.compare(0, 17, "http://localhost:") == 0;
+        }
+
         std::string GameFields()
         {
             return "\"protocol\": " + std::to_string(Net::Protocol()) + ", \"version\": " + Http::Quote(VERSION);

@@ -53,6 +53,8 @@ namespace Duels
         // This game for the master's ranked requests (roadmap CE): "\"protocol\": 18, \"version\": \"0.8.1\"" (fields of
         // a JSON object), so that an older game is told to update.
         std::string GameFields();
+        // The account's master runs on this computer (a test's: tools/ranked-env.py).
+        bool MasterIsLocal();
         // The master's newest version and the protocol ranked play needs (GET /api/client, asked once a session): a
         // line for the main menu when this game is older ("" if not), and whether ranked play needs the update.
         void FetchClient();
