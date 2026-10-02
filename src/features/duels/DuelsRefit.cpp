@@ -718,8 +718,13 @@ namespace Duels
             return items;
         }
 
+        // The weapons the feed named as needing the weapons system's level (WeaponLevelHint), in this match.
+        static std::set<std::string> g_levelHinted;
+        static double g_levelCheckMs = 0.0;
+
         void OpenShop(int round, const std::vector<ShopItem> &stock)
         {
+            if (round == 1) g_levelHinted.clear();   // (the hints of a match)
             CommandGui *gui = Gui();
             WorldManager *world = G_->GetWorld();
             if (!gui || !world || stock.empty()) return;
@@ -815,11 +820,39 @@ namespace Duels
             return !g_store->infoBox.IsEmpty();
         }
 
+        // A weapon that can't be powered because the weapons system's level is full, while the reactor has bars left: FTL
+        // says "not enough power" then too, and a player who bought a weapon and reactor bars but not the system's level
+        // couldn't tell why (the user's third test, 2026-10-02). The feed says it, once a match for each weapon.
+        static void WeaponLevelHint(ShipManager *own)
+        {
+            double now = RealMs();
+            if (now < g_levelCheckMs || !own->weaponSystem) return;
+            g_levelCheckMs = now + 1000.0;
+            PowerManager *power = PowerManager::GetPowerManager(0);
+            if (!power) return;
+            WeaponSystem *system = own->weaponSystem;
+            int left = system->powerState.second - system->powerState.first;
+            int reactorLeft = power->currentPower.second - power->currentPower.first;
+            for (ProjectileFactory *weapon : own->GetWeaponList())
+            {
+                if (!weapon || weapon->powered || !weapon->blueprint || g_levelHinted.count(weapon->blueprint->name)) continue;
+                int need = weapon->requiredPower;
+                if (left >= need || reactorLeft < need) continue;   // it fits, or the reactor is what's short
+                g_levelHinted.insert(weapon->blueprint->name);
+                std::string text = weapon->name + " needs " + std::to_string(need) + " bar" + (need == 1 ? "" : "s") +
+                                   " of weapons power: the weapons system (level " + std::to_string(system->powerState.second) + ") has " +
+                                   std::to_string(left) + " left. Upgrade it (U) to power it.";
+                Log("Refit: a hint: %s", text.c_str());
+                Console::Feed(text);
+            }
+        }
+
         void OnPrepFrame()
         {
             CommandGui *gui = Gui();
             ShipManager *own = G_->GetShipManager(0);
             if (!gui || !own || !Rounds::InPreparation()) return;
+            WeaponLevelHint(own);
             // A system bought back comes at level 1, for its price (FTL builds it at the level the ship's blueprint
             // gives it: the engines came back at level 2 for 1 scrap after a level had been sold for 10).
             for (auto it = g_refit.buyBackOffered.begin(); it != g_refit.buyBackOffered.end();)

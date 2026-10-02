@@ -123,7 +123,7 @@ namespace Duels
         struct Settings
         {
             uint8_t rounds = 5;
-            uint16_t prepSeconds = 60;
+            uint16_t prepSeconds = 180;     // 3 minutes (the user's third test, 2026-10-02; 60 before)
             bool permadeath = true;
             bool free = false;
             uint16_t stallSeconds = 300;    // anti-stall: a round without a new low for this long ends (0: never)
@@ -1603,6 +1603,17 @@ namespace Duels
             std::string text = Config::Value("match_prep");
             value = std::atoi(text.c_str());
             if (!text.empty() && value >= 0 && value <= 3600) s.prepSeconds = (uint16_t)value;
+            // The default went from 60 s to 3 minutes (2026-10-02): a duels.cfg that kept the old default gets the new one,
+            // once (a host who sets 60 again keeps it).
+            if (Config::Value("match_prep_default").empty())
+            {
+                if (text == "60")
+                {
+                    s.prepSeconds = 180;
+                    Config::SaveValue("match_prep", "180");
+                }
+                Config::SaveValue("match_prep_default", "180");
+            }
             text = Config::Value("match_stall");
             value = std::atoi(text.c_str());
             if (!text.empty() && value >= 0 && value <= 3600) s.stallSeconds = (uint16_t)value;

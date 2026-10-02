@@ -1,4 +1,5 @@
 #include "Global.h"
+#include "MainMenu.h"
 #include "Duels.h"
 #include "DuelsAccount.h"
 #include "DuelsConfig.h"
@@ -688,6 +689,7 @@ namespace Duels
                 Log("Menu: back in the main menu: the duel is left");
                 Match::Leave();
             }
+            Match::ForgetMatch();
         }
 
         static void Close()
@@ -1100,9 +1102,32 @@ HOOK_METHOD_PRIORITY(MainMenu, Open, -2000, () -> bool)
 // blue, tools/make-menu-art.py) gets two Kestrels facing each other, FTL's own from the player's copy, and an electric
 // arc between them that flickers. Drawn with FTL's glow, right after the background: FTL's logo, buttons and windows
 // (OPTIONS, the credits) stay above, and so does the FTL: DUELS panel.
+// FTL's own logo, the letters "FTL", from the player's copy: Hyperspace's title screen swaps it for its own with
+// "HYPERSPACE" under them, and the data mod's image in its place has our "D U E L S" alone (roadmap CK, the user
+// 2026-10-02: "It still says FTL Hyperspace").
+static GL_Texture *FtlLetters()
+{
+    static GL_Texture *letters = nullptr;
+    if (letters) return letters;
+    CustomMainMenu *custom = CustomMainMenu::GetInstance();
+    bool swapped = custom->customTitleScreen;
+    custom->customTitleScreen = false;   // (asked for under its own name, not swapped)
+    letters = G_->GetResources()->GetImageId("main_menus/main_FTL2.png");
+    custom->customTitleScreen = swapped;
+    return letters;
+}
+
 static void RenderTitleShips()
 {
     ResourceControl *resources = G_->GetResources();
+    // FTL's letters where Hyperspace's logo is (862, 7), above the data mod's "D U E L S".
+    GL_Texture *letters = FtlLetters();
+    if (letters && letters->width_ > 0)
+        CSurface::GL_BlitImage(letters, 866.f, 7.f, (float)letters->width_, (float)letters->height_, 0.f, COLOR_WHITE, false);
+    // The subtitle at full strength too (FTL draws its logo dimmed).
+    GL_Texture *subtitle = resources ? resources->GetImageId("main_menus/main_FTL2_hyperspace.png") : nullptr;
+    if (subtitle && subtitle->width_ > 0)
+        CSurface::GL_BlitImage(subtitle, 862.f, 7.f, (float)subtitle->width_, (float)subtitle->height_, 0.f, COLOR_WHITE, false);
     GL_Texture *ship = resources ? resources->GetImageId("ship/kestral_base.png") : nullptr;
     if (!ship || ship->width_ <= 0) return;
     // The same numbers as tools/make-menu-art.py: 30 %, the red one's left edge at 452, the blue one's right edge at

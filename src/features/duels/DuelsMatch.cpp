@@ -3549,6 +3549,18 @@ namespace Duels
             Ai::Stop();   // a match against the AI (roadmap 3.6)
         }
 
+        void ForgetMatch()
+        {
+            // Back in the main menu, the duel or the replay over: nothing of it stays for the next run. A replay watched
+            // after a match began with FTL's first box that wouldn't close (FTL takes its answer only while paused, and the
+            // match's no-pause stayed) and MATCH OVER on the score panel (the user's third test, 2026-10-02).
+            if (Net::GetPhase() != Net::Phase::Idle || Net::Replaying()) return;
+            ResetMatch();
+            GetState().noPause = false;
+            GetState().aiOff[1] = false;
+            Rounds::Reset();
+        }
+
         void SetDebug(bool debug)
         {
             Net::SetDebugFlag(debug);

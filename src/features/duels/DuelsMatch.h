@@ -52,6 +52,8 @@ namespace Duels
         bool JoinRelay(const std::string &server, uint16_t port, const std::string &code, const std::string &password,
                        std::string &message);
         void Leave();
+        // Back in the main menu: the last match's (or replay's) state gone, FTL's pause again (DuelsMenu.cpp).
+        void ForgetMatch();
         // Chat to the other player (cleaned, cut to a length, a few lines per 10 s at most; rules, section 8).
         bool Say(const std::string &text, std::string &message);
         // Test verb "chatflood <count>": that many chat lines at once, past the sender's limits.

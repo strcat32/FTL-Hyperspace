@@ -144,7 +144,7 @@ namespace Duels
         struct NextDuel
         {
             int rounds = 5;
-            int prepSeconds = 60;
+            int prepSeconds = 180;   // (3 minutes: the user's third test, 2026-10-02; 60 before)
             int stallSeconds = 300;
             bool permadeath = true;
             uint8_t env = 0;        // Environment::Mode
