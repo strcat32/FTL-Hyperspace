@@ -145,6 +145,9 @@ namespace Duels
         // True while a replay starts again by itself (stop, a seek back): the lost connection and the new one that this
         // is in Net's replay mode stay out of the feed (DuelsMatch.cpp, DuelsRounds.cpp).
         bool ReplayRestarting();
+        // A seek runs many of FTL's world steps a frame, and a start again replays the demo up to the time sought: their
+        // sounds are held (SoundControl::PlaySoundMix, roadmap CZ: a seek was a burst of noise).
+        bool SoundsHeld();
         // The other player's side (BA): the replay starts again from there and runs to where it was. Full sensors on or
         // off, at once. Both need both players' full states (ReplayView::bothSides); the feed says so otherwise.
         void ReplaySwitchView();

@@ -694,6 +694,9 @@ namespace Duels
             // scenario isn't loaded yet then (forgetting reads the match settings, and a scenario's start from the
             // defaults, not from duels.cfg).
             if (g.openedBefore) Match::ForgetMatch();
+            // FTL's looping sounds (a room losing air, fires) stop: FTL's way to the main menu leaves them playing (roadmap
+            // CU: the oxygen loss went on in the menu after a match). A game's first frame sets them going again.
+            if (g.openedBefore && G_->GetSoundControl()) G_->GetSoundControl()->PauseLoops1(true);
             g.openedBefore = true;
         }
 

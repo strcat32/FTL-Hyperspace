@@ -61,6 +61,8 @@ namespace Duels
         // FTL's place for the store's tabbed window, taken before the first move (the window keeps ours afterwards).
         static bool g_storePlaced = false;
         static int g_ftlStoreX = 0, g_ftlStoreY = 0;
+        static bool g_shipScreensPlaced = false;
+        static int g_ftlShipScreensX = 0, g_ftlShipScreensY = 0;
 
         static CommandGui *Gui()
         {
@@ -176,10 +178,14 @@ namespace Duels
             std::vector<ShopItem> stock;
             BlueprintManager *blueprints = G_->GetBlueprints();
             if (!blueprints) return stock;
-            // The price cap for weapons and drones (rules, section 7; the fine setting shop.price_caps, roadmap BE): 55,
-            // 65, 75, 85, then none.
-            std::vector<double> caps = Tune::Numbers("shop.price_caps");
-            int cap = round >= 1 && round <= (int)caps.size() ? (int)caps[round - 1] : 0;
+            // The round's price caps (rules, section 7: the tiers; fine settings, roadmap BE): weapons and drones 55, 65,
+            // 75, 85, then none; augments 50, 60, 80, 100 and systems 60, 80, 90, 150 (roadmap CP: a 120-scrap Weapon
+            // Pre-Igniter was for sale in round 1).
+            auto capOf = [round](const char *setting) -> int {
+                std::vector<double> caps = Tune::Numbers(setting);
+                return round >= 1 && round <= (int)caps.size() ? (int)caps[round - 1] : 0;
+            };
+            int cap = capOf("shop.price_caps"), augmentCap = capOf("shop.augment_caps"), systemCap = capOf("shop.system_caps");
             // Every kind every round (those shop.kinds names), each on a page of its own (AP), in this order.
             static const uint8_t KINDS[] = {KIND_WEAPON, KIND_DRONE, KIND_AUGMENT, KIND_SYSTEM, KIND_CREW};
             static const char *const KIND_WORDS[] = {"weapons", "drones", "augments", "systems", "crew"};
@@ -193,8 +199,8 @@ namespace Duels
                 {
                 case KIND_WEAPON: pool = Pool(blueprints->weaponBlueprints, cap, kind); break;
                 case KIND_DRONE: pool = Pool(blueprints->droneBlueprints, cap, kind); break;
-                case KIND_AUGMENT: pool = Pool(blueprints->augmentBlueprints, 0, kind); break;
-                case KIND_SYSTEM: pool = Pool(blueprints->systemBlueprints, 0, kind); break;
+                case KIND_AUGMENT: pool = Pool(blueprints->augmentBlueprints, augmentCap, kind); break;
+                case KIND_SYSTEM: pool = Pool(blueprints->systemBlueprints, systemCap, kind); break;
                 case KIND_CREW: pool = Pool(blueprints->crewBlueprints, 0, kind); break;
                 default: break;
                 }
@@ -220,6 +226,13 @@ namespace Duels
             parts.kind = KIND_DRONE_PARTS;
             parts.count = (uint8_t)Tune::Number("shop.drone_parts");
             if (parts.count > 0) stock.push_back(parts);
+            std::string listed;
+            for (const ShopItem &item : stock)
+            {
+                if (!item.blueprint.empty()) listed += " " + item.blueprint + " " + std::to_string(item.price);
+            }
+            Log("Refit: round %d's stock (caps: weapons and drones %d, augments %d, systems %d; 0 none):%s", round, cap, augmentCap,
+                systemCap, listed.c_str());
             return stock;
         }
 
@@ -806,6 +819,15 @@ namespace Duels
                 Log("Refit: FTL's store window at %d,%d; ours %d px lower", g_ftlStoreX, g_ftlStoreY, STORE_LOWER);
             }
             gui->storeScreens.SetPosition(Point(g_ftlStoreX, g_ftlStoreY + STORE_LOWER));
+            // The ship's screens (upgrades, crew, cargo) as much lower (roadmap CW): the score panel covered their tabs.
+            if (!g_shipScreensPlaced)
+            {
+                g_shipScreensPlaced = true;
+                g_ftlShipScreensX = gui->shipScreens.position.x;
+                g_ftlShipScreensY = gui->shipScreens.position.y;
+                Log("Refit: FTL's ship screens at %d,%d; ours %d px lower", g_ftlShipScreensX, g_ftlShipScreensY, STORE_LOWER);
+            }
+            gui->shipScreens.SetPosition(Point(g_ftlShipScreensX, g_ftlShipScreensY + STORE_LOWER));
             ++g_refit.shops;
             Log("Refit: round %d's shop is open (%u items, %u to buy back)%s", round, (unsigned)stock.size(), (unsigned)buyBack.size(),
                 store ? "" : ", but no store came");
@@ -814,10 +836,19 @@ namespace Duels
         bool StoreDescriptionShown()
         {
             CommandGui *gui = Gui();
-            if (!g_store || !gui || !gui->storeScreens.bOpen || !Rounds::InPreparation()) return false;
+            if (!gui || !Rounds::InPreparation()) return false;
             // (Hyperspace's store draws its Store's info box right of it, the item's tip box under it: the right side, from
             // the store's top down to FTL's systems.)
-            return !g_store->infoBox.IsEmpty();
+            if (g_store && gui->storeScreens.bOpen && !g_store->infoBox.IsEmpty()) return true;
+            // The ship's screens show a system's, a crew member's or an item's description there too (roadmap CW): the tab
+            // on screen (another keeps its last one).
+            TabbedWindow &screens = gui->shipScreens;
+            if (!screens.bOpen || screens.currentTab >= screens.windows.size()) return false;
+            FocusWindow *shown = screens.windows[screens.currentTab];
+            if (shown == (FocusWindow*)&gui->upgradeScreen) return !gui->upgradeScreen.infoBox.IsEmpty();
+            if (shown == (FocusWindow*)&gui->crewScreen) return !gui->crewScreen.infoBox.IsEmpty();
+            if (shown == (FocusWindow*)&gui->equipScreen) return !gui->equipScreen.infoBox.IsEmpty();
+            return false;
         }
 
         // A weapon that can't be powered because the weapons system's level is full, while the reactor has bars left: FTL
@@ -1008,12 +1039,15 @@ namespace Duels
             return paid;
         }
 
-        bool TakeBackLevel(UpgradeBox *box)
+        bool TakeBackLevel(UpgradeBox *box, int mouseX, int mouseY)
         {
             if (!box || !box->system || !box->ship || box->tempUpgrade != 0 || !Rounds::InPreparation()) return false;
-            // The box under the mouse, as FTL's own right-click asks.
+            // The box under the mouse: its button's place (roadmap CV: not FTL's hover, which a button switched off,
+            // a system at its top level or one the scrap can't raise, never has).
             Button *button = box->currentButton;
-            if (!button || !button->bActive || !button->bHover) return false;
+            if (!button) return false;
+            const Globals::Rect &r = button->hitbox;
+            if (mouseX < r.x || mouseX >= r.x + r.w || mouseY < r.y || mouseY >= r.y + r.h) return false;
             ShipSystem *system = box->system;
             ShipManager *ship = box->ship;
             int id = system->iSystemType;
@@ -1144,18 +1178,43 @@ namespace Duels
                           "what it cost at a second right-click");
         }
 
-        void ResetWeaponCharge()
+        // A weapon empty: its bar and its charges (FTL fires by the charges, ProjectileFactory::ReadyToFire: emptying the
+        // bar alone left a charged artillery to fire at once).
+        static void Empty(ProjectileFactory *weapon)
+        {
+            if (!weapon) return;
+            weapon->cooldown.first = 0.f;
+            weapon->chargeLevel = 0;
+        }
+
+        void HoldCharges()
         {
             ShipManager *own = G_->GetShipManager(0);
             if (!own) return;
             if (own->weaponSystem)
             {
-                for (ProjectileFactory *weapon : own->GetWeaponList()) weapon->cooldown.first = 0.f;
+                for (ProjectileFactory *weapon : own->GetWeaponList()) Empty(weapon);
             }
             for (ArtillerySystem *artillery : own->artillerySystems)
             {
-                if (artillery && artillery->projectileFactory) artillery->projectileFactory->cooldown.first = 0.f;
+                if (artillery) Empty(artillery->projectileFactory);
             }
+        }
+
+        void ResetWeaponCharge()
+        {
+            HoldCharges();
+            ShipManager *own = G_->GetShipManager(0);
+            if (!own || !own->weaponSystem || own->HasAugmentation("WEAPON_PREIGNITE") <= 0) return;
+            // As FTL's WeaponSystem::Jump: every powered weapon full (ForceCoolup; a charger's charges too).
+            int filled = 0;
+            for (ProjectileFactory *weapon : own->GetWeaponList())
+            {
+                if (!weapon || !weapon->powered) continue;
+                weapon->ForceCoolup();
+                ++filled;
+            }
+            Log("Refit: the Weapon Pre-Igniter: %d weapon(s) charged as the fight begins", filled);
         }
     }
 }

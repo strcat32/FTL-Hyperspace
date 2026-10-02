@@ -1276,6 +1276,11 @@ namespace Duels
             return g_restarting;
         }
 
+        bool SoundsHeld()
+        {
+            return g_restarting || (g_replay.active && g_replay.seekTo >= 0.0);
+        }
+
         void ReplayStop()
         {
             if (!g_replay.active) return;

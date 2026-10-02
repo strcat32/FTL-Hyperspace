@@ -378,6 +378,7 @@ namespace Duels
             row(s.inMatch ? "Now: " + s.state : "", white);
             row(s.inMatch && !s.score.empty() ? std::string(1, (char)toupper(s.score[0])) + s.score.substr(1) : "", white);
             row(s.fight, white);
+            row(s.stall, gold);
             row(s.inMatch ? s.tally : "", white);
             row(s.lastRound, soft);
             row(s.drawText, gold);

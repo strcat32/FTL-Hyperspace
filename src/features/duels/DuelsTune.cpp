@@ -31,6 +31,8 @@ namespace Duels
         static const std::vector<Setting> SETTINGS = {
             {"shop.scrap", "100,126,162", 'l', 0, 9999, "the scrap each round brings; after the list each round adds its last step"},
             {"shop.price_caps", "55,65,75,85", 'l', 0, 999, "the highest price of a weapon or drone in the shop, round by round (none after the list)"},
+            {"shop.augment_caps", "50,60,80,100", 'l', 0, 999, "the highest price of an augment in the shop, round by round (none after the list)"},
+            {"shop.system_caps", "60,80,90,150", 'l', 0, 999, "the highest price of a system in the shop, round by round (none after the list)"},
             {"shop.kinds", "weapons,drones,augments,systems,crew", 'w', 0, 0, "what the shop sells (weapons, drones, augments, systems, crew)"},
             {"shop.exclude", "", 'w', 0, 0, "blueprints the shop never sells (BEAM_1,DRONE_HACKING ...)"},
             {"shop.missiles", "8", 'n', 0, 99, "missiles on sale each round"},

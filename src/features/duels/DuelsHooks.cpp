@@ -24,6 +24,7 @@
 #include "DuelsRounds.h"
 #include "DuelsScreen.h"
 #include "DuelsShipControl.h"
+#include "DuelsTrace.h"
 #include "DuelsView.h"
 #include "DuelsWindow.h"
 
@@ -325,8 +326,47 @@ HOOK_METHOD_PRIORITY(ShipManager, SetSafe, -2000, () -> void)
 HOOK_METHOD_PRIORITY(UpgradeBox, MouseRightClick, -2000, (int mX, int mY) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> UpgradeBox::MouseRightClick -> Begin (DuelsHooks.cpp)\n")
-    if (Duels::Refit::TakeBackLevel(this)) return;
+    if (Duels::Refit::TakeBackLevel(this, mX, mY)) return;
     super(mX, mY);
+}
+
+// The store's subsystems (doors, sensors, piloting, a backup battery) fit again (roadmap CR): the bays don't take the
+// places Hyperspace counts.
+HOOK_METHOD_PRIORITY(SystemStoreBox, CanHold, -2000, () -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SystemStoreBox::CanHold -> Begin (DuelsHooks.cpp)\n")
+    if (shopper && ShipSystem::IsSubsystem(itemId)) return Duels::Bays::CanFitSubsystem(shopper, itemId);
+    return super();
+}
+
+// A hacking drone needs a drone part (roadmap CV): with none left, FTL's hacking button only warns of power. Missiles
+// and drone parts don't come back between rounds (rules, section 7).
+HOOK_METHOD_PRIORITY(HackBox, MouseClick, -2000, (bool force) -> bool)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> HackBox::MouseClick -> Begin (DuelsHooks.cpp)\n")
+    static double toldAt = -1.0e9;
+    MouseControl *mouse = G_->GetMouseControl();
+    const Globals::Rect &r = hackButton.hitbox;
+    if (hackSys && shipManager && shipManager->iShipId == 0 && !hackSys->bHacking && shipManager->GetDroneCount() <= 0 && mouse &&
+        mouse->position.x >= r.x && mouse->position.x < r.x + r.w && mouse->position.y >= r.y && mouse->position.y < r.y + r.h &&
+        Duels::WallMs() - toldAt > 3000.0)
+    {
+        toldAt = Duels::WallMs();
+        Duels::Console::Feed("Hacking: the drone needs a drone part, and the ship has none left (they don't come back between "
+                             "rounds): buy drone parts in the shop");
+        Duels::Log("Hacking: the drone needs a drone part, none left");
+    }
+    return super(force);
+}
+
+// FTL's sounds (roadmap CU, CZ): none while a replay seeks or starts again (each of its many world steps a frame played
+// its own), and a log line for one that comes again and again.
+HOOK_METHOD_PRIORITY(SoundControl, PlaySoundMix, -2000, (const std::string &soundName, float volume, bool loop) -> int)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SoundControl::PlaySoundMix -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Demo::SoundsHeld()) return 0;   // FTL's own "no sound played"
+    Duels::NoteSound(soundName);
+    return super(soundName, volume, loop);
 }
 
 HOOK_METHOD_PRIORITY(ReactorButton, OnRightClick, -2000, () -> void)
@@ -838,6 +878,16 @@ HOOK_METHOD_PRIORITY(CompleteShip, InitiateTeleport, -2000, (int targetRoom, int
 }
 
 // Our mind control aimed at the opponent's ship: their game picks whom it takes (DuelsMind.cpp; roadmap 4.5).
+// Our ship has the MIND_ORDER augment in a duel (rules, section 2; roadmap CS): Hyperspace lets a player select and
+// order the enemy crew its mind control holds only with it.
+HOOK_METHOD_PRIORITY(ShipObject, HasAugmentation, -2000, (const std::string &name) -> int)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> ShipObject::HasAugmentation -> Begin (DuelsHooks.cpp)\n")
+    int count = super(name);
+    if (count <= 0 && iShipId == 0 && name == "MIND_ORDER" && Duels::Mind::OrdersFromUs()) return 1;
+    return count;
+}
+
 HOOK_METHOD_PRIORITY(MindSystem, QueueMindControl, -2000, (std::vector<CrewMember*> *crew, int roomId, int shipId) -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> MindSystem::QueueMindControl -> Begin (DuelsHooks.cpp)\n")

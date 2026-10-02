@@ -112,6 +112,10 @@ namespace Duels
         bool OriginalRoomCorner(ShipSystem *system, int &x, int &y);
 
         bool IsBay(const ShipSystem *system);
+        // SystemStoreBox::CanHold for a subsystem (roadmap CR): Hyperspace counts every system without reactor power
+        // against the ship's subsystem limit, the bays too (custom subsystems), so a duel's ship had no room for doors,
+        // sensors, piloting or a backup battery, bought or bought back. Here the bays don't count.
+        bool CanFitSubsystem(ShipManager *ship, int systemId);
         // SystemBox::MouseMove: the tooltip of a bay's icon (the enemy window): its weapon or drone, and how the bay is.
         // FTL's own text for a system comes from level descriptions the bays (custom systems) don't have.
         bool Tooltip(const ShipSystem *system, std::string &text);

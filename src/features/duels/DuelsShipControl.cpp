@@ -1180,9 +1180,9 @@ namespace Duels
                 ProjectileFactory *weapon = weapons[slot];
                 // angle: where its shots leave (FTL's firing angle, 0 right, 270 up, in its ship's space), and where
                 // they come into the other space; mount: rotated, mirrored.
-                Log("  weapon %u %-18s type %d power %d %s charge %.2f/%.2f autofire %d angle %.0f entry %.0f mount %d%d", (unsigned)slot,
+                Log("  weapon %u %-18s type %d power %d %s charge %.2f/%.2f (%d) autofire %d angle %.0f entry %.0f mount %d%d", (unsigned)slot,
                     weapon->name.c_str(), weapon->blueprint ? weapon->blueprint->type : -1, weapon->requiredPower,
-                    weapon->powered ? "on " : "off", weapon->cooldown.first, weapon->cooldown.second,
+                    weapon->powered ? "on " : "off", weapon->cooldown.first, weapon->cooldown.second, weapon->chargeLevel,
                     (int)weapon->autoFiring, weapon->currentFiringAngle, weapon->currentEntryAngle, (int)weapon->mount.rotate,
                     (int)weapon->mount.mirror);
             }
@@ -1191,9 +1191,9 @@ namespace Duels
         {
             ProjectileFactory *weapon = ship->artillerySystems[index] ? ship->artillerySystems[index]->projectileFactory : nullptr;
             if (!weapon) continue;
-            Log("  artillery %u %-15s type %d %s charge %.2f/%.2f", (unsigned)index, weapon->name.c_str(),
+            Log("  artillery %u %-15s type %d %s charge %.2f/%.2f (%d)", (unsigned)index, weapon->name.c_str(),
                 weapon->blueprint ? weapon->blueprint->type : -1, weapon->powered ? "on " : "off", weapon->cooldown.first,
-                weapon->cooldown.second);
+                weapon->cooldown.second, weapon->chargeLevel);
         }
         std::vector<CrewMember*> crew = OwnCrew(ship);
         for (size_t index = 0; index < crew.size(); ++index)

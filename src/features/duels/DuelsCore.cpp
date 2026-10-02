@@ -4,6 +4,7 @@
 #include "DuelsConfig.h"
 #include "DuelsConsole.h"
 #include "DuelsMatch.h"
+#include "DuelsNet.h"
 #include "DuelsScreen.h"
 #include "DuelsLobby.h"
 #include "DuelsQueue.h"
@@ -15,6 +16,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 
 namespace Duels
 {
@@ -136,6 +138,29 @@ namespace Duels
 
     // Test runs play silently (DUELS_MUTE=1, set by the test runners). Sound and music go to 0 on every frame, since
     // the options menu would set them back.
+    void NoteSound(const std::string &name)
+    {
+        struct Count
+        {
+            double since = -1.0;
+            int count = 0;
+            double loggedAt = -1.0e12;
+        };
+        static std::map<std::string, Count> counts;
+        double now = RealMs();
+        Count &c = counts[name];
+        if (c.since < 0.0 || now - c.since > 1000.0)
+        {
+            c.since = now;
+            c.count = 0;
+        }
+        if (++c.count == 8 && now - c.loggedAt > 10000.0)
+        {
+            c.loggedAt = now;
+            Log("Sounds: '%s' 8 times within a second", name.c_str());
+        }
+    }
+
     static void MuteForTests()
     {
         static int mute = -1;
@@ -151,8 +176,45 @@ namespace Duels
         if (sound->GetMusicVolume() != 0.f) sound->SetMusicVolume(0.f);
     }
 
+    // FTL's world keeps real time only at 32 frames a second and more: its step stops growing at 31.25 ms (roadmap CY).
+    // A duel's game below that charges its weapons, walks its crew and burns slower than the opponent's: it is told,
+    // once a duel. (The frame limit and V-sync themselves change nothing else: each step is scaled by the frame's time.)
+    static void CheckFrameRate()
+    {
+        static double since = -1.0;
+        static int frames = 0;
+        static bool told = false;
+        if (!Net::IsConnected() || Net::Replaying())
+        {
+            since = -1.0;
+            frames = 0;
+            told = false;
+            return;
+        }
+        double now = RealMs();
+        if (since < 0.0)
+        {
+            since = now;
+            frames = 0;
+            return;
+        }
+        ++frames;
+        if (now - since < 5000.0) return;
+        double fps = frames * 1000.0 / (now - since);
+        since = now;
+        frames = 0;
+        if (fps >= 30.0 || told) return;
+        told = true;
+        char text[200];
+        std::snprintf(text, sizeof(text), "This game runs at %.0f frames a second: below 32 FTL slows its world down (your "
+                                          "weapons charge slower). Close other programs or lower the screen's size.", fps);
+        Console::Feed(text);
+        Log("Frames: %.1f a second in a duel (FTL's world runs slower than real time below 32)", fps);
+    }
+
     void OnFrame()
     {
+        CheckFrameRate();
         if (++g_frame == 1)
         {
             Log("FTL:Duels module %s loaded", VERSION);

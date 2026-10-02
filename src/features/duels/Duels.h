@@ -63,6 +63,10 @@ namespace Duels
     // Called when the game shuts down; flushes and closes trace files.
     void Shutdown();
 
+    // FTL plays a sound (SoundControl::PlaySoundMix): one that comes again and again is logged, with how often (roadmap
+    // CU: a sound repeated over and over in the fourth test, which one wasn't known).
+    void NoteSound(const std::string &name);
+
     // Autotest harness (DuelsAutotest.cpp): runs a scenario from duels_autotest.txt without a human.
     void AutotestOnFrame();
     bool AutotestActive();

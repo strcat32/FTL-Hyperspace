@@ -124,7 +124,7 @@ namespace Duels
         {
             uint8_t rounds = 5;
             uint16_t prepSeconds = 180;     // 3 minutes (the user's third test, 2026-10-02; 60 before)
-            bool permadeath = true;
+            bool permadeath = false;        // the crew comes back every round (the user's fourth test, 2026-10-02; on before)
             bool free = false;
             uint16_t stallSeconds = 300;    // anti-stall: a round without a new low for this long ends (0: never)
             uint8_t env = Environment::MODE_AUTO;   // the fights' environments (rules, section 5)
@@ -1619,6 +1619,17 @@ namespace Duels
             if (!text.empty() && value >= 0 && value <= 3600) s.stallSeconds = (uint16_t)value;
             text = Config::Value("match_permadeath");
             if (text == "on" || text == "off") s.permadeath = text == "on";
+            // The default went from on to off (2026-10-02, the user: the crew comes back every round): a duels.cfg that
+            // kept the old default gets the new one, once (a host who turns it on again keeps it).
+            if (Config::Value("match_permadeath_default").empty())
+            {
+                if (text == "on")
+                {
+                    s.permadeath = false;
+                    Config::SaveValue("match_permadeath", "off");
+                }
+                Config::SaveValue("match_permadeath_default", "off");
+            }
             text = Config::Value("match_free");
             if (text == "on" || text == "off") s.free = text == "on";
             uint8_t mode;
@@ -2281,6 +2292,10 @@ namespace Duels
             if (d.phase == Phase::Choice) ChoiceNews();
             if (BetweenFights() && !Net::Replaying()) Refit::KeepAir();
             if (d.phase == Phase::Prep && !Net::Replaying()) Refit::OnPrepFrame();
+            // Nothing of ours charges before the fight begins (roadmap CO): an artillery charged in the preparation fired
+            // at the other ship as soon as it was there.
+            bool beforeFight = d.phase == Phase::Prep || d.phase == Phase::Starting || (d.phase == Phase::Fight && !g.fightBegun);
+            if (beforeFight && !d.settings.free && !Net::Replaying()) Refit::HoldCharges();
 
             if (d.phase == Phase::Fight && !g.fightBegun && d.fightStart >= 0.0 && now >= FromHost(d.fightStart)) BeginFight();
             if (g.fightBegun && (d.phase == Phase::Fight || d.phase == Phase::Ending)) CountDamage();
@@ -2393,7 +2408,9 @@ namespace Duels
 
         bool GameOverAllowed()
         {
-            return !g.active;
+            // Never in a replay (roadmap CZ): a seek starts the replay again, and FTL's game over came in between, over a
+            // ship whose crew was dead at the time sought, and stayed (its screen takes ESC too).
+            return !g.active && !Net::Replaying();
         }
 
         bool ShoppingAllowed()
@@ -3087,6 +3104,14 @@ namespace Duels
             {
                 s.fight = d.env.kind == Environment::NONE ? std::string("This round: open space")
                                                           : std::string("This round: near ") + Environment::KindName(d.env.kind);
+            }
+            // The anti-stall timer, all through the fight (roadmap CT; the fight strip has it in its last minute only).
+            if (!d.settings.free && d.phase == Phase::Fight && g.fightBegun && d.stallEnd >= 0.0)
+            {
+                int left = (int)std::ceil(std::max(0.0, FromHost(d.stallEnd) - Now()) / 1000.0);
+                char text[80];
+                std::snprintf(text, sizeof(text), "Stalemate in %d:%02d unless a ship loses hull or crew", left / 60, left % 60);
+                s.stall = text;
             }
             int won = 0, lost = 0, drawn = 0;
             for (size_t i = 0; i < d.results.size(); ++i)

@@ -4,6 +4,7 @@
 #include "DuelsCrew.h"
 #include "DuelsMind.h"
 #include "DuelsNet.h"
+#include "DuelsRounds.h"
 #include "DuelsTrace.h"
 #include "DuelsView.h"
 #include "DuelsWire.h"
@@ -48,10 +49,18 @@ namespace Duels
             return Net::IsConnected() && G_->GetShipManager(0) && G_->GetShipManager(1);
         }
 
+        bool OrdersFromUs()
+        {
+            return (InDuel() || Rounds::IsLocal()) && !Net::Replaying();
+        }
+
         bool QueueToOwner(MindSystem *system, int room, int shipId)
         {
             ShipManager *own = G_->GetShipManager(0);
             if (!InDuel() || !own || system != own->mindSystem || shipId != 1) return false;
+            // The click is taken: the button disarms, as FTL's own control does once it is aimed (roadmap CS: armed still,
+            // the next click on the crew it took aimed another control at them instead of selecting them).
+            system->SetArmed(0);
             // One at a time: while their game picks, another click waits for its answer.
             double now = WallMs();
             if (g_mind.askedMs >= 0.0 && now - g_mind.askedMs < ANSWER_TIMEOUT_MS)
@@ -390,9 +399,73 @@ namespace Duels
                           std::to_string(gui->combatControl.MindControlArmed()) + ")";
                 return true;
             }
+            if (enemy && what.compare(0, 9, "uirclick ") == 0)
+            {
+                // The order's right-click on the room's centre (after mind uiorder: FTL found the room under the mouse in
+                // the frames between, as it does when a player moves the mouse there).
+                int room = std::atoi(what.c_str() + 9);
+                CApp *app = G_->GetCApp();
+                CommandGui *gui = app ? app->gui : nullptr;
+                Pointf center = room >= 0 && room < (int)enemy->ship.vRoomList.size() ? enemy->GetRoomCenter(room) : Pointf(0.f, 0.f);
+                float rx, ry;
+                if (!gui || !View::ShipToScreen(1, center.x, center.y, rx, ry))
+                {
+                    message = "no such room of the enemy's on the screen";
+                    return false;
+                }
+                size_t before = gui->crewControl.selectedCrew.size();
+                // As a player's mouse that rests there: FTL finds the enemy room under it once a frame (CombatControl::
+                // UpdateTarget), and its crew control takes that room at the next move (the test's mouse isn't the
+                // system's cursor, which FTL follows between frames).
+                gui->MouseMove((int)rx, (int)ry);
+                gui->combatControl.UpdateTarget();
+                gui->MouseMove((int)rx, (int)ry);
+                std::string crewSide = " (crew control: room " + std::to_string(gui->crewControl.selectedRoom) +
+                                       (gui->crewControl.selectedPlayerShip ? ", our ship" : ", their ship") + ")";
+                gui->RButtonDown((int)rx, (int)ry, false);
+                gui->RButtonUp((int)rx, (int)ry, false);
+                message = "right-clicked the enemy's room " + std::to_string(room) + " at " + std::to_string((int)rx) + "," +
+                          std::to_string((int)ry) + " (the room under the mouse: " + std::to_string(gui->combatControl.selectedRoom) +
+                          "; " + std::to_string(before) + " crew selected before, " + std::to_string(gui->crewControl.selectedCrew.size()) +
+                          " after)" + crewSide;
+                return true;
+            }
+            if (enemy && what.compare(0, 8, "uiorder ") == 0)
+            {
+                // As a player orders them (roadmap CS): a click on the first crew member our control holds, where the screen
+                // shows it (FTL selects it), then the mouse over the room's centre (mind uirclick <room> gives the order).
+                int room = std::atoi(what.c_str() + 8);
+                CApp *app = G_->GetCApp();
+                CommandGui *gui = app ? app->gui : nullptr;
+                Pointf center = room >= 0 && room < (int)enemy->ship.vRoomList.size() ? enemy->GetRoomCenter(room) : Pointf(0.f, 0.f);
+                float rx, ry, cx, cy;
+                if (!gui || mind->controlledCrew.empty() || !View::ShipToScreen(1, center.x, center.y, rx, ry))
+                {
+                    message = mind->controlledCrew.empty() ? "our mind control holds nobody" : "no such room of the enemy's on the screen";
+                    return false;
+                }
+                CrewMember *crew = mind->controlledCrew.front();
+                if (!View::ShipToScreen(crew->currentShipId, crew->x, crew->y, cx, cy))
+                {
+                    message = "the crew member isn't on the screen";
+                    return false;
+                }
+                gui->MouseMove((int)cx, (int)cy);
+                gui->LButtonDown((int)cx, (int)cy, false);
+                gui->LButtonUp((int)cx, (int)cy, false);
+                const std::vector<CrewMember*> &selected = gui->crewControl.selectedCrew;
+                bool picked = std::find(selected.begin(), selected.end(), crew) != selected.end();
+                std::ostringstream out;
+                out << "clicked our controlled crew member (room " << crew->iRoomId << ") at " << (int)cx << "," << (int)cy << ": "
+                    << selected.size() << " selected" << (picked ? ", it among them" : ", not it") << "; the mouse over the enemy's room "
+                    << room << " at " << (int)rx << "," << (int)ry;
+                gui->MouseMove((int)rx, (int)ry);
+                message = out.str();
+                return picked;
+            }
             if (!enemy || what.compare(0, 5, "room ") != 0)
             {
-                message = !enemy ? "no enemy ship" : "usage: mind room <room> | mind ui <room> | mind own <room> | mind order <room>";
+                message = !enemy ? "no enemy ship" : "usage: mind room <room> | mind ui <room> | mind uiorder <room> | mind own <room> | mind order <room>";
                 return false;
             }
             int room = std::atoi(what.c_str() + 5);

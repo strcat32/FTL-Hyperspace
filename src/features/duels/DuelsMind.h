@@ -41,6 +41,11 @@ namespace Duels
         // handled here; FTL's queue stays empty).
         bool QueueToOwner(MindSystem *system, int room, int shipId);
 
+        // The player whose mind control took an enemy crew member gives it orders (rules, section 2): Hyperspace allows
+        // that only with the MIND_ORDER augment, which our ship has in a duel (ShipObject::HasAugmentation; roadmap CS:
+        // the crew taken couldn't be selected, so no order went).
+        bool OrdersFromUs();
+
         // ShipManager::CommandCrewMoveRoom: an order to a puppet under our mind control, or to our crew aboard their
         // ship (DuelsBoarding.cpp), goes to the game that decides about them (true = handled here).
         bool OrderToOwner(ShipManager *ship, CrewMember *crew, int room);

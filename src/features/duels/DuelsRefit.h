@@ -87,8 +87,13 @@ namespace Duels
         // the system on the buy-back page (roadmap BJ: a sixth page, our sold systems at FTL's price).
         void OnPrepFrame();
 
-        // The fight begins as at a new beacon: weapons start uncharged.
+        // The fight begins as at a new beacon: weapons and artillery start uncharged, the weapons full with a Weapon
+        // Pre-Igniter (FTL fills them as a ship arrives; roadmap CO).
         void ResetWeaponCharge();
+
+        // Each frame of a preparation and the ships' meeting: our weapons and artillery stay empty (FTL charges powered
+        // ones any time, and fires an artillery as soon as it is charged and there is a ship to aim at; roadmap CO).
+        void HoldCharges();
 
         // The store and the ship's screens (upgrades, crew, equipment) in the preparation (roadmap Q). FTL sends every
         // click and key to its open window, so with the store open (it opens by itself) the upgrade button and the
@@ -107,7 +112,7 @@ namespace Duels
         // the right-click was taken. RenderSaleMark marks a box whose sale waits for the second click; OnUpgradesOpen
         // shows the tip once a match. The sale itself happens in OnUpgradesLoop (Upgrades::OnLoop, before FTL's own):
         // it builds the screen's boxes anew, which a right-click can't do while FTL goes through them.
-        bool TakeBackLevel(UpgradeBox *box);
+        bool TakeBackLevel(UpgradeBox *box, int mouseX, int mouseY);
         bool TakeBackReactor(ReactorButton *button);
         void RenderSaleMark(UpgradeBox *box);
         // Where the upgrade screen last drew a system's box (its button's hit box), for the test verb upgradeclick:

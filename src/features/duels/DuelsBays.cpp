@@ -1,4 +1,5 @@
 #include "Global.h"
+#include "CustomShipSelect.h"
 #include "Duels.h"
 #include "DuelsBays.h"
 
@@ -163,6 +164,18 @@ namespace Duels
         bool IsBay(const ShipSystem *system)
         {
             return system && BayNumber(system->iSystemType) > 0;
+        }
+
+        bool CanFitSubsystem(ShipManager *ship, int systemId)
+        {
+            if (!ship) return false;
+            if (ship->SystemWillReplace(systemId) != SYS_INVALID) return true;   // a system it takes the place of
+            int count = 0;
+            for (ShipSystem *system : ship->vSystemList)
+            {
+                if (system && !system->bNeedsPower && !IsBay(system)) ++count;
+            }
+            return count < CustomShipSelect::GetInstance()->GetDefinition(ship->myBlueprint.blueprintName).subsystemLimit;
         }
 
         static ShipSystem *Bay(ShipManager *ship, int kind, int number)

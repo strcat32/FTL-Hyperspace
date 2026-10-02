@@ -172,6 +172,7 @@ namespace Duels
             std::string state;              // "round 2 of 5: fight"
             std::string score;              // "points 1 : 0, damage score 34.0 : 12.0"
             std::string fight;              // "This round: near a sun"
+            std::string stall;              // in a fight: "Stalemate in 4:12 unless a ship loses hull or crew" (CT)
             std::string tally;              // "Rounds: 2 won, 1 lost, 0 drawn"
             std::string lastRound;          // "Last round: you won (ship destroyed)"
             std::vector<std::string> results;   // each round's, in full (the end screen)

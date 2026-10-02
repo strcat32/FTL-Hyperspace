@@ -700,6 +700,9 @@ namespace Duels
             // A guest our mind control holds is ours for now (roadmap 3.8): our crew AI uses it as FTL uses the crew
             // its mind control takes (it fights for us, and repairs).
             if (Crew::IsGuest(crew)) return !crew->bMindControlled && !const_cast<CrewMember*>(crew)->IsDrone();   // FTL's IsDrone isn't const
+            // Our crew under the opponent's mind control go where the opponent orders them (rules, section 2; roadmap CS:
+            // FTL's crew AI walked them on to sabotage other systems); they fight and sabotage where they stand, as FTL's.
+            if (Net::IsConnected() && crew->bMindControlled && crew->iShipId == 0 && Crew::OwnId(crew) >= 0) return true;
             return Crew::IsPuppet(crew);
         }
 
