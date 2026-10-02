@@ -9,6 +9,7 @@
 #include "DuelsMatch.h"
 #include "DuelsMatchUi.h"
 #include "DuelsReplayUi.h"
+#include "DuelsAi.h"
 #include "DuelsMenu.h"
 #include "DuelsNet.h"
 #include "DuelsRelay.h"
@@ -674,13 +675,22 @@ namespace Duels
             message = std::to_string(Match::ChatFlood(count)) + " chat lines sent past the limits";
             return true;
         }
+        if (verb == "aiaim")
+        {
+            // aiaim weapons|drones: where the AI aims when FTL's AI picks our weapons (drones): a bay with something in it
+            // (roadmap DC; Hard: the most valuable).
+            int system = ArgIs(cmd, 1, "drones") ? SYS_DRONES : SYS_WEAPONS;
+            int aim = Ai::AimAtBay(G_->GetShipManager(1), G_->GetShipManager(0), system);
+            message = "the AI aims at our " + ShipSystem::SystemIdToName(aim);
+            return aim != system;
+        }
         if (verb == "click")
         {
             // click <x> <y>: a left click there through the game's whole input (the Duels window, the match's
             // buttons, then FTL), in its 1280 x 720 coordinates, for tests of the buttons; in the main menu, through
             // the menu's (ours over FTL's).
             // click draw|timeout|concede|ready: the middle of that match button, wherever its layout puts it (roadmap AY,
-            // BF).
+            // BF). click stats <control>: one of the main menu's STATS controls (roadmap CX).
             int x = 0, y = 0;
             const char *button = ArgIs(cmd, 1, "draw") ? "draw" : ArgIs(cmd, 1, "timeout") ? "timeout" : ArgIs(cmd, 1, "concede") ? "concede"
                                : ArgIs(cmd, 1, "ready") ? "ready" : nullptr;
@@ -693,6 +703,11 @@ namespace Duels
                 // click replay stop|back|play|on|speed|line|view|sensors: a replay's control (roadmap AW, BC, BA).
                 std::string control = cmd.args.size() > 2 ? cmd.args[2] : "";
                 if (!ReplayUi::ControlCentre(control, x, y)) { message = "no replay control '" + control + "' on the screen"; return false; }
+            }
+            else if (ArgIs(cmd, 1, "stats"))
+            {
+                std::string control = cmd.args.size() > 2 ? cmd.args[2] : "";
+                if (!Menu::StatsControlCentre(control, x, y)) { message = "no STATS control '" + control + "' on the screen"; return false; }
             }
             else if (!ArgInt(cmd, 1, x) || !ArgInt(cmd, 2, y)) { message = "usage: click <x> <y> | click draw|timeout|concede|ready"; return false; }
             CApp *app = G_->GetCApp();

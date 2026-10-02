@@ -74,6 +74,10 @@ namespace Duels
             bool vsAi = false;                   // the opponent: FTL's AI, not another player (roadmap 3.6)
             int aiShip = 0;                      // the AI's ship: 0 random, else PlayerShips()[aiShip - 1]
             Style::Box playerBox, aiBox, aiShipLess, aiShipMore;
+            // Its level and FTL's pause (roadmap DC, DD).
+            int aiLevel = Ai::NORMAL;
+            bool aiPause = true;
+            Style::Box aiLevelLess, aiLevelMore, aiPauseBox;
             Style::Box listedBox, recordBox, roundsLess, roundsMore, prepLess, prepMore, stallLess, stallMore, permadeathBox;
             // Ranked (roadmap BG): a Steam sign-in, a ticket from the master for the relay, the season's settings.
             bool ranked = false;
@@ -123,8 +127,8 @@ namespace Duels
             bool cover = false;
             double coverUntilMs = 0.0;
 
-            // LOBBY: FTL's main menu asked for, then the room list there; first the swap of full states after the match
-            // (the demos' both sides, BA): "SAVING THE REPLAY", 10 s at most.
+            // LOBBY: FTL's main menu asked for, then the room list there; first a ranked match's result on its way to the
+            // relay: "SENDING THE RESULT", 10 s at most.
             bool toMenu = false, listOnMenu = false;
             bool saving = false;
             double savingUntilMs = 0.0;
@@ -278,6 +282,8 @@ namespace Duels
             g.ranked = Config::Value("room_ranked") == "on" && Account::SignedIn();
             if (Account::SignedIn()) Account::FetchSeason();
             g.next = Rounds::GetNextDuel();
+            g.aiLevel = Ai::NextLevel();
+            g.aiPause = Ai::NextPause();
             g.message.clear();
             g.open = Window::Host;
             Focus(&g.name);
@@ -324,6 +330,7 @@ namespace Duels
             if (g.vsAi)
             {
                 // Against FTL's AI (roadmap 3.6): no room; the match begins with the run (its ships chosen in it, 3.9).
+                Ai::SetNext(g.aiLevel, g.aiPause);
                 bool start = StartsWithoutHangar();
                 Log("Lobby: %s; the match against the AI (%s) begins with the run: %s", start ? "START" : "choose a ship",
                     AiShipBlueprint().empty() ? "a random ship" : AiShipBlueprint().c_str(), message.c_str());
@@ -409,34 +416,54 @@ namespace Duels
             else g.aiShipLess.w = g.aiShipMore.w = 0.f;
             y += 44.f;
 
-            // The room (not for a match against the AI).
-            y += Style::Label(lx, y, "THE ROOM") + 14.f;
-            const GL_Color labels = g.vsAi ? soft : light;
-            Text(FONT, lx, y, "Its title (a few words):", labels);
-            RenderField(g.name, lx, y + 20.f, lw);
-            y += 64.f;
-            Text(FONT, lx, y, "A password (empty: none):", labels);
-            RenderField(g.password, lx, y + 20.f, lw);
-            y += 66.f;
-            CheckAt(g.listedBox, lx, y, !g.listed, "Private: only who has its code can join");
-            y += 32.f;
-            // Ranked (roadmap BG): only signed in with Steam; the season's settings, recorded.
             const bool ranked = g.ranked && !g.vsAi;
-            if (g.vsAi) g.rankedBox = Style::Box();
+            if (g.vsAi)
+            {
+                // The AI (roadmap DC, DD): its level, and FTL's pause; no room.
+                static const char *const LEVEL_TEXTS[3] = {
+                    "It shops with less scrap (60% of the round's) and fights to the end.",
+                    "It shops with the round's scrap and runs from a lost fight.",
+                    "It shops with more scrap (130%), runs from a lost fight, aims at your best weapon or drone, and drags its own "
+                    "out of the way of your missiles."};
+                y += Style::Label(lx, y, "THE AI") + 14.f;
+                Text(FONT, lx, y + 6.f, "Its level:", light);
+                ButtonAt(g.aiLevelLess, lx + 110.f, y, 30.f, 28.f, "<");
+                CSurface::GL_SetColor(white);
+                freetype::easy_printCenter(FONT, lx + 110.f + 30.f + 85.f, y + 6.f, Ai::LevelTitle(g.aiLevel));
+                ButtonAt(g.aiLevelMore, lx + 110.f + 30.f + 170.f, y, 30.f, 28.f, ">");
+                y += 38.f;
+                y += Paragraph(FONT, lx, y, lw, LEVEL_TEXTS[std::max(0, std::min(2, g.aiLevel))], soft) + 14.f;
+                CheckAt(g.aiPauseBox, lx, y, g.aiPause, "Pause (the pause key holds the match and its clock)");
+                y += 40.f;
+                g.name.box = g.password.box = Style::Box();
+                g.listedBox = g.rankedBox = g.recordBox = g.demoBox = Style::Box();
+            }
             else
             {
+                g.aiLevelLess = g.aiLevelMore = g.aiPauseBox = Style::Box();
+                // The room.
+                y += Style::Label(lx, y, "THE ROOM") + 14.f;
+                Text(FONT, lx, y, "Its title (a few words):", light);
+                RenderField(g.name, lx, y + 20.f, lw);
+                y += 64.f;
+                Text(FONT, lx, y, "A password (empty: none):", light);
+                RenderField(g.password, lx, y + 20.f, lw);
+                y += 66.f;
+                CheckAt(g.listedBox, lx, y, !g.listed, "Private: only who has its code can join");
+                y += 32.f;
+                // Ranked (roadmap BG): only signed in with Steam; the season's settings, recorded.
                 CheckAt(g.rankedBox, lx, y, ranked, Account::SignedIn() ? "Ranked (the season's settings)" : "Ranked: SIGN IN with Steam first");
                 y += 32.f;
+                if (ranked)
+                {
+                    g.recordBox = Style::Box();
+                    Text(FONT, lx + 30.f, y + 6.f, "Public recording: on (a ranked match is recorded)", soft);
+                }
+                else CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
+                y += 32.f;
+                CheckAt(g.demoBox, lx, y, Demo::RecordingOn(), "Record a demo (in demos\\, for REPLAYS)");
+                y += 40.f;
             }
-            if (ranked)
-            {
-                g.recordBox = Style::Box();
-                Text(FONT, lx + 30.f, y + 6.f, "Public recording: on (a ranked match is recorded)", soft);
-            }
-            else CheckAt(g.recordBox, lx, y, g.next.record, "Public recording (off: the match is unranked)");
-            y += 32.f;
-            CheckAt(g.demoBox, lx, y, Demo::RecordingOn(), "Record a demo (in demos\\, for REPLAYS)");
-            y += 40.f;
             if (ranked) Paragraph(FONT, lx, y, lw, "START asks the master for a ticket, then opens a ranked room: a guest needs a Steam "
                                                   "sign-in too. The match plays by the season's settings; its result goes to the "
                                                   "master, which rates both players.", soft);
@@ -576,6 +603,9 @@ namespace Duels
             else if (g.aiBox.Contains(x, y)) g.vsAi = true;
             else if (g.aiShipLess.Contains(x, y)) g.aiShip = (g.aiShip + ships) % (ships + 1);
             else if (g.aiShipMore.Contains(x, y)) g.aiShip = (g.aiShip + 1) % (ships + 1);
+            else if (g.aiLevelLess.Contains(x, y)) g.aiLevel = (g.aiLevel + 2) % 3;
+            else if (g.aiLevelMore.Contains(x, y)) g.aiLevel = (g.aiLevel + 1) % 3;
+            else if (g.aiPauseBox.Contains(x, y)) g.aiPause = !g.aiPause;
             else if (g.name.box.Contains(x, y)) Focus(&g.name);
             else if (g.password.box.Contains(x, y)) Focus(&g.password);
             else if (g.listedBox.Contains(x, y)) g.listed = !g.listed;
@@ -1415,6 +1445,21 @@ namespace Duels
             {
                 // ai on|off: the opponent, FTL's AI or another player.
                 g.vsAi = args[2] == "on";
+            }
+            else if (what == "ailevel" && args.size() > 2 && g.open == Window::Host)
+            {
+                // ailevel easy|normal|hard: the AI's level (roadmap DC).
+                if (args[2] != "easy" && args[2] != "normal" && args[2] != "hard")
+                {
+                    message = "usage: menu ailevel easy|normal|hard";
+                    return false;
+                }
+                g.aiLevel = args[2] == "easy" ? Ai::EASY : args[2] == "hard" ? Ai::HARD : Ai::NORMAL;
+            }
+            else if (what == "aipause" && args.size() > 2 && g.open == Window::Host)
+            {
+                // aipause on|off: FTL's pause in the match against the AI (roadmap DD).
+                g.aiPause = args[2] == "on";
             }
             else if (what == "aiship" && args.size() > 2 && g.open == Window::Host)
             {

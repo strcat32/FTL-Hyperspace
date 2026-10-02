@@ -173,7 +173,7 @@ namespace Duels
         int slot;
         if (!ArgInt(cmd, 2, slot) || cmd.raw.size() < 4)
         {
-            message = "usage: arm <ship> <slot> <WEAPON_BLUEPRINT>";
+            message = "usage: arm <ship> <slot> <WEAPON_BLUEPRINT>|none";
             return false;
         }
         if (!ship->weaponSystem)
@@ -182,6 +182,21 @@ namespace Duels
             return false;
         }
         const std::string &name = cmd.raw[3];   // original spelling: blueprint names are case-sensitive
+        if (name == "none")
+        {
+            // The slot emptied, as a player who puts the weapon in the cargo: the later weapons move down a slot.
+            if (slot < 0 || slot >= (int)ship->GetWeaponList().size())
+            {
+                message = "no weapon in slot " + std::to_string(slot);
+                return false;
+            }
+            ship->RemoveWeapon(slot);
+            std::ostringstream out;
+            out << "weapons:";
+            for (ProjectileFactory *weapon : ship->GetWeaponList()) out << " " << (weapon->blueprint ? weapon->blueprint->name : "?");
+            message = out.str();
+            return true;
+        }
         WeaponBlueprint *blueprint = G_->GetBlueprints()->GetWeaponBlueprint(name);
         if (!blueprint || blueprint->name != name)
         {

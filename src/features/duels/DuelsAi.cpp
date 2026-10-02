@@ -1,6 +1,9 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsAi.h"
+#include "DuelsBays.h"
+#include "DuelsConfig.h"
+#include "DuelsConsole.h"
 #include "DuelsCrew.h"
 #include "DuelsLobby.h"
 #include "DuelsMatch.h"
@@ -13,6 +16,7 @@
 #include <chrono>
 #include <map>
 #include <random>
+#include <set>
 
 namespace Duels
 {
@@ -56,9 +60,89 @@ namespace Duels
             std::vector<CrewEntry> crew;          // for the next round
             std::vector<CrewEntry> aboard;        // alive aboard its ship when it last stood
             int crewHere = 0;                     // its crew this round (FTL takes those who leave a frame later)
+
+            // Its level and FTL's pause in this match (roadmap DC, DD); the pause key's pause now.
+            int level = NORMAL;
+            bool pause = true;
+            bool paused = false;
+            // Running from a lost fight (Normal, Hard): FTL's own escape, its FTL drive charging; reported as it jumps.
+            bool escaping = false, escaped = false;
+            // Hard: our missiles it saw coming at a bay (each once), and how often it dragged a weapon out of the way.
+            std::set<std::pair<const void*, unsigned>> missilesSeen;
+            int dodges = 0;
+            int aimLogs = 0;   // its aims at our bays logged this round (the first few)
+            std::map<int, int> aims;   // what it aimed at this round (FTL's system, or our bay), how often
         };
 
         static AiState g;
+
+        // HOST DUEL's choices for the next match (roadmap DC, DD); duels.cfg's at first.
+        static int g_nextLevel = -1;
+        static bool g_nextPause = true;
+
+        static void ReadNext()
+        {
+            if (g_nextLevel >= 0) return;
+            std::string level = Config::Value("ai_level");
+            g_nextLevel = level == "easy" ? EASY : level == "hard" ? HARD : NORMAL;
+            g_nextPause = Config::Value("ai_pause") != "off";
+        }
+
+        const char *LevelName(int level)
+        {
+            return level == EASY ? "easy" : level == HARD ? "hard" : "normal";
+        }
+
+        const char *LevelTitle(int level)
+        {
+            return level == EASY ? "Easy" : level == HARD ? "Hard" : "Normal";
+        }
+
+        void SetNext(int level, bool pause)
+        {
+            ReadNext();
+            g_nextLevel = std::max((int)EASY, std::min((int)HARD, level));
+            g_nextPause = pause;
+            if (SettingsFromConfig())
+            {
+                Config::SaveValue("ai_level", LevelName(g_nextLevel));
+                Config::SaveValue("ai_pause", pause ? "on" : "off");
+            }
+        }
+
+        int NextLevel()
+        {
+            ReadNext();
+            return g_nextLevel;
+        }
+
+        bool NextPause()
+        {
+            ReadNext();
+            return g_nextPause;
+        }
+
+        int CurrentLevel()
+        {
+            return g.level;
+        }
+
+        bool PauseAllowed()
+        {
+            return g.active && g.pause;
+        }
+
+        bool Paused()
+        {
+            return g.active && g.pause && g.paused;
+        }
+
+        void TogglePause()
+        {
+            if (!PauseAllowed()) return;
+            g.paused = !g.paused;
+            Log("Ai: %s", g.paused ? "paused (the pause key)" : "the pause ends (the pause key)");
+        }
 
         // FTL's player ships, their layouts A, B and C (the Crystal and Lanius ships have two). The hangar's own list is
         // empty until it has been opened once.
@@ -100,6 +184,8 @@ namespace Duels
             g.active = true;
             g.startMs = WallMs();
             g.preferred = blueprint;
+            g.level = NextLevel();
+            g.pause = NextPause();
             // (The system clock: the game's own milliseconds since its start repeat from run to run.)
             uint64_t ticks = (uint64_t)std::chrono::system_clock::now().time_since_epoch().count();
             g.random.seed((uint32_t)(ticks ^ (ticks >> 32)));
@@ -111,8 +197,9 @@ namespace Duels
             }
             // FTL's own ship AI flies it (a duel before it had the opponent's replaced by its owner's game).
             GetState().aiOff[1] = false;
-            Log("Ai: a match against FTL's AI in %s", g.blueprint.empty() ? "the ship it picks in the ship choice"
-                                                                          : (g.blueprint + " (" + ShipTitle(g.blueprint) + ")").c_str());
+            Log("Ai: a match against FTL's AI in %s, level %s, %s", g.blueprint.empty() ? "the ship it picks in the ship choice"
+                                                                                       : (g.blueprint + " (" + ShipTitle(g.blueprint) + ")").c_str(),
+                LevelName(g.level), g.pause ? "FTL's pause allowed" : "no pause");
             Rounds::StartLocal();
         }
 
@@ -147,13 +234,23 @@ namespace Duels
             return "AI " + (space == std::string::npos ? title : title.substr(0, space));
         }
 
+        // The round's scrap for its level (roadmap DC): Easy 60%, Normal all of it, Hard 130%.
+        static int ScrapShare(int scrap)
+        {
+            return g.level == EASY ? scrap * 6 / 10 : g.level == HARD ? scrap * 13 / 10 : scrap;
+        }
+
         void OnPrep(int round, int scrap, const std::vector<Refit::ShopItem> &stock, bool permadeath)
         {
-            if (round != g.round) g.scrap += scrap;   // once a round, as ours (Refit::GiveScrap)
+            if (round != g.round) g.scrap += ScrapShare(scrap);   // once a round, as ours (Refit::GiveScrap)
             g.round = round;
             g.spawned = false;
             g.defeated = false;
             g.counting = false;
+            g.escaping = g.escaped = false;
+            g.missilesSeen.clear();
+            g.aimLogs = 0;
+            g.aims.clear();
             g.stock = stock;
             g.permadeath = permadeath;
             // It shops when its ship comes (its first ship gives its fitting), and is ready at once.
@@ -550,6 +647,153 @@ namespace Duels
             else if (ship) KillOursAboard(ship);
             Log("Ai: round %d is over: %u of its crew for the next round; %d of ours came home, %d of its left ours", g.round,
                 (unsigned)g.crew.size(), home, left);
+            std::string aims;
+            for (const std::pair<const int, int> &aim : g.aims)
+            {
+                // (-1: FTL's AI took a room at random.)
+                aims += (aims.empty() ? "" : ", ") + (aim.first < 0 ? std::string("a random room") : ShipSystem::SystemIdToName(aim.first)) +
+                        " " + std::to_string(aim.second);
+            }
+            Log("Ai: round %d: it aimed at %s; %d missile(s) of ours dodged", g.round, aims.empty() ? "nothing" : aims.c_str(), g.dodges);
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // Its play (roadmap DC): where it aims, running away, out of a missile's way
+        // ---------------------------------------------------------------------------------------------------------
+
+        static int Worth(const Blueprint *bp)
+        {
+            return bp ? bp->desc.cost : 0;
+        }
+
+        int AimAtBay(ShipManager *self, ShipManager *target, int system)
+        {
+            if (!g.active || !self || self->iShipId != 1 || !target || target->iShipId != 0) return system;
+            if (system != SYS_WEAPONS && system != SYS_DRONES)
+            {
+                ++g.aims[system];
+                return system;
+            }
+            // The bays with a weapon (a drone) in them, and what it is worth.
+            std::vector<std::pair<int, int>> bays;
+            if (system == SYS_WEAPONS && target->weaponSystem)
+            {
+                for (ProjectileFactory *weapon : target->GetWeaponList())
+                {
+                    ShipSystem *bay = Bays::BayOfItem(target, weapon);
+                    if (bay) bays.push_back({bay->iSystemType, Worth(weapon->blueprint)});
+                }
+            }
+            if (system == SYS_DRONES && target->droneSystem)
+            {
+                for (Drone *drone : target->GetDroneList())
+                {
+                    ShipSystem *bay = Bays::BayOfItem(target, drone);
+                    if (bay) bays.push_back({bay->iSystemType, Worth(drone->blueprint)});
+                }
+            }
+            if (bays.empty())
+            {
+                ++g.aims[system];
+                return system;
+            }
+            int aim = g.level == HARD ? std::max_element(bays.begin(), bays.end(), [](const std::pair<int, int> &l, const std::pair<int, int> &r)
+                                                         { return l.second < r.second; })->first
+                                      : bays[std::uniform_int_distribution<size_t>(0, bays.size() - 1)(g.random)].first;
+            ++g.aims[aim];
+            if (g.aimLogs < 3)
+            {
+                ++g.aimLogs;
+                Log("Ai: it aims at our %s (FTL chose our %s)", ShipSystem::SystemIdToName(aim).c_str(), ShipSystem::SystemIdToName(system).c_str());
+            }
+            return aim;
+        }
+
+        // Normal and Hard run from a lost fight: its hull at a quarter or less while ours is at half or more. FTL's own
+        // escape: its FTL drive charges (the enemy window shows it) while its engines and piloting work; when it jumps,
+        // the round is ours with half a point (rules, section 3), unless we destroy it first.
+        static void ConsiderEscape(ShipManager *ship)
+        {
+            WorldManager *world = G_->GetWorld();
+            CompleteShip *enemy = world && world->playerShip ? world->playerShip->enemyShip : nullptr;
+            ShipManager *own = G_->GetShipManager(0);
+            if (g.level == EASY || !enemy || enemy->shipManager != ship || !own) return;
+            if (!g.escaping)
+            {
+                const int hull = ship->ship.hullIntegrity.first, hullMax = std::max(1, ship->ship.hullIntegrity.second);
+                const int ours = own->ship.hullIntegrity.first, oursMax = std::max(1, own->ship.hullIntegrity.second);
+                if (hull <= 0 || ship->bDestroyed || hull * 4 > hullMax || ours * 2 < oursMax) return;
+                g.escaping = true;
+                enemy->shipAI.escaping = true;
+                Log("Ai: round %d: it runs (its hull %d of %d, ours %d of %d): its FTL drive charges", g.round, hull, hullMax, ours, oursMax);
+                Console::Feed(Name() + " charges its FTL drive to run away");
+                return;
+            }
+            if (!g.escaped && (ship->bJumping || enemy->shipAI.Escaped()))
+            {
+                g.escaped = true;
+                g.defeated = true;   // gone, not destroyed: no defeat to report
+                Log("Ai: round %d: it jumps away (its FTL drive at %.1f of %.1f)", g.round, ship->jump_timer.first, ship->jump_timer.second);
+                Rounds::OpponentEscaped();
+            }
+        }
+
+        // Hard: a missile of ours in its space, on its way to one of its bays, makes it drag that bay's weapon (drone) to
+        // another slot, swapped with the least valuable one there. A shot keeps its tile (roadmap AF): the missile breaks
+        // the bay with whatever is in it when it lands.
+        static void Dodge(ShipManager *ship)
+        {
+            WorldManager *world = G_->GetWorld();
+            if (g.level != HARD || !world || !ship) return;
+            for (Projectile *p : world->space.projectiles)
+            {
+                if (!p || p->dead || p->ownerId != 0 || p->currentSpace != 1 || p->destinationSpace != 1 || p->GetType() != 3) continue;
+                if (!g.missilesSeen.insert({(const void*)p, p->selfId}).second) continue;
+                int room = ship->ship.GetSelectedRoomId((int)p->target.x, (int)p->target.y, true);
+                ShipSystem *bay = room >= 0 ? ship->GetSystemInRoom(room) : nullptr;
+                const void *item = Bays::IsBay(bay) ? Bays::ItemInBay(ship, bay) : nullptr;
+                if (!item) continue;
+                const int slot = Bays::BayNumber(bay->iSystemType) - 1;
+                if (ship->weaponSystem)
+                {
+                    std::vector<ProjectileFactory*> weapons = ship->GetWeaponList();
+                    if (slot >= 0 && slot < (int)weapons.size() && weapons[slot] == item)
+                    {
+                        int to = -1;
+                        for (int i = 0; i < (int)weapons.size(); ++i)
+                        {
+                            if (i != slot && Worth(weapons[i]->blueprint) < Worth(weapons[slot]->blueprint) &&
+                                (to < 0 || Worth(weapons[i]->blueprint) < Worth(weapons[to]->blueprint)))
+                                to = i;
+                        }
+                        if (to < 0) continue;
+                        Log("Ai: our missile at its %s (room %d): its %s goes to slot %d, its %s to slot %d", ShipSystem::SystemIdToName(bay->iSystemType).c_str(),
+                            room, weapons[slot]->blueprint->name.c_str(), to, weapons[to]->blueprint->name.c_str(), slot);
+                        ship->weaponSystem->SwapWeapons(slot, to);
+                        ++g.dodges;
+                        continue;
+                    }
+                }
+                if (ship->droneSystem)
+                {
+                    std::vector<Drone*> drones = ship->GetDroneList();
+                    if (slot >= 0 && slot < (int)drones.size() && drones[slot] == item)
+                    {
+                        int to = -1;
+                        for (int i = 0; i < (int)drones.size(); ++i)
+                        {
+                            if (i != slot && Worth(drones[i]->blueprint) < Worth(drones[slot]->blueprint) &&
+                                (to < 0 || Worth(drones[i]->blueprint) < Worth(drones[to]->blueprint)))
+                                to = i;
+                        }
+                        if (to < 0) continue;
+                        Log("Ai: our missile at its %s (room %d): its drone in slot %d goes to slot %d", ShipSystem::SystemIdToName(bay->iSystemType).c_str(),
+                            room, slot, to);
+                        ship->droneSystem->SwapDrones(slot, to);
+                        ++g.dodges;
+                    }
+                }
+            }
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -666,6 +910,9 @@ namespace Duels
             // menu or a window without focus would stand still while they go on. From the moment FTL's first message
             // box is gone (DuelsLobby.cpp answers it; without a box, after 1.5 s): FTL answers a message box only while
             // its game is paused.
+            // With FTL's pause allowed (roadmap DD) only the pause key stops the world and the match's clock (Paused,
+            // DuelsHooks.cpp, DuelsRounds.cpp); the store, the menus and a window without focus don't, as in a duel: the
+            // preparation's store would have held its countdown.
             CommandGui *gui = G_->GetWorld() ? G_->GetWorld()->commandGui : nullptr;
             if (gui && !GetState().noPause)
             {
@@ -713,6 +960,11 @@ namespace Duels
             if (fighting && !g.counting && ship) StartCounting(ship);
             if (g.counting && fighting) Count(ship);
             if (fighting) Remember(ship);
+            if (fighting && phase == Rounds::Phase::Fight && !g.defeated && ship)
+            {
+                Dodge(ship);
+                ConsiderEscape(ship);
+            }
 
             // Its defeat, once a round: its ship destroyed (FTL takes a destroyed enemy away), or its crew dead.
             if (fighting && g.counting && !g.defeated)

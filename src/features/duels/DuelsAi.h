@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+struct ShipManager;
+
 // Playing against FTL's AI (roadmap 3.6; docs/design/ai-opponent.md in the FTL: Duels repository): a local match in
 // this game alone, started from HOST DUEL. The match runs as the host's does (DuelsRounds.cpp); the guest's part is the
 // AI's: its ship (FTL's enemy, a player ship flown by FTL's own ship AI) comes when the ships meet, and its readiness,
@@ -25,6 +27,30 @@ namespace Duels
         void Stop();
         // "AI Kestrel": the AI's name on the screen ("AI" while its ship isn't chosen).
         std::string Name();
+
+        // Its level (roadmap DC, the user 2026-10-02) and FTL's pause (roadmap DD): HOST DUEL's choices for the next
+        // match, kept in duels.cfg (ai_level easy|normal|hard, ai_pause on|off). Easy shops with 60% of the round's scrap
+        // and fights to the end; Normal shops with the round's scrap and runs from a lost fight; Hard shops with 130%,
+        // runs, aims at our most valuable weapon or drone, and drags a weapon or drone out of the bay our missile is
+        // about to hit. Each aims at our bays (FTL's AI would aim at bay 1 only). With the pause allowed, FTL's pause
+        // works as in a run, and the match's clock stands still with it (DuelsRounds.cpp).
+        enum Level { EASY = 0, NORMAL = 1, HARD = 2 };
+        void SetNext(int level, bool pause);
+        int NextLevel();
+        bool NextPause();
+        const char *LevelName(int level);    // "easy", "normal", "hard" (duels.cfg, the verbs)
+        const char *LevelTitle(int level);   // "Easy", "Normal", "Hard"
+        int CurrentLevel();
+        bool PauseAllowed();                 // in the match running now (false outside one)
+        // The pause itself: the pause key (CommandGui::KeyDown) holds FTL's world (CommandGui::IsPaused) and the match's
+        // clock. A match keeps FTL's own pause flags off every frame (the store, the menus, a window without focus don't
+        // pause it, as in a duel), so it is the match's own.
+        bool Paused();
+        void TogglePause();
+        // CombatAI::PrioritizeSystem for its ship (ship 1) aiming at ours: FTL picks a system; our weapons system and drone
+        // control keep their weapons and drones in bays (a room each), so it aims at a bay with a weapon (a drone) in it
+        // instead. The system to aim at.
+        int AimAtBay(ShipManager *self, ShipManager *target, int system);
 
         // DuelsRounds.cpp: a round's preparation begins, with the round's scrap and stock (the AI is ready at once; it
         // shops when its ship comes); its ship is there and fitted (the ships meet; the enemy window shows it as a

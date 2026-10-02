@@ -48,7 +48,7 @@ namespace Duels
             {
                 file << "# FTL: Duels: your finished matches, one a line (the main menu's STATS reads them). Tab-separated:\n";
                 file << "# when, ranked, hosted, name, opponent, ship, opponent's ship, result (1 won, 0 drawn, -1 lost), points x2,\n";
-                file << "# the opponent's points x2, rounds, damage score, the opponent's, seconds, how it ended\n";
+                file << "# the opponent's points x2, rounds, damage score, the opponent's, seconds, how it ended, against the AI (1)\n";
             }
             char damage[32], opponentDamage[32];
             std::snprintf(damage, sizeof(damage), "%.2f", line.damage);
@@ -56,9 +56,54 @@ namespace Duels
             file << Clean(line.when) << '\t' << (line.ranked ? 1 : 0) << '\t' << (line.host ? 1 : 0) << '\t' << Clean(line.name) << '\t'
                  << Clean(line.opponent) << '\t' << Clean(line.ship) << '\t' << Clean(line.opponentShip) << '\t' << line.result << '\t'
                  << line.halves << '\t' << line.opponentHalves << '\t' << line.rounds << '\t' << damage << '\t' << opponentDamage << '\t'
-                 << line.seconds << '\t' << Clean(line.how) << '\n';
-            Log("Stats: the match against %s is in %s (%s)", line.opponent.c_str(), FILE_NAME,
-                line.result > 0 ? "won" : line.result < 0 ? "lost" : "drawn");
+                 << line.seconds << '\t' << Clean(line.how) << '\t' << (line.ai ? 1 : 0) << '\n';
+            Log("Stats: the match against %s is in %s (%s, %s)", line.opponent.c_str(), FILE_NAME,
+                line.result > 0 ? "won" : line.result < 0 ? "lost" : "drawn", line.ai ? "against the AI" : line.ranked ? "ranked" : "unranked");
+        }
+
+        // A line's fields, or none for a comment.
+        static std::vector<std::string> Fields(std::string text)
+        {
+            std::vector<std::string> f;
+            if (!text.empty() && text.back() == '\r') text.pop_back();
+            if (text.empty() || text[0] == '#') return f;
+            std::stringstream fields(text);
+            std::string field;
+            while (std::getline(fields, field, '\t')) f.push_back(field);
+            return f;
+        }
+
+        int Clear(bool ai)
+        {
+            std::vector<std::string> kept;
+            int gone = 0;
+            {
+                std::ifstream file(FILE_NAME);
+                std::string text;
+                while (std::getline(file, text))
+                {
+                    std::vector<std::string> f = Fields(text);
+                    const bool isAi = f.size() > 15 && f[15] == "1";
+                    const bool ranked = f.size() > 1 && f[1] == "1";
+                    if (f.size() >= 15 && (ai ? isAi : (!isAi && !ranked)))
+                    {
+                        ++gone;
+                        continue;
+                    }
+                    if (!text.empty() && text.back() == '\r') text.pop_back();
+                    kept.push_back(text);
+                }
+            }
+            if (gone == 0) return 0;
+            std::ofstream file(FILE_NAME, std::ios::trunc);
+            if (!file)
+            {
+                Log("Stats: can't write %s", FILE_NAME);
+                return 0;
+            }
+            for (const std::string &line : kept) file << line << '\n';
+            Log("Stats: %d %s match(es) cleared from %s", gone, ai ? "AI" : "unranked", FILE_NAME);
+            return gone;
         }
 
         std::vector<MatchLine> Load()
@@ -68,12 +113,7 @@ namespace Duels
             std::string text;
             while (std::getline(file, text))
             {
-                if (!text.empty() && text.back() == '\r') text.pop_back();
-                if (text.empty() || text[0] == '#') continue;
-                std::vector<std::string> f;
-                std::stringstream fields(text);
-                std::string field;
-                while (std::getline(fields, field, '\t')) f.push_back(field);
+                std::vector<std::string> f = Fields(text);
                 if (f.size() < 15) continue;
                 MatchLine line;
                 line.when = f[0];
@@ -91,6 +131,7 @@ namespace Duels
                 line.opponentDamage = std::atof(f[12].c_str());
                 line.seconds = std::atoi(f[13].c_str());
                 line.how = f[14];
+                line.ai = f.size() > 15 && f[15] == "1";
                 lines.push_back(line);
             }
             return lines;

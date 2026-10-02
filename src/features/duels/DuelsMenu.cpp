@@ -77,6 +77,12 @@ namespace Duels
             std::string note;                        // the note to show (Window::Note)
             bool noteWaits = false;                  // shown when the menu is there
             Style::Box rejoin;                       // the crash note's CONTINUE THE MATCH (roadmap BR)
+            // STATS (roadmap CX): this computer's record shown (0 ranked, 1 unranked, 2 against the AI; -1: chosen when
+            // it opens), the lists' first rows, CLEAR's second click (until then).
+            int statsTab = -1;
+            size_t shipsTop = 0, matchesTop = 0, onlineTop = 0;
+            double clearArmedUntil = 0.0;
+            Style::Box statsTabs[3], shipsUp, shipsDown, matchesUp, matchesDown, onlineUp, onlineDown, clear;
         };
 
         static MenuState g;
@@ -299,14 +305,34 @@ namespace Duels
         // rating, place and last ranked matches at the master.
         // ---------------------------------------------------------------------------------------------------------
 
+        static const size_t SHIP_ROWS = 5, MATCH_ROWS = 6, ONLINE_ROWS = 9;
+        static const char *const STATS_TABS[3] = {"RANKED", "UNRANKED", "VS AI"};
+
+        // Which of STATS' records a match is in: 0 ranked, 1 unranked, 2 against the AI.
+        static int StatsKind(const Stats::MatchLine &m)
+        {
+            return m.ai ? 2 : m.ranked ? 0 : 1;
+        }
+
         static void OpenStats()
         {
             g.stats = Stats::Load();
+            if (g.statsTab < 0)
+            {
+                // The ranked record if there is one, else the first that has matches.
+                int counts[3] = {0, 0, 0};
+                for (const Stats::MatchLine &m : g.stats) ++counts[StatsKind(m)];
+                g.statsTab = counts[0] > 0 ? 0 : counts[1] > 0 ? 1 : counts[2] > 0 ? 2 : 0;
+            }
+            g.shipsTop = g.matchesTop = g.onlineTop = 0;
+            g.clearArmedUntil = 0.0;
             g.open = Window::Stats;
             Account::Refresh();
             Account::FetchRecent();
             Log("Menu: STATS (%u match(es) on this computer)", (unsigned)g.stats.size());
         }
+
+        static void ClickStats(int x, int y);
 
         static std::string Percent(int part, int whole)
         {
@@ -324,6 +350,36 @@ namespace Duels
             std::string cut = text;
             while (!cut.empty() && (float)freetype::easy_measureWidth(font, cut + "..") > width) cut.pop_back();
             return cut + "..";
+        }
+
+        // A small button (STATS' pages: "<" and ">").
+        static void SmallButton(Style::Box &area, float x, float y, float w, const std::string &label, bool enabled)
+        {
+            area.x = x;
+            area.y = y;
+            area.w = w;
+            area.h = 22.f;
+            Style::Look look = !enabled ? Style::Look::Off : area.Contains(g.mouseX, g.mouseY) ? Style::Look::Hover : Style::Look::Idle;
+            Style::Button(x, y, w, 22.f, label, FONT, look);
+        }
+
+        // A list's pages (roadmap CX: the lists grow): where it is ("6-10 of 14") and the buttons for the page before and
+        // after, at the right end of its label's line; nothing for a list of one page.
+        static void Pager(float right, float y, size_t top, size_t rows, size_t total, Style::Box &before, Style::Box &after)
+        {
+            before = after = Style::Box();
+            if (total <= rows) return;
+            const std::string where = std::to_string(top + 1) + "-" + std::to_string(std::min(total, top + rows)) + " of " + std::to_string(total);
+            Text(FONT, right - 72.f - (float)freetype::easy_measureWidth(FONT, where), y + 3.f, where, Rgb(176, 184, 196));
+            SmallButton(before, right - 64.f, y - 2.f, 30.f, "<", top > 0);
+            SmallButton(after, right - 30.f, y - 2.f, 30.f, ">", top + rows < total);
+        }
+
+        // A page on: `top` moves by a page, within the list.
+        static void Page(size_t &top, size_t rows, size_t total, int direction)
+        {
+            if (direction < 0) top = top >= rows ? top - rows : 0;
+            else if (top + rows < total) top += rows;
         }
 
         static void RenderStats()
@@ -365,11 +421,13 @@ namespace Duels
                 }
                 else Text(TEXT, lx, ly, a.message.empty() ? std::string("Asking the master...") : a.message, soft);
                 ly += 16.f;
-                ly += Style::Label(lx, ly, "LAST RANKED MATCHES") + 12.f;
                 Account::RecentView r = Account::GetRecent();
+                if (g.onlineTop >= r.matches.size()) g.onlineTop = 0;
+                Pager(lx + cw, ly, g.onlineTop, ONLINE_ROWS, r.matches.size(), g.onlineUp, g.onlineDown);
+                ly += Style::Label(lx, ly, "LAST RANKED MATCHES") + 12.f;
                 if (!r.known) Text(FONT, lx, ly, r.error.empty() ? std::string("Asking the master...") : r.error, soft);
                 else if (r.matches.empty()) Text(FONT, lx, ly, "None yet.", soft);
-                for (size_t i = 0; i < r.matches.size() && i < 9; ++i)
+                for (size_t i = g.onlineTop; i < r.matches.size() && i < g.onlineTop + ONLINE_ROWS; ++i)
                 {
                     const Account::RecentMatch &m = r.matches[i];
                     std::time_t when = (std::time_t)m.ended;
@@ -391,25 +449,47 @@ namespace Duels
                 }
             }
 
-            // This computer: every finished match against a player.
+            // This computer: every finished match, ranked, unranked or against the AI (roadmap CX: one at a time).
             float ry = y + 24.f;
             ry += Style::Label(rx, ry, "THIS COMPUTER") + 14.f;
-            const std::vector<Stats::MatchLine> &all = g.stats;
+            std::vector<const Stats::MatchLine *> all;
+            int counts[3] = {0, 0, 0};
+            for (const Stats::MatchLine &m : g.stats)
+            {
+                const int kind = StatsKind(m);
+                ++counts[kind];
+                if (kind == g.statsTab) all.push_back(&m);
+            }
+            for (int t = 0; t < 3; ++t)
+            {
+                Style::Box &tab = g.statsTabs[t];
+                tab.x = rx + t * 162.f;
+                tab.y = ry;
+                tab.w = 154.f;
+                tab.h = 34.f;
+                const Style::Look look = t == g.statsTab ? Style::Look::Pressed : tab.Contains(g.mouseX, g.mouseY) ? Style::Look::Hover : Style::Look::Idle;
+                Style::Button(tab.x, tab.y, tab.w, tab.h, std::string(STATS_TABS[t]) + " " + std::to_string(counts[t]), TEXT, look);
+            }
+            ry += 34.f + 18.f;
+            g.shipsUp = g.shipsDown = g.matchesUp = g.matchesDown = Style::Box();
             if (all.empty())
             {
-                Paragraph(TEXT, rx, ry, cw, "No match finished on this computer yet: the record starts with your first.", soft);
+                static const char *const NONE[3] = {"No ranked match on this computer yet: RANKED in HOST DUEL, or the ranked queue.",
+                                                    "No unranked match on this computer yet (or the record was cleared).",
+                                                    "No match against the AI on this computer yet (or the record was cleared)."};
+                Paragraph(TEXT, rx, ry, cw, NONE[g.statsTab], soft);
             }
             else
             {
-                int won = 0, lost = 0, drawn = 0, ranked = 0;
+                int won = 0, lost = 0, drawn = 0;
                 double dealt = 0.0, taken = 0.0;
                 std::map<std::string, std::pair<int, int>> ships;   // played, won
-                for (const Stats::MatchLine &m : all)
+                for (const Stats::MatchLine *line : all)
                 {
+                    const Stats::MatchLine &m = *line;
                     if (m.result > 0) ++won;
                     else if (m.result < 0) ++lost;
                     else ++drawn;
-                    if (m.ranked) ++ranked;
                     dealt += m.damage;
                     taken += m.opponentDamage;
                     std::pair<int, int> &ship = ships[m.ship];
@@ -422,10 +502,10 @@ namespace Duels
                 ry += 22.f;
                 char damage[96];
                 std::snprintf(damage, sizeof(damage), "Damage score: %.1f dealt, %.1f taken a match", dealt / total, taken / total);
-                Text(TEXT, rx, ry, std::to_string(ranked) + " ranked, " + std::to_string(total - ranked) + " unranked", light);
-                ry += 22.f;
                 Text(TEXT, rx, ry, damage, light);
                 ry += 30.f;
+                if (g.shipsTop >= ships.size()) g.shipsTop = 0;
+                Pager(rx + cw, ry, g.shipsTop, SHIP_ROWS, ships.size(), g.shipsUp, g.shipsDown);
                 ry += Style::Label(rx, ry, "BY SHIP") + 12.f;
                 std::vector<std::pair<std::string, std::pair<int, int>>> byShip(ships.begin(), ships.end());
                 std::stable_sort(byShip.begin(), byShip.end(), [](const std::pair<std::string, std::pair<int, int>> &l,
@@ -435,7 +515,8 @@ namespace Duels
                 Text(FONT, rx + 310.f, ry, "WON", soft);
                 Text(FONT, rx + 380.f, ry, "WIN RATE", soft);
                 ry += 19.f;
-                for (size_t i = 0; i < byShip.size() && i < 6; ++i)
+                const float shipsEnd = ry + 19.f * (float)std::min(SHIP_ROWS, byShip.size());   // a page's height: the next list stays put
+                for (size_t i = g.shipsTop; i < byShip.size() && i < g.shipsTop + SHIP_ROWS; ++i)
                 {
                     const std::string title = byShip[i].first.empty() ? std::string("?") : Ships::Title(byShip[i].first);
                     Text(FONT, rx, ry, Cut(FONT, title, 220.f), light);
@@ -444,18 +525,29 @@ namespace Duels
                     Text(FONT, rx + 380.f, ry, Percent(byShip[i].second.second, byShip[i].second.first), light);
                     ry += 19.f;
                 }
-                ry += 12.f;
+                ry = shipsEnd + 12.f;
+                if (g.matchesTop >= all.size()) g.matchesTop = 0;
+                Pager(rx + cw, ry, g.matchesTop, MATCH_ROWS, all.size(), g.matchesUp, g.matchesDown);
                 ry += Style::Label(rx, ry, "LAST MATCHES") + 12.f;
-                for (size_t n = 0; n < all.size() && n < 5; ++n)
+                for (size_t n = g.matchesTop; n < all.size() && n < g.matchesTop + MATCH_ROWS; ++n)
                 {
-                    const Stats::MatchLine &m = all[all.size() - 1 - n];
+                    const Stats::MatchLine &m = *all[all.size() - 1 - n];
                     Text(FONT, rx, ry, m.when.size() > 5 ? m.when.substr(5) : m.when, soft);
                     Text(FONT, rx + 84.f, ry, Cut(FONT, "vs " + m.opponent, 150.f), light);
                     Text(FONT, rx + 240.f, ry, PointsText(m.halves) + " : " + PointsText(m.opponentHalves), light);
                     Text(FONT, rx + 300.f, ry, m.result > 0 ? "won" : m.result < 0 ? "lost" : "drawn", m.result > 0 ? green : m.result < 0 ? red : light);
-                    Text(FONT, rx + 350.f, ry, m.ranked ? "ranked" : "unranked", m.ranked ? gold : soft);
+                    Text(FONT, rx + 360.f, ry, Cut(FONT, m.ship.empty() ? std::string("?") : Ships::Title(m.ship), cw - 360.f), soft);
                     ry += 19.f;
                 }
+            }
+            // CLEAR for the unranked record and the AI's (roadmap CX); the ranked one stays. A second click within 5 s.
+            g.clear = Style::Box();
+            if (g.statsTab != 0)
+            {
+                const bool armed = WallMs() < g.clearArmedUntil;
+                ButtonAt(g.clear, x + w - 30.f - 120.f - 14.f - 200.f, y + h - 58.f, 200.f,
+                         armed ? "SURE? CLEAR" : g.statsTab == 1 ? "CLEAR UNRANKED" : "CLEAR VS AI", !all.empty());
+                if (all.empty()) g.clear = Style::Box();
             }
             ButtonAt(g.ok, x + w - 30.f - 120.f, y + h - 58.f, 120.f, "CLOSE");
         }
@@ -979,11 +1071,67 @@ namespace Duels
                 else if (g.rejoin.w > 0.f && g.rejoin.Contains(x, y) && Rejoin::Available()) StartRejoin();
                 return true;
             case Window::Note:
+                if (g.ok.Contains(x, y)) g.open = Window::None;
+                return true;
             case Window::Stats:
                 if (g.ok.Contains(x, y)) g.open = Window::None;
+                else ClickStats(x, y);
                 return true;
             default:
                 return false;
+            }
+        }
+
+        bool StatsControlCentre(const std::string &name, int &x, int &y)
+        {
+            const Style::Box *box = name == "ranked" ? &g.statsTabs[0] : name == "unranked" ? &g.statsTabs[1] : name == "ai" ? &g.statsTabs[2]
+                                  : name == "ships-prev" ? &g.shipsUp : name == "ships-next" ? &g.shipsDown
+                                  : name == "matches-prev" ? &g.matchesUp : name == "matches-next" ? &g.matchesDown
+                                  : name == "online-prev" ? &g.onlineUp : name == "online-next" ? &g.onlineDown
+                                  : name == "clear" ? &g.clear : nullptr;
+            if (g.open != Window::Stats || !box || box->w <= 0.f) return false;
+            x = (int)(box->x + box->w / 2.f);
+            y = (int)(box->y + box->h / 2.f);
+            return true;
+        }
+
+        static void ClickStats(int x, int y)
+        {
+            for (int t = 0; t < 3; ++t)
+            {
+                if (!g.statsTabs[t].Contains(x, y) || t == g.statsTab) continue;
+                g.statsTab = t;
+                g.shipsTop = g.matchesTop = 0;
+                g.clearArmedUntil = 0.0;
+                Log("Menu: STATS: the %s record", STATS_TABS[t]);
+                return;
+            }
+            size_t shown = 0;
+            std::map<std::string, int> ships;
+            for (const Stats::MatchLine &m : g.stats)
+            {
+                if (StatsKind(m) != g.statsTab) continue;
+                ++shown;
+                ++ships[m.ship];
+            }
+            const size_t online = Account::GetRecent().matches.size();
+            if (g.shipsUp.Contains(x, y)) Page(g.shipsTop, SHIP_ROWS, ships.size(), -1);
+            else if (g.shipsDown.Contains(x, y)) Page(g.shipsTop, SHIP_ROWS, ships.size(), 1);
+            else if (g.matchesUp.Contains(x, y)) Page(g.matchesTop, MATCH_ROWS, shown, -1);
+            else if (g.matchesDown.Contains(x, y)) Page(g.matchesTop, MATCH_ROWS, shown, 1);
+            else if (g.onlineUp.Contains(x, y)) Page(g.onlineTop, ONLINE_ROWS, online, -1);
+            else if (g.onlineDown.Contains(x, y)) Page(g.onlineTop, ONLINE_ROWS, online, 1);
+            else if (g.clear.Contains(x, y) && g.statsTab != 0)
+            {
+                if (WallMs() < g.clearArmedUntil)
+                {
+                    int gone = Stats::Clear(g.statsTab == 2);
+                    g.stats = Stats::Load();
+                    g.shipsTop = g.matchesTop = 0;
+                    g.clearArmedUntil = 0.0;
+                    Log("Menu: STATS: the %s record cleared (%d match(es))", STATS_TABS[g.statsTab], gone);
+                }
+                else g.clearArmedUntil = WallMs() + 5000.0;
             }
         }
 

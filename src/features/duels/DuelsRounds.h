@@ -51,6 +51,7 @@ namespace Duels
         bool IsLocal();
         void OpponentReady();
         void OpponentDefeated(bool crewDead);
+        void OpponentEscaped();   // its ship jumped away (roadmap DC): half a point for us
         void OpponentState(float hullLost, float crewLost, float hullShare, float crewShare);
         // The ship choice against the AI (roadmap 3.9): whether the next match chooses its ships (the host's settings),
         // and the AI's ban (a type) and pick (the offer's index), taken as a guest's would be.

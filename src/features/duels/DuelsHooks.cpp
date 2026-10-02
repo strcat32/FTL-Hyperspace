@@ -145,6 +145,15 @@ HOOK_METHOD_PRIORITY(CommandGui, RunCommand, -100, (std::string& command) -> voi
 // Layered on purpose: callers may use IsPaused(), SetPaused() or read the flags directly.
 // ---------------------------------------------------------------------------------------------
 
+// The AI's ship in a match against it (roadmap DC): at our weapons (drones) it aims at a bay with something in it, not
+// at the room of the weapons system (bay 1).
+HOOK_METHOD(CombatAI, PrioritizeSystem, (int weaponType) -> int)
+{
+    LOG_HOOK("HOOK_METHOD -> CombatAI::PrioritizeSystem -> Begin (DuelsHooks.cpp)\n")
+    int system = super(weaponType);
+    return Duels::Ai::AimAtBay(self, target, system);
+}
+
 HOOK_METHOD_PRIORITY(CommandGui, IsPaused, -1000, () -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::IsPaused -> Begin (DuelsHooks.cpp)\n")
@@ -156,8 +165,9 @@ HOOK_METHOD_PRIORITY(CommandGui, IsPaused, -1000, () -> bool)
     if (Duels::Match::WaitingForMatch()) return true;   // (FTL's first message box is answered in a pause too)
     if (Duels::GetState().noPause)
     {
+        // Against the AI with FTL's pause allowed (roadmap DD): the pause key's pause too.
         return Duels::Rounds::NetPaused() || Duels::Rejoin::Trying() || Duels::Demo::ReplayPaused() || Duels::Rounds::TimeoutPaused() ||
-               (Duels::Net::Replaying() && choiceBox.bOpen);
+               (Duels::Net::Replaying() && choiceBox.bOpen) || Duels::Ai::Paused();
     }
     return super();
 }
@@ -1570,6 +1580,15 @@ HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) ->
     if (Duels::Window::KeyDown((int)key)) return;
     if (Duels::ReplayUi::KeyDown((int)key)) return;   // a replay's keys, and no other reaches the game then
     if ((Duels::Rounds::NetPaused() || Duels::Rejoin::Trying() || Duels::Match::WaitingForMatch()) && !menuBox.bOpen && key != SDLK_ESCAPE) return;
+    // Against the AI with FTL's pause allowed (roadmap DD): the pause key holds the world and the match's clock (FTL's own
+    // pause flags are cleared every frame in a match, CommandGui::OnLoop).
+    SDLKey pauseKey = Settings::GetHotkey("pause");
+    if ((int)pauseKey <= 0) pauseKey = SDLK_SPACE;
+    if (key == pauseKey && Duels::Ai::PauseAllowed() && !storeScreens.bOpen && !shipScreens.bOpen && !menuBox.bOpen && !choiceBox.bOpen)
+    {
+        Duels::Ai::TogglePause();
+        return;
+    }
     Duels::Refit::SwitchScreensKey((int)key);   // the preparation: the store and the ship's screens switch
     TutorialManager *tutorial = G_->GetTutorialManager();
     if (key == Settings::GetHotkey("jump") && (int)key > 0 && !(tutorial && tutorial->Running()))

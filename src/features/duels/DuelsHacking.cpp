@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsHacking.h"
+#include "DuelsBays.h"
 #include "DuelsNet.h"
 #include "DuelsTrace.h"
 #include "DuelsWire.h"
@@ -18,7 +19,8 @@ namespace Duels
             EVENT_LAUNCH = 1,   // MSG_HACK: launch id, the system's type
             EVENT_STOP = 2,     // MSG_HACK: launch id
             RESULT_ATTACHED = 1,
-            RESULT_DESTROYED = 2
+            RESULT_DESTROYED = 2,
+            RESULT_MOVED = 3     // MSG_HACK_RESULT: launch id, result, the system's type it moved to (roadmap DB)
         };
 
         // The replica's pulse timer runs this far behind its owner's, so the owner's lock ends the pulse, not the
@@ -43,6 +45,11 @@ namespace Duels
             bool launched = false;                // the replica's drone has left
             bool havePulse = false;
             float pulseTime = 0.f;                // the owner's pulse progress (the state)
+            // The weapon or drone the replica's drone attached to in one of our bays (roadmap DB): the hack goes where it
+            // goes (a key, only compared).
+            const void *stuckTo = nullptr;
+            uint32_t moves = 0;
+            bool theirLost = false;               // we blew their drone up (an empty bay, its weapon gone): not attached
             uint32_t launchesSent = 0, launchesReceived = 0, attachedReports = 0, destroyedReports = 0,
                      pulsesRefused = 0;
         };
@@ -56,7 +63,23 @@ namespace Duels
 
         static const char *ResultName(uint8_t result)
         {
-            return result == RESULT_ATTACHED ? "attached" : "destroyed";
+            return result == RESULT_ATTACHED ? "attached" : result == RESULT_MOVED ? "moved" : "destroyed";
+        }
+
+        // A weapon's or drone's name for the log.
+        static std::string ItemName(ShipManager *ship, const ShipSystem *bay)
+        {
+            if (!ship || !bay) return "?";
+            int number = Bays::BayNumber(bay->iSystemType) - 1;
+            const void *item = Bays::ItemInBay(ship, bay);
+            if (!item || number < 0) return "nothing";
+            if (ship->weaponSystem)
+                for (ProjectileFactory *weapon : ship->GetWeaponList())
+                    if (weapon == item) return weapon->blueprint ? weapon->blueprint->name : "a weapon";
+            if (ship->droneSystem)
+                for (Drone *drone : ship->GetDroneList())
+                    if (drone == item) return drone->blueprint ? drone->blueprint->name : "a drone";
+            return "?";
         }
 
         static std::string SystemLabel(int type)
@@ -126,6 +149,25 @@ namespace Duels
                 if (hacking->bHacking && hacking->drone.arrived)
                 {
                     g_hack.pending = false;
+                    // At a bay it attaches to the weapon or drone there now, and sticks to it (roadmap DB); at an empty
+                    // bay it is lost (the attacker may send the next one at once).
+                    ShipManager *own = G_->GetShipManager(0);
+                    if (Bays::IsBay(hacking->currentSystem))
+                    {
+                        const void *item = Bays::ItemInBay(own, hacking->currentSystem);
+                        if (!item)
+                        {
+                            Log("Hacking: the opponent's drone reached our empty %s: it is lost",
+                                SystemLabel(hacking->currentSystem->iSystemType).c_str());
+                            hacking->BlowHackingDrone();
+                            g_hack.theirLost = true;
+                            SendResult(g_hack.theirLaunch, RESULT_DESTROYED);
+                            return;
+                        }
+                        g_hack.stuckTo = item;
+                        Log("Hacking: the opponent's drone sticks to our %s in %s", ItemName(own, hacking->currentSystem).c_str(),
+                            SystemLabel(hacking->currentSystem->iSystemType).c_str());
+                    }
                     SendResult(g_hack.theirLaunch, RESULT_ATTACHED);
                 }
                 else if (!hacking->bHacking || hacking->drone.bDead)
@@ -142,6 +184,44 @@ namespace Duels
                 g_hack.pending = false;
                 SendResult(g_hack.theirLaunch, RESULT_DESTROYED);
             }
+        }
+
+        // Their attached drone sticks to the weapon or drone it attached to (roadmap DB): when that moves to another bay
+        // (dragged in the weapons bar), the hack goes with it; when it leaves the bays (to the cargo), the drone is lost.
+        static void FollowStuck()
+        {
+            if (!g_hack.stuckTo) return;
+            ShipManager *own = G_->GetShipManager(0);
+            ShipManager *replica = G_->GetShipManager(1);
+            HackingSystem *hacking = replica ? replica->hackingSystem : nullptr;
+            if (!own || !hacking || !hacking->bHacking || !hacking->currentSystem || !hacking->drone.arrived || hacking->drone.bDead)
+            {
+                g_hack.stuckTo = nullptr;
+                return;
+            }
+            ShipSystem *bay = Bays::BayOfItem(own, g_hack.stuckTo);
+            if (bay == hacking->currentSystem) return;
+            ShipSystem *old = hacking->currentSystem;
+            old->bUnderAttack = false;
+            old->iHackEffect = 0;
+            if (!bay)
+            {
+                Log("Hacking: what the opponent's drone stuck to left our %s: the drone is lost", SystemLabel(old->iSystemType).c_str());
+                g_hack.stuckTo = nullptr;
+                hacking->BlowHackingDrone();
+                g_hack.theirLost = true;
+                SendResult(g_hack.theirLaunch, RESULT_DESTROYED);
+                return;
+            }
+            hacking->currentSystem = bay;
+            ++g_hack.moves;
+            Log("Hacking: the opponent's hack moves with our %s from %s to %s", ItemName(own, bay).c_str(),
+                SystemLabel(old->iSystemType).c_str(), SystemLabel(bay->iSystemType).c_str());
+            Writer w;
+            w.U8(g_hack.theirLaunch);
+            w.U8(RESULT_MOVED);
+            w.U8((uint8_t)bay->iSystemType);
+            Net::Send(MSG_HACK_RESULT, w, true);
         }
 
         // A hacking drone flies only once it is in the space's drone list. Hyperspace puts it there when the system
@@ -165,6 +245,7 @@ namespace Duels
             EnsureInSpace(G_->GetShipManager(1), G_->GetShipManager(0));
             WatchOurs();
             WatchTheirs();
+            FollowStuck();
         }
 
         static void OnLaunch(uint8_t launch, int type)
@@ -191,6 +272,8 @@ namespace Duels
             hacking->iLockCount = lock;
             hacking->bBlocked = blocked;
             g_hack.pending = true;
+            g_hack.stuckTo = nullptr;
+            g_hack.theirLost = false;
             g_hack.theirLaunch = launch;
             g_hack.theirType = type;
             g_hack.since = WallMs();
@@ -202,18 +285,39 @@ namespace Duels
         {
             ShipManager *replica = G_->GetShipManager(1);
             HackingSystem *hacking = replica ? replica->hackingSystem : nullptr;
-            if (launch == g_hack.theirLaunch) g_hack.pending = false;
+            if (launch == g_hack.theirLaunch)
+            {
+                g_hack.pending = false;
+                g_hack.stuckTo = nullptr;
+                g_hack.theirLost = false;
+            }
             if (!hacking) return;
             hacking->queuedSystem = nullptr;
             if (hacking->bHacking) hacking->StopHacking();
             Log("Hacking: the opponent's hacking stopped (launch %u)", (unsigned)launch);
         }
 
-        static void OnResult(uint8_t launch, uint8_t result)
+        static void OnResult(uint8_t launch, uint8_t result, int movedTo)
         {
             if (launch != g_hack.launch) return;   // about an earlier drone
             ShipManager *own = G_->GetShipManager(0);
             HackingSystem *hacking = own ? own->hackingSystem : nullptr;
+            if (result == RESULT_MOVED)
+            {
+                // The weapon or drone our drone sticks to went to another bay there: our hack goes with it (roadmap DB).
+                ShipManager *enemy = G_->GetShipManager(1);
+                ShipSystem *bay = enemy && movedTo >= 0 ? enemy->GetSystem(movedTo) : nullptr;
+                if (!hacking || !hacking->bHacking || !bay) return;
+                if (hacking->currentSystem && hacking->currentSystem != bay)
+                {
+                    hacking->currentSystem->bUnderAttack = false;
+                    hacking->currentSystem->iHackEffect = 0;
+                }
+                hacking->currentSystem = bay;
+                g_hack.target = bay;   // the same drone: no new launch (WatchOurs)
+                Log("Hacking: our hack moved with their weapon or drone to %s (launch %u)", SystemLabel(movedTo).c_str(), (unsigned)launch);
+                return;
+            }
             Log("Hacking: our drone (launch %u) %s there", (unsigned)launch, ResultName(result));
             if (result == RESULT_ATTACHED)
             {
@@ -241,7 +345,8 @@ namespace Duels
             {
                 uint8_t launch = r.U8();
                 uint8_t result = r.U8();
-                if (r.Ok()) OnResult(launch, result);
+                int movedTo = result == RESULT_MOVED ? r.U8() : -1;
+                if (r.Ok()) OnResult(launch, result, movedTo);
             }
         }
 
@@ -362,7 +467,7 @@ namespace Duels
             std::ostringstream out;
             out << hacking->currentSystem->iSystemType;
             // Ours counts as attached when the defender said so; the replica's when its drone arrived here.
-            bool attached = ship->iShipId == 0 ? g_hack.attached : hacking->drone.arrived;
+            bool attached = ship->iShipId == 0 ? g_hack.attached : hacking->drone.arrived && !g_hack.theirLost;
             if (attached) out << 'a';
             if (hacking->iLockCount == -1) out << 'p';
             return out.str();
@@ -373,7 +478,7 @@ namespace Duels
             const HackState &h = g_hack;
             std::ostringstream out;
             out << "hacking: launches sent " << h.launchesSent << " received " << h.launchesReceived << ", reported attached "
-                << h.attachedReports << " destroyed " << h.destroyedReports << ", pulses held " << h.pulsesRefused;
+                << h.attachedReports << " destroyed " << h.destroyedReports << ", moved " << h.moves << ", pulses held " << h.pulsesRefused;
             return out.str();
         }
     }

@@ -1037,6 +1037,20 @@ namespace Duels
             return found == list.end() ? nullptr : Bay(ship, DRONES, (int)(found - list.begin()) + 1);
         }
 
+        const void *ItemInBay(ShipManager *ship, const ShipSystem *bay)
+        {
+            int kind, number;
+            if (!ship || !bay || !BayOf(bay->iSystemType, kind, number)) return nullptr;
+            return kind == WEAPONS ? (const void *)Weapon(ship, number - 1) : (const void *)DroneIn(ship, number - 1);
+        }
+
+        ShipSystem *BayOfItem(ShipManager *ship, const void *item)
+        {
+            if (!ship || !item) return nullptr;
+            if (ShipSystem *bay = BayOfWeapon(ship, (const ProjectileFactory *)item)) return bay;
+            return BayOfDrone(ship, (const Drone *)item);
+        }
+
         bool MayPower(ShipManager *ship, ProjectileFactory *weapon)
         {
             if (!ship || !Owned(ship)) return true;

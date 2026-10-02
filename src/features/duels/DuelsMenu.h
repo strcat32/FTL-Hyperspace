@@ -31,5 +31,8 @@ namespace Duels
         bool IsOpen();
         // Test verb "menu name|tutorial|guide|close" and what's open ("menu").
         bool RunVerb(const std::vector<std::string> &args, std::string &message);
+        // STATS' controls for the click verb (roadmap CX): ranked, unranked, ai (the records), ships-prev, ships-next,
+        // matches-prev, matches-next, online-prev, online-next (the pages), clear. False when it isn't on the screen.
+        bool StatsControlCentre(const std::string &name, int &x, int &y);
     }
 }

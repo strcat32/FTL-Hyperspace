@@ -240,6 +240,8 @@ namespace Duels
 
             double pausedSince = -1.0;      // the connection was lost then (our clock): the match is paused
             double startedMs = 0.0;         // the match began then (our clock): its length for a ranked result
+            // Against the AI with FTL's pause allowed (roadmap DD): the last frame, and since when FTL's pause holds.
+            double lastLocalMs = -1.0, localPausedSince = -1.0;
             bool statsRecorded = false;     // the finished match is in the player's own record (DuelsStats.cpp)
             bool resultSent = false;        // a ranked match's result went to the relay
             uint32_t eventsSent = 0, eventsReceived = 0, statesSent = 0, statesReceived = 0;
@@ -1021,10 +1023,10 @@ namespace Duels
         static void SendRankedResult();
 
         // The finished match in the player's own record (roadmap BR, DuelsStats.cpp, the main menu's STATS): a match
-        // against another player, not against the AI, not a replay; once.
+        // against another player or the AI (roadmap CX: apart in STATS), not a replay; once.
         static void RecordStats()
         {
-            if (g.statsRecorded || g.local || Net::Replaying()) return;
+            if (g.statsRecorded || Net::Replaying()) return;
             g.statsRecorded = true;
             const Data &d = g.data;
             uint8_t them = Other(g.me);
@@ -1035,13 +1037,15 @@ namespace Duels
             std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &local);
             line.when = when;
             std::string why;
-            line.ranked = Ranked(why);
+            line.ai = g.local;
+            line.ranked = !g.local && Ranked(why);
             line.host = g.me == HOST;
             line.name = Name(g.me);
             line.opponent = Name(them);
             ShipManager *own = G_->GetShipManager(0);
             line.ship = own ? own->myBlueprint.blueprintName : std::string();
-            line.opponentShip = Match::OpponentShip();
+            ShipManager *theirs = G_->GetShipManager(1);
+            line.opponentShip = g.local ? (theirs ? theirs->myBlueprint.blueprintName : std::string()) : Match::OpponentShip();
             line.result = d.matchWinner == NOBODY ? 0 : d.matchWinner == g.me ? 1 : -1;
             line.halves = Halves(d, g.me);
             line.opponentHalves = Halves(d, them);
@@ -1051,7 +1055,7 @@ namespace Duels
             line.seconds = g.startedMs > 0.0 ? (int)((Now() - g.startedMs) / 1000.0) : 0;
             line.how = d.matchReason == REASON_LEFT ? std::string("left the match") : std::string(ReasonText(d.matchReason));
             Stats::Record(line);
-            Stats::SendSummary(line, Net::MatchToken());   // the master's statistics (roadmap CJ)
+            if (!g.local) Stats::SendSummary(line, Net::MatchToken());   // the master's statistics (roadmap CJ)
         }
 
         static void EnterMatchOver()
@@ -2066,6 +2070,7 @@ namespace Duels
             g.active = true;
             g.local = true;
             g.me = HOST;
+            g.startedMs = Now();   // the match's length in the player's record (STATS, roadmap CX)
             g.random.seed(NewSeed());
             Refit::OnMatchStart();
             g.data = Data();
@@ -2111,6 +2116,41 @@ namespace Duels
         void OpponentDefeated(bool crewDead)
         {
             if (g.local && g.active) HostEvent(GUEST, EV_DEFEAT, crewDead ? REASON_CREW : REASON_DESTROYED);
+        }
+
+        void OpponentEscaped()
+        {
+            if (g.local && g.active) HostEvent(GUEST, EV_ESCAPE, 0);
+        }
+
+        // Against the AI with FTL's pause allowed (roadmap DD): while the pause key's pause holds FTL's world (Ai::Paused;
+        // a timeout moves the times on by itself, and the store, the menus and FTL's other pauses don't stop the match),
+        // the match's times wait too.
+        static void FollowLocalPause(double now)
+        {
+            const bool paused = Ai::Paused() && !TimeoutPaused();
+            if (paused && g.lastLocalMs >= 0.0 && now > g.lastLocalMs)
+            {
+                const double step = now - g.lastLocalMs;
+                Data &d = g.data;
+                for (double *time : {&d.phaseEnd, &d.fightStart, &d.stallEnd, &d.drawEnd, &d.timeoutStart, &d.timeoutEnd})
+                {
+                    if (*time >= 0.0) *time += step;
+                }
+                Environment::Shift(step);
+                g.startedMs += step;
+            }
+            if (paused && g.localPausedSince < 0.0)
+            {
+                g.localPausedSince = now;
+                Log("Rounds: FTL's pause: the match against the AI waits");
+            }
+            else if (!paused && g.localPausedSince >= 0.0)
+            {
+                Log("Rounds: the pause is over after %.1f s: the match goes on", (now - g.localPausedSince) / 1000.0);
+                g.localPausedSince = -1.0;
+            }
+            g.lastLocalMs = now;
         }
 
         void OpponentState(float hullLost, float crewLost, float hullShare, float crewShare)
@@ -2288,6 +2328,7 @@ namespace Duels
         {
             if (!g.active || !(g.local || Net::IsConnected())) return;
             Data &d = g.data;
+            if (g.local && Ai::PauseAllowed()) FollowLocalPause(now);
             if (g.local) Ai::OnFrame();
             if (d.phase == Phase::Choice) ChoiceNews();
             if (BetweenFights() && !Net::Replaying()) Refit::KeepAir();
@@ -3179,6 +3220,12 @@ namespace Duels
             // in its last minute (a draw offer has no time limit, AT).
             double now = Now(), waitMs;
             bool cutOff;
+            if (g.local && Ai::Paused())
+            {
+                // Against the AI, the pause key's pause (roadmap DD): the score panel says so, the countdown stands.
+                s.paused = true;
+                s.pausedText = "The pause key goes on";
+            }
             if (Net::Reconnecting(waitMs, cutOff))
             {
                 s.paused = true;

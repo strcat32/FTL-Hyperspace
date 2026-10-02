@@ -338,7 +338,8 @@ namespace Duels
             if (Rounds::IsLocal())
             {
                 row("Opponent: " + opponent, gold);
-                row("FTL's AI, on this computer", soft);
+                row(std::string("FTL's AI, ") + Ai::LevelTitle(Ai::CurrentLevel()) + ", on this computer" +
+                        (Ai::PauseAllowed() ? "; the pause key pauses" : ""), soft);
             }
             else if (opponent.empty() && Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
             {

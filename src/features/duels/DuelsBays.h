@@ -112,6 +112,11 @@ namespace Duels
         bool OriginalRoomCorner(ShipSystem *system, int &x, int &y);
 
         bool IsBay(const ShipSystem *system);
+        // A hacking drone sticks to the weapon or drone in its bay (roadmap DB, the user 2026-10-02): what is in a bay
+        // now (an opaque key, nullptr for an empty slot or a system that isn't a bay), and the bay that weapon or drone
+        // is in now (nullptr when it left the slots; only compared, never followed).
+        const void *ItemInBay(ShipManager *ship, const ShipSystem *bay);
+        ShipSystem *BayOfItem(ShipManager *ship, const void *item);
         // SystemStoreBox::CanHold for a subsystem (roadmap CR): Hyperspace counts every system without reactor power
         // against the ship's subsystem limit, the bays too (custom subsystems), so a duel's ship had no room for doors,
         // sensors, piloting or a backup battery, bought or bought back. Here the bays don't count.
