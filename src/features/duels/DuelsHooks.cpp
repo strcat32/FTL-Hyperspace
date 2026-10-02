@@ -79,6 +79,7 @@ HOOK_METHOD(WorldManager, OnLoop, () -> void)
         state.gameTime += fps->SpeedFactor * 0.0625;
         Duels::Demo::BeforeWorldStep(fps->SpeedFactor * 62.5);
         super();
+        if (Duels::Demo::SeekBudgetSpent()) break;   // a seek's steps for this frame (DuelsDemo.cpp)
     }
     fps->SpeedFactor = frame;
 }
@@ -146,8 +147,13 @@ HOOK_METHOD_PRIORITY(CommandGui, IsPaused, -1000, () -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::IsPaused -> Begin (DuelsHooks.cpp)\n")
     // A duel pauses only while its connection is lost (roadmap AA) and in a timeout both players took (roadmap BF): FTL's
-    // world stands still for both players. A replay's pause stops it too (roadmap 5.1).
-    if (Duels::GetState().noPause) return Duels::Rounds::NetPaused() || Duels::Demo::ReplayPaused() || Duels::Rounds::TimeoutPaused();
+    // world stands still for both players. A replay's pause stops it too (roadmap 5.1), and a message box of FTL's in a
+    // replay (its first one, come late: FTL answers a box only while paused, roadmap BO).
+    if (Duels::GetState().noPause)
+    {
+        return Duels::Rounds::NetPaused() || Duels::Demo::ReplayPaused() || Duels::Rounds::TimeoutPaused() ||
+               (Duels::Net::Replaying() && choiceBox.bOpen);
+    }
     return super();
 }
 
@@ -168,6 +174,7 @@ HOOK_METHOD_PRIORITY(CommandGui, OnLoop, -1000, () -> void)
     super();
     if (!Duels::GetState().noPause) return;
 
+    if (Duels::Net::Replaying() && choiceBox.bOpen) return;   // a message box in a replay: FTL's pause for its answer
     if (bPaused || bAutoPaused || menu_pause || event_pause || touch_pause)
     {
         ++Duels::GetState().blockedPauses;
@@ -570,6 +577,22 @@ HOOK_METHOD_PRIORITY(DroneSystem, SetBonusPower, -2000, (int amount, int permane
     super(amount, permanentPower);
 }
 
+// FTL's ESC menu in a duel or a replay (roadmap BO): HANGAR and RESTART would start a run of FTL's own (greyed out),
+// and the duel's box goes where FTL shows its run's difficulty, content, ship achievements and seed (DuelsMatchUi.cpp).
+HOOK_METHOD_PRIORITY(MenuScreen, Open, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> MenuScreen::Open -> Begin (DuelsHooks.cpp)\n")
+    super();
+    Duels::MatchUi::OnEscMenuOpen(this);
+}
+
+HOOK_METHOD_PRIORITY(MenuScreen, OnRender, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> MenuScreen::OnRender -> Begin (DuelsHooks.cpp)\n")
+    super();
+    Duels::MatchUi::RenderEscMenu(this);
+}
+
 // The opponent's crew in our game are puppets: their health is their owner's (DuelsCrew.cpp), so nothing here
 // changes it, and they repair nothing (the owner's state brings the replica's system health).
 HOOK_METHOD_PRIORITY(CrewMember, DirectModifyHealth, -2000, (float health) -> bool)
@@ -577,6 +600,27 @@ HOOK_METHOD_PRIORITY(CrewMember, DirectModifyHealth, -2000, (float health) -> bo
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::DirectModifyHealth -> Begin (DuelsHooks.cpp)\n")
     if (Duels::Crew::IsPuppet(this)) return false;
     return super(health);
+}
+
+// No achievements in FTL: Duels (roadmap BP): none of FTL's (nor Steam's: they go through here), none of Hyperspace's
+// own (CustomAchievementTracker::SetAchievement, CustomAchievements.cpp), and no popup of them in a duel.
+HOOK_METHOD_PRIORITY(AchievementTracker, SetAchievement, -2000, (const std::string& achievement, bool noPopup, bool sendToServer) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> AchievementTracker::SetAchievement -> Begin (DuelsHooks.cpp)\n")
+    static bool told = false;
+    if (!told)
+    {
+        told = true;
+        Duels::Log("Achievements: none in FTL: Duels (%s not given)", achievement.c_str());
+    }
+}
+
+// Between a match's fights nothing harms a crew: no lack of air (a sold oxygen system), no fire (Rounds::BetweenFights).
+HOOK_METHOD_PRIORITY(CrewMember, UpdateHealth, -2000, () -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewMember::UpdateHealth -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Rounds::BetweenFights()) return;
+    super();
 }
 
 HOOK_METHOD_PRIORITY(CrewMember, ModifyHealth, -2000, (float health) -> void)
@@ -1454,8 +1498,9 @@ HOOK_METHOD_PRIORITY(CommandGui, GetWorldCoordinates, -2000, (Point point, bool 
 // the console, the chat and the Duels window answer. FTL itself would take orders in a pause.
 static bool OrdersHeld(CommandGui *gui, int mX, int mY)
 {
-    // The connection lost (the match waits), or a replay (the recorder's ship isn't ours to command).
-    if ((!Duels::Rounds::NetPaused() && !Duels::Net::Replaying()) || gui->menuBox.bOpen) return false;
+    // The connection lost (the match waits), or a replay (the recorder's ship isn't ours to command). A message box of
+    // FTL's takes its click (a replay's first box, come late, roadmap BO).
+    if ((!Duels::Rounds::NetPaused() && !Duels::Net::Replaying()) || gui->menuBox.bOpen || gui->choiceBox.bOpen) return false;
     const Globals::Rect &options = gui->optionsButton.hitbox;
     return !(mX >= options.x && mX < options.x + options.w && mY >= options.y && mY < options.y + options.h);
 }
@@ -1535,6 +1580,7 @@ HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
     Duels::ReplayUi::Render();
     Duels::Window::Render();
     Duels::MatchUi::RenderSplash();
+    Duels::ReplayUi::RenderSeekCover();
     Duels::Lobby::RenderCover();
     Duels::Hud::EndFrame();
     if (!Duels::Console::Render()) return super();

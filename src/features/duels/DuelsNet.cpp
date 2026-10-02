@@ -109,6 +109,7 @@ namespace Duels
         };
 
         static Session g_session;
+        static std::string Other();
         static std::function<void(const std::string &, TicketDone)> g_ticketSource;
         static const double RESULT_RETRY_MS = 1000.0;
         static const int RESULT_TRIES = 10;
@@ -323,7 +324,7 @@ namespace Duels
             s.attempts = 0;
             s.resumed = false;
             Log("Net: %s; the match waits %.0f s for %s", reason.c_str(), REJOIN_GRACE_MS / 1000.0,
-                cutOff ? "us to come back" : "the other player to come back");
+                cutOff ? "us to come back" : (Other() + " to come back").c_str());
             if (cutOff)
             {
                 // Back the same way: the same room at the relay, or the host's address; a ranked room with a new ticket.
@@ -466,7 +467,7 @@ namespace Duels
             if (type == MSG_BYE)
             {
                 std::string reason = reader.Str();
-                Disconnect("the other player left: " + reason, false, true);
+                Disconnect(reason == "left the duel" ? Other() + " left the duel" : Other() + " left: " + reason, false, true);
                 return;
             }
             if (type >= FIRST_GAME_MESSAGE && s.phase == Phase::Connected && s.listener)
@@ -922,7 +923,7 @@ namespace Duels
                 case Relay::Event::PeerLeft:
                     if (s.phase == Phase::Connected)
                     {
-                        LoseConnection("the other player left or lost the connection", false, true);
+                        LoseConnection(Other() + " left or lost the connection", false, true);
                         return false;
                     }
                     // Still waiting for the handshake: wait for the next guest.
@@ -978,7 +979,7 @@ namespace Duels
                 }
                 if (s.closeAt > 0.0 && !s.resultAcked && now < s.closeAt) return;
                 s.closeAt = 0.0;
-                Disconnect("the other player didn't come back", false, true);
+                Disconnect(Other() + " didn't come back", false, true);
                 return;
             }
             if (s.lost != Session::Lost::Rejoining) return;
@@ -1124,7 +1125,7 @@ namespace Duels
                 }
                 if (now - s.link.LastReceiveTime() > SILENCE_TIMEOUT_MS + RELAY_VERDICT_WAIT_MS)
                 {
-                    LoseConnection("the other player lost the connection", false, true);
+                    LoseConnection(Other() + " lost the connection", false, true);
                     return;
                 }
             }
@@ -1135,6 +1136,12 @@ namespace Duels
         bool IsConnected() { return g_session.phase == Phase::Connected; }
         bool IsHost() { return g_session.host; }
         std::string PeerName() { return g_session.peerName; }
+
+        // The other player by name in the messages (roadmap BK), "the other player" before their name is known.
+        static std::string Other()
+        {
+            return g_session.peerName.empty() ? std::string("the other player") : g_session.peerName;
+        }
         std::string OwnName() { return g_session.name; }
         std::string OwnVersion() { return g_session.version; }
         std::string OwnBuild() { return g_session.build; }

@@ -326,6 +326,13 @@ namespace Duels
         // ---------------------------------------------------------------------------------------------------------
 
         // The puppet's crew member if it is still on the replica (FTL cleans up dead crew itself).
+        void RemoveForGood(ShipManager *ship, CrewMember *crew)
+        {
+            if (!ship || !crew) return;
+            ship->RemoveCrewmember(crew);
+            crew->SetCloneReady(false);
+        }
+
         static CrewMember *LiveCrew(ShipManager *replica, Puppet &puppet)
         {
             if (!puppet.crew || !replica) return puppet.crew = nullptr;
@@ -441,7 +448,7 @@ namespace Duels
                 }
                 CrewMember *crew = LiveCrew(replica, it->second);
                 // A crew drone's puppet stays with the replica's drone system (DuelsDrones.cpp takes it back).
-                if (crew && !crew->bDead && it->second.roster.droneSlot < 0) replica->RemoveCrewmember(crew);
+                if (crew && !crew->bDead && it->second.roster.droneSlot < 0) RemoveForGood(replica, crew);
                 it = side.puppets.erase(it);
             }
             // The replica's own crew (its blueprint's, or anyone else not from the roster) leaves too.
@@ -450,7 +457,7 @@ namespace Duels
             {
                 if (crew && crew->iShipId == replica->iShipId && !crew->IsDrone() && !crew->bDead && !IsPuppetCrew(crew)) others.push_back(crew);
             }
-            for (CrewMember *crew : others) replica->RemoveCrewmember(crew);
+            for (CrewMember *crew : others) RemoveForGood(replica, crew);
 
             for (const RosterEntry &entry : roster)
             {
@@ -467,7 +474,7 @@ namespace Duels
                 CrewMember *crew = LiveCrew(replica, puppet);
                 if (crew && !sameMember)
                 {
-                    replica->RemoveCrewmember(crew);
+                    RemoveForGood(replica, crew);
                     puppet.crew = crew = nullptr;
                 }
                 if (!crew) CreateCrew(replica, puppet);
@@ -935,7 +942,7 @@ namespace Duels
             if (found == g_crew.away.end()) return;
             ShipManager *replica = G_->GetShipManager(1);
             CrewMember *crew = LiveCrew(replica, found->second);
-            if (crew && !crew->bDead) replica->RemoveCrewmember(crew);
+            if (crew && !crew->bDead) RemoveForGood(replica, crew);
             g_crew.away.erase(found);
             RenewCrewBoxes();
         }

@@ -2,15 +2,19 @@
 #include "Duels.h"
 #include "DuelsAccount.h"
 #include "DuelsConfig.h"
+#include "DuelsDemo.h"
 #include "DuelsLobby.h"
 #include "DuelsReplayList.h"
 #include "DuelsMatch.h"
 #include "DuelsMenu.h"
+#include "DuelsNet.h"
 #include "DuelsStyle.h"
 #include "DuelsTrace.h"
+#include "../crash-detection/core/CrashDetector.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <sstream>
 
 namespace Duels
@@ -22,7 +26,8 @@ namespace Duels
             None,
             Name,       // the first start: the player's name
             Tutorial,   // a duel in short
-            Guide       // the players' guide (USAGE.md)
+            Guide,      // the players' guide (USAGE.md)
+            Crashed     // the last session didn't end normally (roadmap BL): its logs are kept
         };
 
         struct GuideRow
@@ -45,6 +50,7 @@ namespace Duels
             std::string nameError;
             bool dontShow = false;
             bool tutorialShown = false;          // once per start
+            bool crashTold = false;              // the last session's crash, told once per start
             bool nameThenTutorial = false;       // the name prompt of a first start: the tutorial box follows
             std::vector<GuideRow> guide;
             size_t guideTop = 0;
@@ -200,6 +206,39 @@ namespace Duels
 
             ButtonAt(g.guideButton, x + w - 30.f - 120.f - 12.f - 190.f, y + h - 58.f, 190.f, "PLAYERS' GUIDE");
             ButtonAt(g.ok, x + w - 30.f - 120.f, y + h - 58.f, 120.f, "OK");
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // The last session didn't end normally (roadmap BL): Hyperspace's crash flag was still there. Hyperspace's own
+        // bug report (to Hyperspace's developers) is off in FTL: Duels; this says which logs were kept.
+        // ---------------------------------------------------------------------------------------------------------
+
+        static void OpenCrashed()
+        {
+            g.crashTold = true;
+            g.open = Window::Crashed;
+            Log("Menu: the last session didn't end normally (its logs are kept: duels_log.1.txt, FTL_HS.log.bak, FTL.log.bak)");
+        }
+
+        static void RenderCrashed()
+        {
+            const float w = 640.f, h = 300.f, x = (1280.f - w) / 2.f, y = 210.f;
+            Style::Dialog(x, y, w, h, "FTL: DUELS");
+            float left = x + 30.f, top = y + 24.f, width = w - 60.f;
+            top += Style::Label(left, top, "THE LAST SESSION") + 14.f;
+            top += Paragraph(TEXT, left, top, width, "FTL: Duels didn't close normally the last time it ran: it crashed, or it was "
+                                                     "ended from outside.", Rgb(226, 230, 236)) + 12.f;
+            top += Paragraph(TEXT, left, top, width, "Its logs are kept in the FTL: Duels folder: duels_log.1.txt, FTL_HS.log.bak and "
+                                                     "FTL.log.bak, and after a crash the crashlogs folder.", Rgb(226, 230, 236)) + 12.f;
+            Paragraph(FONT, left, top, width, "If you report it, please send these files with what you were doing.", Rgb(190, 196, 204));
+            ButtonAt(g.ok, x + w - 30.f - 120.f, y + h - 58.f, 120.f, "OK");
+        }
+
+        static void CloseCrashed()
+        {
+            Log("Menu: the note about the last session closed");
+            g.open = Window::None;
+            if (!g.tutorialShown && SettingsFromConfig() && !Config::PlayerName().empty() && Config::Value("tutorial") != "off") OpenTutorial();
         }
 
         static void CloseTutorial()
@@ -424,6 +463,14 @@ namespace Duels
             // On the menu's first frame (the game's own start has run by then: our module, the name of this start, the
             // test harness). Hyperspace's question about an old profile, if it asks one, waits under ours.
             g.pending = true;
+            // Back in the main menu (FTL's MAIN MENU in its ESC menu, roadmap BO): a replay or a duel that still ran
+            // ends here. A replay went on unseen behind the menu and got in the way of what came next.
+            if (Net::Replaying()) Demo::StopReplay("back to the main menu");
+            else if (Net::GetPhase() != Net::Phase::Idle)
+            {
+                Log("Menu: back in the main menu: the duel is left");
+                Match::Leave();
+            }
         }
 
         static void Close()
@@ -493,7 +540,7 @@ namespace Duels
                 std::string line, button;
                 if (a.state == Account::State::SignedIn)
                 {
-                    line = "Steam: " + Match::ScreenName(a.name) + (a.ratingKnown ? ", rating " + std::to_string(a.rating) : std::string());
+                    line = "Steam: " + a.name + (a.ratingKnown ? ", rating " + std::to_string(a.rating) : std::string());
                     button = "SIGN OUT";
                 }
                 else if (a.state == Account::State::Linking)
@@ -512,7 +559,15 @@ namespace Duels
             }
             float y = PY + PH - 50.f;
             CSurface::GL_SetColor(Rgb(206, 210, 216));
-            freetype::easy_print(TEXT, PX + 30.f, y + 7.f, "You: " + Match::ScreenName(Match::PlayerName()));
+            // The name as long as it is, cut only where the buttons begin.
+            std::string you = "You: " + Match::PlayerName();
+            float room = PW - 60.f - 84.f - 8.f - 72.f - 10.f;
+            if ((float)freetype::easy_measureWidth(TEXT, you) > room)
+            {
+                while (you.size() > 6 && (float)freetype::easy_measureWidth(TEXT, you + "..") > room) you.pop_back();
+                you += "..";
+            }
+            freetype::easy_print(TEXT, PX + 30.f, y + 7.f, you);
             BigButton(g.panelName, PX + PW - 30.f - 84.f - 8.f - 72.f, y, 72.f, 28.f, "NAME", TEXT);
             BigButton(g.panelGuide, PX + PW - 30.f - 84.f, y, 84.f, 28.f, "GUIDE", TEXT);
         }
@@ -542,6 +597,10 @@ namespace Duels
             {
                 g.pending = false;
                 if (g.open != Window::None || !SettingsFromConfig()) {}   // a test scenario opens them itself
+                else if (!g.crashTold && CrashDetector::GetInstance()->WasCrashDetected() && !std::getenv("HYPERSPACE_SKIP_BUG_REPORT"))
+                {
+                    OpenCrashed();
+                }
                 else if (Config::PlayerName().empty()) OpenName(true);
                 else if (!g.tutorialShown && Config::Value("tutorial") != "off") OpenTutorial();
             }
@@ -560,6 +619,7 @@ namespace Duels
             case Window::Name: RenderName(); break;
             case Window::Tutorial: RenderTutorial(); break;
             case Window::Guide: RenderGuide(); break;
+            case Window::Crashed: RenderCrashed(); break;
             default: break;
             }
             CSurface::GL_SetColor(COLOR_WHITE);
@@ -604,6 +664,9 @@ namespace Duels
                 else if (g.down.Contains(x, y)) Scroll(PageRows());
                 else if (g.close.Contains(x, y)) g.open = g.back;
                 return true;
+            case Window::Crashed:
+                if (g.ok.Contains(x, y)) CloseCrashed();
+                return true;
             default:
                 return false;
             }
@@ -645,6 +708,9 @@ namespace Duels
             case Window::Tutorial:
                 if (key == SDLK_ESCAPE) CloseTutorial();
                 return true;
+            case Window::Crashed:
+                if (key == SDLK_ESCAPE || key == SDLK_RETURN || key == SDLK_KP_ENTER) CloseCrashed();
+                return true;
             case Window::Guide:
                 if (key == SDLK_UP) Scroll(-1);
                 else if (key == SDLK_DOWN) Scroll(1);
@@ -662,6 +728,7 @@ namespace Duels
         {
             if (args.size() >= 2 && args[1] == "name") OpenName(true);   // as on a first start
             else if (args.size() >= 2 && args[1] == "tutorial") OpenTutorial();
+            else if (args.size() >= 2 && args[1] == "crashed") OpenCrashed();   // the note about the last session (test)
             else if (args.size() >= 2 && args[1] == "guide") OpenGuide(Window::None);
             else if (args.size() >= 2 && args[1] == "close") Close();
             else if (args.size() >= 2 && args[1] == "replays") return ReplayList::RunVerb(args, message);

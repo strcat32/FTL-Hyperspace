@@ -169,9 +169,9 @@ namespace Duels
             const std::string colon = " : ";
             // The names each keep to their half of the panel; in the smaller font when they don't fit in the larger.
             float half = (inner - Width(font, colon)) / 2.f;
-            int nameFont = Width(font, s.names[0]) <= half && Width(font, s.names[1]) <= half ? font : 10;
+            int nameFont = Width(font, s.shortNames[0]) <= half && Width(font, s.shortNames[1]) <= half ? font : 10;
             float nameHalf = (inner - Width(nameFont, colon)) / 2.f;
-            std::string red = Fit(nameFont, s.names[0], nameHalf), blue = Fit(nameFont, s.names[1], nameHalf);
+            std::string red = Fit(nameFont, s.shortNames[0], nameHalf), blue = Fit(nameFont, s.shortNames[1], nameHalf);
 
             std::string phase;
             GL_Color phaseColour(1.f, 1.f, 1.f, 1.f);
@@ -401,6 +401,9 @@ namespace Duels
         {
             SplashState &sp = g.splash;
             if (!sp.active || !InGame()) return;
+            // Not over FTL's ESC menu (its duel's box is there, roadmap BO).
+            CApp *app = G_->GetCApp();
+            if (app && app->gui && app->gui->menuBox.bOpen) return;
             double t = WallMs() - sp.start;
             if (t > sp.ms)
             {
@@ -411,6 +414,9 @@ namespace Duels
             float pop = t < 150.0 ? 1.f + 0.4f * (float)(1.0 - t / 150.0) : 1.f;   // it arrives a little larger
             bool number = sp.text.size() <= 2 && std::isdigit((unsigned char)sp.text[0]);
             float scale = (number ? 5.f : 3.f) * pop;
+            // A long name ("... WINS THE MATCH") smaller, within the screen.
+            float wide = (float)freetype::easy_measureWidth(63, sp.text);
+            if (wide * scale > 1220.f && wide > 0.f) scale = 1220.f / wide;
             CSurface::GL_DrawRect(0.f, SPLASH_MIDDLE - 58.f, 1280.f, sp.names ? 150.f : 116.f, GL_Color(0.f, 0.f, 0.f, 0.45f * alpha));
             PrintBig(63, 640.f + 4.f, SPLASH_MIDDLE + 4.f, scale, sp.text, GL_Color(0.f, 0.f, 0.f, 0.8f * alpha));
             PrintBig(63, 640.f, SPLASH_MIDDLE, scale, sp.text, ColourOf(sp.colour, alpha));
@@ -478,12 +484,12 @@ namespace Duels
             // Who won, and why ("match over: you win (the other player forfeited)").
             std::string verdict = "A DRAW";
             GL_Color colour = ColourOf(WHITE, 1.f);
-            if (s.state.find("you win") != std::string::npos)
+            if (s.matchWinner == (int)s.me)
             {
                 verdict = "YOU WIN";
                 colour = ColourOf(GOLD, 1.f);
             }
-            else if (s.state.find("you lose") != std::string::npos)
+            else if (s.matchWinner == 0 || s.matchWinner == 1)
             {
                 verdict = "YOU LOSE";
                 colour = GL_Color(1.f, 0.55f, 0.5f, 1.f);
@@ -886,6 +892,64 @@ namespace Duels
             x = (int)(box->x + box->w / 2.f);
             y = (int)(box->y + box->h / 2.f);
             return true;
+        }
+
+        static bool DuelEscMenu()
+        {
+            return Net::Replaying() || Rounds::InMatch() || Net::GetPhase() != Net::Phase::Idle;
+        }
+
+        void OnEscMenuOpen(MenuScreen *menu)
+        {
+            if (!menu || !DuelEscMenu()) return;
+            int greyed = 0;
+            for (TextButton *button : menu->buttons)
+            {
+                if (!button) continue;
+                const std::string &key = button->label.data;
+                if (key == "escape_hangar" || key == "escape_reset")
+                {
+                    button->bActive = false;
+                    ++greyed;
+                }
+            }
+            static bool logged = false;
+            if (!logged)
+            {
+                logged = true;
+                Log("MatchUi: FTL's menu in a %s: %d of its %u buttons greyed out (HANGAR, RESTART)", Net::Replaying() ? "replay" : "duel",
+                    greyed, (unsigned)menu->buttons.size());
+            }
+        }
+
+        void RenderEscMenu(MenuScreen *menu)
+        {
+            if (!menu || !menu->bOpen || menu->bShowControls || !DuelEscMenu()) return;
+            // Where FTL's status boxes are (statusPosition: the difficulty's box; the seed's ends 277 px below it).
+            const float x = (float)menu->statusPosition.x - 10.f, y = (float)menu->statusPosition.y - 4.f, w = 300.f, h = 284.f;
+            const bool replay = Net::Replaying();
+            CSurface::GL_DrawRect(x - 6.f, y - 6.f, w + 12.f, h + 12.f, GL_Color(0.f, 0.f, 0.f, 1.f));
+            Style::Dialog(x, y + 34.f, w, h - 34.f, replay ? "THE REPLAY" : "THE DUEL", false);
+            Rounds::Summary s = Rounds::GetSummary();
+            float bx = x + 16.f, bw = w - 32.f, by = y + 58.f;
+            Style::Blend(bx, by, bw, 40.f, Style::Mix(Style::Red(1.f), GL_Color(0.f, 0.f, 0.f, 1.f), 0.45f),
+                         Style::Mix(Style::Blue(1.f), GL_Color(0.f, 0.f, 0.f, 1.f), 0.45f), 3.f);
+            std::string points = s.inMatch ? s.points[0] + " : " + s.points[1] : std::string("-");
+            float side = (bw - Width(12, points)) / 2.f - 16.f;
+            PrintCentre(12, bx + bw / 2.f, by + 12.f, points, ColourOf(WHITE, 1.f));
+            Print(12, bx + 8.f, by + 12.f, Fit(12, s.names[0], side), GL_Color(1.f, 0.77f, 0.74f, 1.f));
+            CSurface::GL_SetColor(GL_Color(0.77f, 0.85f, 1.f, 1.f));
+            freetype::easy_printRightAlign(12, bx + bw - 8.f, by + 12.f, Fit(12, s.names[1], side));
+            float ly = by + 56.f;
+            std::string state = s.state;
+            if (!state.empty()) state[0] = (char)std::toupper((unsigned char)state[0]);
+            Print(10, bx, ly, Fit(10, state, bw), GL_Color(0.87f, 0.89f, 0.92f, 1.f));
+            ly += 26.f;
+            CSurface::GL_SetColor(GL_Color(0.75f, 0.78f, 0.82f, 1.f));
+            freetype::easy_printAutoNewlines(10, bx, ly, (int)bw,
+                                             replay ? "MAIN MENU ends the replay. SAVE+QUIT closes the game."
+                                                    : "MAIN MENU leaves the duel (a match still running is lost). SAVE+QUIT closes the game.");
+            CSurface::GL_SetColor(COLOR_WHITE);
         }
 
         bool LButtonDown(int x, int y)

@@ -123,8 +123,8 @@ namespace Duels
             {
             case FILE_NAME: return FileShown(d);
             case DATE: return Date(d);
-            case HOST: return d.hostName.empty() ? std::string("?") : Match::ScreenName(d.hostName);
-            case GUEST: return d.guestName.empty() ? std::string("?") : Match::ScreenName(d.guestName);
+            case HOST: return d.hostName.empty() ? std::string("?") : d.hostName;
+            case GUEST: return d.guestName.empty() ? std::string("?") : d.guestName;
             case RANKED: return d.ranked < 0 ? std::string("?") : d.ranked ? std::string("[x]") : std::string("[ ]");
             case HOST_SHIP: return Ship(d.hostShip);
             case GUEST_SHIP: return Ship(d.guestShip);

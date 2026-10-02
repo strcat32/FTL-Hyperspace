@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace Duels
@@ -44,6 +45,11 @@ namespace Duels
             double saleArmedUntil = 0.0;
             int saleDue = -1, saleDuePrice = 0;   // sold at the second right-click, made at the screen's next loop
             bool tipShown = false;
+            // The round's shop as the host stocked it, for building it again with the buy-back page (BJ).
+            std::vector<ShopItem> stock;
+            int shopRound = 0;
+            bool buyBackStale = false;      // a system was sold: the store is built again with it
+            std::set<int> buyBackOffered;   // the systems on the buy-back page now
         };
 
         static RefitState g_refit;
@@ -536,6 +542,14 @@ namespace Duels
                 own->ship.hullIntegrity.second, (unsigned)CrewAboard(own).size());
         }
 
+        void KeepAir()
+        {
+            ShipManager *own = G_->GetShipManager(0);
+            if (!own || !own->oxygenSystem) return;
+            for (float &level : own->oxygenSystem->oxygenLevels) level = 100.f;
+            own->oxygenSystem->fTotalOxygen = 1.f;
+        }
+
         void GiveScrap(bool firstRound, int amount)
         {
             ShipManager *own = G_->GetShipManager(0);
@@ -550,11 +564,41 @@ namespace Duels
         // The shop
         // ---------------------------------------------------------------------------------------------------------
 
+        static std::string SystemTitle(int id);
+
+        // The buy-back page (roadmap BJ): the systems our ship had as the match began and has sold since (every system
+        // can be sold, AK; the shop's systems page never has those every ship has, oxygen or engines say), at FTL's
+        // price for the system, which comes back at level 1. Only this game's: the other player's shop is their own.
+        static std::vector<StoreItem> BuyBackItems()
+        {
+            std::vector<StoreItem> items;
+            ShipManager *own = G_->GetShipManager(0);
+            BlueprintManager *blueprints = G_->GetBlueprints();
+            if (!own || !blueprints) return items;
+            for (const auto &entry : g_refit.startLevels)
+            {
+                int id = entry.first;
+                if (id < 0 || id >= SYS_ALL || id == SYS_REACTOR || own->HasSystem(id)) continue;
+                std::string name = ShipSystem::SystemIdToName(id);
+                SystemBlueprint *blueprint = blueprints->GetSystemBlueprint(name);
+                if (!blueprint || blueprint->name != name) continue;
+                StoreItem item = StoreItem();
+                item.blueprint = name;
+                item.price.price = std::max(0, blueprint->desc.cost);
+                item.stock = -1;
+                items.push_back(item);
+            }
+            return items;
+        }
+
         void OpenShop(int round, const std::vector<ShopItem> &stock)
         {
             CommandGui *gui = Gui();
             WorldManager *world = G_->GetWorld();
             if (!gui || !world || stock.empty()) return;
+            g_refit.stock = stock;
+            g_refit.shopRound = round;
+            g_refit.buyBackStale = false;
 
             StoreDefinition definition = StoreDefinition();
             definition.hullRepair.visible = false;   // the preparation repairs the ship anyway
@@ -598,6 +642,22 @@ namespace Duels
                 definition.categories[-1].push_back(first);
                 definition.categories[-1].push_back(second);
             }
+            // Our sold systems on a sixth page (BJ), two sections as the others.
+            std::vector<StoreItem> buyBack = BuyBackItems();
+            g_refit.buyBackOffered.clear();
+            for (const StoreItem &item : buyBack) g_refit.buyBackOffered.insert(ShipSystem::NameToSystemId(item.blueprint));
+            if (!buyBack.empty())
+            {
+                StoreCategory first = StoreCategory(), second = StoreCategory();
+                first.categoryType = second.categoryType = CategoryType::SYSTEMS;
+                first.chance = second.chance = 100;
+                first.customTitle = second.customTitle = "BUY BACK";
+                size_t half = std::min<size_t>(3, buyBack.size());
+                first.items.assign(buyBack.begin(), buyBack.begin() + half);
+                second.items.assign(buyBack.begin() + half, buyBack.end());
+                definition.categories[-1].push_back(first);
+                if (!second.items.empty()) definition.categories[-1].push_back(second);
+            }
 
             // Hyperspace's custom store builds it (at most three items per section are shown).
             CustomStore::instance->RegisterStoreDefinition(STORE_ID, definition);
@@ -614,7 +674,41 @@ namespace Duels
             }
             gui->storeScreens.SetPosition(Point(g_ftlStoreX, g_ftlStoreY + STORE_LOWER));
             ++g_refit.shops;
-            Log("Refit: round %d's shop is open (%u items)%s", round, (unsigned)stock.size(), store ? "" : ", but no store came");
+            Log("Refit: round %d's shop is open (%u items, %u to buy back)%s", round, (unsigned)stock.size(), (unsigned)buyBack.size(),
+                store ? "" : ", but no store came");
+        }
+
+        void OnPrepFrame()
+        {
+            CommandGui *gui = Gui();
+            ShipManager *own = G_->GetShipManager(0);
+            if (!gui || !own || !Rounds::InPreparation()) return;
+            // A system bought back comes at level 1, for its price (FTL builds it at the level the ship's blueprint
+            // gives it: the engines came back at level 2 for 1 scrap after a level had been sold for 10).
+            for (auto it = g_refit.buyBackOffered.begin(); it != g_refit.buyBackOffered.end();)
+            {
+                ShipSystem *system = own->HasSystem(*it) ? own->GetSystem(*it) : nullptr;
+                if (!system)
+                {
+                    ++it;
+                    continue;
+                }
+                int level = system->powerState.second;
+                if (level > 1) system->UpgradeSystem(1 - level);
+                Log("Refit: %s bought back, at level 1 (it came at %d)", SystemTitle(*it).c_str(), level);
+                it = g_refit.buyBackOffered.erase(it);
+            }
+            if (!g_refit.buyBackStale) return;
+            // The store built again with the system just sold on its buy-back page. The windows stay as they were: the
+            // upgrade screen open (systems are sold there), the store closed (FTL opens a new store's window).
+            bool storeOpen = gui->storeScreens.bOpen, shipOpen = gui->shipScreens.bOpen;
+            if (storeOpen) gui->storeScreens.Close();
+            gui->SetStore(nullptr, false);
+            OpenShop(g_refit.shopRound, g_refit.stock);
+            if (!storeOpen && gui->storeScreens.bOpen) gui->storeScreens.Close();
+            if (shipOpen && !gui->shipScreens.bOpen) gui->shipScreens.Open();
+            Log("Refit: the store built again for the buy-back page (the store %s, the ship's screens %s)", gui->storeScreens.bOpen ? "open" : "closed",
+                gui->shipScreens.bOpen ? "open" : "closed");
         }
 
         void CloseShop()
@@ -797,6 +891,7 @@ namespace Duels
             ship->RemoveSystem(id);
             ship->ModifyScrapCount(price, false);
             gui->upgradeScreen.OnInit(ship);
+            g_refit.buyBackStale = true;
             Sound("downgradeSystem");
             Say(SystemTitle(id) + " sold: +" + std::to_string(price) + " scrap");
         }

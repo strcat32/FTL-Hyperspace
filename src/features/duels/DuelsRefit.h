@@ -60,6 +60,11 @@ namespace Duels
         // member (and anyone the clone bay was about to bring back); the crew go to their stations.
         void Restore(bool permadeath);
 
+        // Between fights (Rounds::BetweenFights: the ship choice, the preparation, the ships meeting, a round's or the
+        // match's end) the air stays full in every room, as Restore left it. Without an oxygen system the rooms have
+        // none, as in FTL (the crew is kept alive by Rounds::BetweenFights until the fight).
+        void KeepAir();
+
         // This round's scrap (the first round's replaces what the ship started with).
         void GiveScrap(bool firstRound, int amount);
 
@@ -67,6 +72,9 @@ namespace Duels
         // meet.
         void OpenShop(int round, const std::vector<ShopItem> &stock);
         void CloseShop();
+        // Each frame of a preparation: after a system's sale the store is built again (once its window is closed), with
+        // the system on the buy-back page (roadmap BJ: a sixth page, our sold systems at FTL's price).
+        void OnPrepFrame();
 
         // The fight begins as at a new beacon: weapons start uncharged.
         void ResetWeaponCharge();

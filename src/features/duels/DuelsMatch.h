@@ -70,6 +70,14 @@ namespace Duels
         // A replay (roadmap 5.1, DuelsDemo.cpp): the recorder's own loadout (its MSG_LOADOUT as it went): our ship
         // becomes its ship, fitted as it was.
         void ReplayOwnLoadout(const uint8_t *data, size_t size);
+        // After FTL's ship switch (Hyperspace's WorldManager::SwitchShip: the ship choice, a replay). The switch clears the
+        // location, and with it the space's ships (SpaceManager::Clear): our ship was in no space, so its weapons charged
+        // and fired but no shot ever left (SpaceManager::OnLoop takes each ship's next shot), none could hit it, and its
+        // drones never launched (the ranked test of 2026-10-02: no shot, no damage, both ships). It goes back into the
+        // space, and the weapon and drone boxes are made for it again: the switch restarts FTL's interface but keeps the
+        // old ship's boxes, which point at its weapons and drones, freed with it. FTL's new game does both
+        // (SpaceManager::AddShip, CommandGui::LinkShip).
+        void AfterShipSwitch();
         // And its full states (KIND_FULL_STATE): our ship's hull, shields, systems, weapons, cloak, battery, crew and
         // rooms follow them as the opponent's copy follows its owner's (its drones come with a later stage).
         void ReplayOwnState(const uint8_t *data, size_t size);

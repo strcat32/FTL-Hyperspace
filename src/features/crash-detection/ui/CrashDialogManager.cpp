@@ -244,7 +244,7 @@ void CrashDialogManager::OnMouseMove(int x, int y, bool& shouldPropagate)
 
 void CrashDialogManager::RenderButton()
 {
-    if (bugReportButton) this->bugReportButton->OnRender();
+    // FTL: Duels: no bug report button of Hyperspace's (CrashReportFlow.cpp).
 }
 
 bool CrashDialogManager::IsAskReportDialogOpen() const

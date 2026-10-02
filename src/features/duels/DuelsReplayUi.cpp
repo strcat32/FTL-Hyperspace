@@ -167,8 +167,23 @@ namespace Duels
             SideButton(g.sensors, SIDE_X + W_VIEW + GAP, W_SENSORS, "FULL SENSORS", v.bothSides, v.fullSensors);
         }
 
+        void RenderSeekCover()
+        {
+            Demo::ReplayView v = Demo::GetReplayView();
+            if (!v.active || !v.covering || !InGame()) return;
+            CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, GL_Color(6.f / 255.f, 8.f / 255.f, 12.f / 255.f, 1.f));
+            CSurface::GL_SetColor(GL_Color(226.f / 255.f, 230.f / 255.f, 236.f / 255.f, 1.f));
+            freetype::easy_printCenter(24, 640.f, 300.f, "REPLAY");   // font 24: its letters 15 px lower
+            freetype::easy_printCenter(12, 640.f, 352.f, v.coverText);
+            const float bw = 420.f, bx = 640.f - bw / 2.f, by = 384.f;
+            CSurface::GL_DrawRect(bx, by, bw, 10.f, GL_Color(0.2f, 0.22f, 0.26f, 1.f));
+            CSurface::GL_DrawRect(bx, by, (float)(bw * v.coverProgress), 10.f, GL_Color(1.f, 0.84f, 0.3f, 1.f));
+            CSurface::GL_SetColor(COLOR_WHITE);
+        }
+
         bool LButtonDown(int x, int y)
         {
+            if (Demo::GetReplayView().covering) return true;   // nothing to click behind the cover
             if (!g.shown) return false;
             if (g.stop.Contains(x, y)) Demo::ReplayStop();
             else if (g.back.Contains(x, y)) Demo::ReplayStep(-STEP_MS);
@@ -194,7 +209,9 @@ namespace Duels
 
         bool KeyDown(int key)
         {
-            if (!Demo::GetReplayView().active) return false;
+            Demo::ReplayView v = Demo::GetReplayView();
+            if (!v.active) return false;
+            if (v.covering) return key != SDLK_ESCAPE;   // behind the cover only FTL's menu
             switch (key)
             {
             case SDLK_SPACE: Demo::ReplayPlayPause(); return true;

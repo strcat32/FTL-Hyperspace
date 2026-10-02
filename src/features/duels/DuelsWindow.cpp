@@ -301,7 +301,7 @@ namespace Duels
                 std::string big = "NOT IN A DUEL", small = "Host or join one from the main menu, or the console (Tab)";
                 if (!opponent.empty())
                 {
-                    big = "VS  " + Match::ScreenName(opponent);
+                    big = "VS  " + opponent;
                     small = "Waiting for the match";
                 }
                 else if (Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
@@ -335,7 +335,7 @@ namespace Duels
             std::string code = Net::RelayCode();
             if (Rounds::IsLocal())
             {
-                row("Opponent: " + Match::ScreenName(opponent), gold);
+                row("Opponent: " + opponent, gold);
                 row("FTL's AI, on this computer", soft);
             }
             else if (opponent.empty() && Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
@@ -356,7 +356,7 @@ namespace Duels
             }
             else
             {
-                row("Opponent: " + Match::ScreenName(opponent), gold);
+                row("Opponent: " + opponent, gold);
                 row(Net::UsesRelay() ? "Room " + code : "Direct connection", soft);
             }
             for (const std::string &rule : s.rules) row(rule, soft);

@@ -39,6 +39,13 @@ namespace Duels
         static bool opened = false;
         if (!g_logFile)
         {
+            if (!opened)
+            {
+                // The last two sessions' logs stay (roadmap BL: a crashed session's log was gone at the next start).
+                std::remove("duels_log.2.txt");
+                std::rename("duels_log.1.txt", "duels_log.2.txt");
+                std::rename("duels_log.txt", "duels_log.1.txt");
+            }
             g_logFile = fopen("duels_log.txt", opened ? "a" : "w");
             opened = true;
         }

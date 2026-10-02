@@ -8,8 +8,8 @@
 
 static bool initSkipBugReport()
 {
-    const char* envVar = std::getenv("HYPERSPACE_SKIP_BUG_REPORT");
-    return envVar != nullptr && std::string(envVar) == "1";
+    // FTL: Duels: never Hyperspace's report (it goes to Hyperspace's developers); the Duels menu tells of a crash.
+    return true;
 }
 
 static const bool SKIP_BUG_REPORT = initSkipBugReport();
@@ -73,6 +73,8 @@ void CrashReportFlow::StartManualReport()
 
 static bool IsDisplayingReportButton()
 {
+    // FTL: Duels: no bug report button of Hyperspace's (see initSkipBugReport).
+    return false;
     CommandGui* gui = G_->GetCApp()->gui;
     if (!gui) return false;
 

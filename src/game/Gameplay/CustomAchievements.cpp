@@ -466,6 +466,8 @@ bool CustomAchievementTracker::CheckShipAchievement(CustomAchievement &ach)
 
 void CustomAchievementTracker::SetAchievement(const std::string &name, bool noPopup)
 {
+    return;   // FTL: Duels: no achievements (roadmap BP; DuelsHooks.cpp)
+
     if (!SeedInputBox::seedsAllowAchievements && Global::IsSeededRun()) return;
 
     int oldDiff = GetAchievementStatus(name);

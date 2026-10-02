@@ -93,6 +93,8 @@ namespace Duels
         // its full states at the demo's times. With full sensors the other ship follows the other player's full states,
         // and everything of both ships is in sight (Match::FullSensors).
         bool StartReplay(const std::string &path, std::string &message);
+        // A replay that runs ends (FTL's main menu, roadmap BO: it went on unseen behind the menu).
+        void StopReplay(const std::string &why);
         void ReplayFrame(double now);   // Net::Update while it replays: a seek's arrival, the replay's end
         // A replay's pause is FTL's pause too: the world stands still (CommandGui::IsPaused), and the replay's clock.
         bool ReplayPaused();
@@ -117,6 +119,11 @@ namespace Duels
             bool fullSensors = false;
             int ranked = -1;              // the recorded match's status: 1 ranked, 0 unranked, -1 not known (an older demo)
             std::string unrankedWhy;
+            // A long seek (a view switch, a step back: from the demo's start) runs behind a cover (roadmap BO): what it
+            // says, and how far it is (0 to 1).
+            bool covering = false;
+            std::string coverText;
+            double coverProgress = 0.0;
         };
         ReplayView GetReplayView();
         // Its controls (the replay verbs do the same): play or pause (at its end: from the start again), stop (back to
@@ -125,6 +132,8 @@ namespace Duels
         // ships are fitted then); no seek goes further back.
         void ReplayPlayPause();
         void ReplayStop();
+        // A seek's world steps stop for the frame once this much real time went into them (WorldManager::OnLoop).
+        bool SeekBudgetSpent();
         // True while a replay starts again by itself (stop, a seek back): the lost connection and the new one that this
         // is in Net's replay mode stay out of the feed (DuelsMatch.cpp, DuelsRounds.cpp).
         bool ReplayRestarting();

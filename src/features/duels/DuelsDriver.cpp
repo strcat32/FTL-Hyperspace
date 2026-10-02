@@ -246,7 +246,7 @@ namespace Duels
     // drive the menus as a player's mouse does: these only click and look.
     static bool IsUiVerb(const std::string &verb)
     {
-        return verb == "menu" || verb == "click" || verb == "describe";
+        return verb == "menu" || verb == "click" || verb == "aim" || verb == "describe";
     }
 
     void EnableDebug(const char *why)
@@ -709,6 +709,43 @@ namespace Duels
             app->gui->LButtonUp(x, y, false);
             message = "clicked at " + std::to_string(x) + "," + std::to_string(y);
             return true;
+        }
+        if (verb == "aim")
+        {
+            // aim <slot> <room>: a player's aim at the opponent: the weapon's key (Options > Controls), then a click on
+            // the room's middle in the enemy window, through the game's whole input. (The fire verb aims without FTL's
+            // interface; the ranked test of 2026-10-02 found that no player's aim fired.)
+            int slot, room;
+            if (!ArgInt(cmd, 1, slot) || !ArgInt(cmd, 2, room)) { message = "usage: aim <weapon slot> <opponent's room>"; return false; }
+            CApp *app = G_->GetCApp();
+            CommandGui *gui = app ? app->gui : nullptr;
+            ShipManager *enemy = G_->GetShipManager(1);
+            if (!gui || !enemy) { message = "no opponent to aim at"; return false; }
+            WeaponControl &weapons = gui->combatControl.weapControl;
+            if (slot < 0 || slot >= (int)weapons.boxes.size()) { message = "no weapon slot " + std::to_string(slot); return false; }
+            if (room < 0 || room >= (int)enemy->ship.vRoomList.size()) { message = "the opponent has no room " + std::to_string(room); return false; }
+            // As FTL's key does: a weapon that is off gets power at the first press, and is armed at the next.
+            SDLKey key = weapons.ArmamentHotkey((unsigned int)slot);
+            gui->KeyDown(key, false);
+            if (!weapons.armedWeapon) gui->KeyDown(key, false);
+            ProjectileFactory *armed = weapons.armedWeapon;
+            Pointf center = enemy->GetRoomCenter(room);
+            float x, y;
+            if (!View::ShipToScreen(1, center.x, center.y, x, y)) { message = "the opponent's room isn't on the screen"; return false; }
+            gui->MouseMove((int)x, (int)y);
+            int under = gui->combatControl.selectedRoom;
+            gui->LButtonDown((int)x, (int)y, false);
+            gui->LButtonUp((int)x, (int)y, false);
+            std::ostringstream out;
+            out << "aim: key " << (int)key << " armed " << (armed ? armed->name : std::string("nothing")) << ", room under the mouse "
+                << under << " at " << (int)x << "," << (int)y << "; then armed " << (weapons.armedWeapon ? weapons.armedWeapon->name : std::string("nothing"));
+            if (armed)
+            {
+                out << ", its targets " << armed->targets.size() << " (target ship " << armed->targetId << "), fire when ready "
+                    << (armed->fireWhenReady ? "yes" : "no") << ", charge " << armed->cooldown.first << "/" << armed->cooldown.second;
+            }
+            message = out.str();
+            return armed && !armed->targets.empty();
         }
         if (verb == "rclick")
         {

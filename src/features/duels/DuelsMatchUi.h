@@ -23,6 +23,11 @@ namespace Duels
         void RenderSplash();
         // The buttons take their clicks before the game does; true when one did.
         bool LButtonDown(int x, int y);
+        // FTL's ESC menu in a duel or a replay (roadmap BO): its HANGAR and RESTART greyed out (they would start a run of
+        // FTL's own), and over the run's status boxes (difficulty, content, the ship's achievements, the seed) the
+        // duel's own: the players, the points, what MAIN MENU does.
+        void OnEscMenuOpen(MenuScreen *menu);
+        void RenderEscMenu(MenuScreen *menu);
         void MouseMove(int x, int y);
         // Tests ("click draw|concede|ready"): the middle of that match button as last drawn; false when it isn't shown.
         bool ButtonCentre(const std::string &name, int &x, int &y);

@@ -310,6 +310,19 @@ namespace Duels
             return name.empty() ? "the opponent" : name;
         }
 
+        // A player's name, ours too (roadmap BK: the results name both players, not "you" and "the other player").
+        static std::string Name(uint8_t player)
+        {
+            if (player == NOBODY) return "nobody";
+            if (Net::Replaying() || player != g.me)
+            {
+                std::string name = Who(player);
+                if (name != "you" && name != "the opponent") return name;
+            }
+            if (player == g.me && !Net::Replaying() && !Match::PlayerName().empty()) return Match::PlayerName();
+            return player == HOST ? "the host" : "the guest";
+        }
+
         static const char *ReasonText(uint8_t reason)
         {
             switch (reason)
@@ -320,7 +333,7 @@ namespace Duels
             case REASON_CONCEDED: return "conceded";
             case REASON_DRAW: return "draw agreed";
             case REASON_STALL: return "stalemate, the anti-stall score decided";
-            case REASON_LEFT: return "the other player left";
+            case REASON_LEFT: return "left the match";
             case REASON_FORFEIT: return "forfeit";
             case REASON_ROUNDS: return "more points";
             case REASON_SCORE: return "points equal, the damage score decided";
@@ -817,6 +830,7 @@ namespace Duels
                 Bays::PrepareBlueprint(G_->GetBlueprints()->GetShipBlueprint(ours, -1));
                 bool switched = world->SwitchShip(ours);
                 Log("Rounds: our ship for the match: %s (%s)", ours.c_str(), switched ? "switched" : "the switch failed");
+                if (switched) Match::AfterShipSwitch();
                 Refit::OnMatchStart();
             }
         }
@@ -921,6 +935,12 @@ namespace Duels
             return Points(d, first) + " : " + Points(d, second);
         }
 
+        // The points with the names, the host's first as on the score panel: "Host 1.5 : 0.5 Guest" (roadmap BK).
+        static std::string NamedPoints(const Data &d)
+        {
+            return Name(HOST) + " " + Points(d, HOST) + " : " + Points(d, GUEST) + " " + Name(GUEST);
+        }
+
         static std::string ScoreLine()
         {
             const Data &d = g.data;
@@ -939,8 +959,10 @@ namespace Duels
             Log("Rounds: result round %u winner %s reason %u dealt %.1f %.1f points %s %s", (unsigned)d.results.size(),
                 result.winner == NOBODY ? "nobody" : result.winner == HOST ? "host" : "guest", (unsigned)result.reason,
                 result.dealt[HOST], result.dealt[GUEST], Points(d, HOST).c_str(), Points(d, GUEST).c_str());
+            // The line names the winner (roadmap BK); the splash says it to this player ("YOU WIN"), a replay's names
+            // them.
             std::string text = "Round " + std::to_string(d.results.size()) + ": ";
-            text += result.winner == NOBODY ? "a draw" : You(result.winner) ? "you win it" : Who(result.winner) + " wins it";
+            text += result.winner == NOBODY ? "a draw" : Name(result.winner) + " wins it";
             bool replay = Net::Replaying();
             if (result.reason == REASON_ESCAPED)
             {
@@ -949,15 +971,13 @@ namespace Duels
                 if (replay) MatchUi::Splash(Upper(Who(runner)) + " ESCAPED", MatchUi::WHITE, 2500.0, "jumpLeave");
                 else if (result.winner == g.me) MatchUi::Splash("ENEMY ESCAPED", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "jumpLeave");
                 else MatchUi::Splash("ESCAPED", MatchUi::WHITE, 2500.0, "jumpLeave");
-                text = "Round " + std::to_string(d.results.size()) + ": " +
-                       (replay ? Who(runner) + " ran away, half a point for " + Who(result.winner)
-                        : result.winner == g.me ? Who(them) + " ran away, half a point for you" : std::string("you ran away, half a point for ") + Who(them));
+                text = "Round " + std::to_string(d.results.size()) + ": " + Name(runner) + " ran away, half a point for " + Name(result.winner);
             }
             else if (result.winner == NOBODY) MatchUi::Splash("DRAW", MatchUi::WHITE, 2500.0, "jumpReady");
             else if (replay) MatchUi::Splash(Upper(Who(result.winner)) + " WINS", result.winner == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "achievement");
             else if (result.winner == g.me) MatchUi::Splash("YOU WIN", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 2500.0, "achievement");
             else MatchUi::Splash("YOU LOSE", g.me == HOST ? MatchUi::BLUE : MatchUi::RED, 2500.0, "powerUpFail");
-            Announce(text + " (" + ReasonText(result.reason) + "). Points " + PointsLine(d, g.me, them));
+            Announce(text + " (" + ReasonText(result.reason) + "). " + NamedPoints(d));
             Note("round " + std::to_string(d.results.size()) + ": damage dealt " + Number(result.dealt[g.me]) + " : " +
                  Number(result.dealt[them]) + ", " + ScoreLine());
         }
@@ -973,7 +993,7 @@ namespace Duels
                 Points(d, HOST).c_str(), Points(d, GUEST).c_str(), d.score[HOST], d.score[GUEST], (unsigned)d.results.size());
             uint8_t them = Other(g.me);
             std::string text = "Match over: ";
-            text += d.matchWinner == NOBODY ? "a draw" : You(d.matchWinner) ? "you win" : Who(d.matchWinner) + " wins";
+            text += d.matchWinner == NOBODY ? "a draw" : Name(d.matchWinner) + " wins";
             if (d.matchWinner == NOBODY) MatchUi::Splash("MATCH DRAWN", MatchUi::WHITE, 4000.0, "jumpReady");
             else if (Net::Replaying())
             {
@@ -981,7 +1001,9 @@ namespace Duels
             }
             else if (d.matchWinner == g.me) MatchUi::Splash("MATCH WON", g.me == HOST ? MatchUi::RED : MatchUi::BLUE, 4000.0, "victory");
             else MatchUi::Splash("MATCH LOST", g.me == HOST ? MatchUi::BLUE : MatchUi::RED, 4000.0, "powerUpFail");
-            Announce(text + ", " + PointsLine(d, g.me, them) + " (" + ReasonText(d.matchReason) + ")");
+            std::string why = d.matchReason == REASON_LEFT && d.matchWinner != NOBODY ? Name(Other(d.matchWinner)) + " left the match"
+                                                                                       : std::string(ReasonText(d.matchReason));
+            Announce(text + ", " + NamedPoints(d) + " (" + why + ")");
             Note("match over: " + ScoreLine());
             SendRankedResult();
         }
@@ -1880,7 +1902,7 @@ namespace Duels
             d.phase = Phase::MatchOver;
             g.appliedPhase = Phase::MatchOver;
             RoundCleanup();
-            Announce("Match over: you win (the other player didn't come back)");
+            Announce("Match over: " + Name(g.me) + " wins (" + Name(Other(g.me)) + " didn't come back)");
             SendRankedResult();
         }
 
@@ -1903,7 +1925,7 @@ namespace Duels
                     d.phase = Phase::MatchOver;
                     g.appliedPhase = Phase::MatchOver;
                     RoundCleanup();
-                    Announce("Match over: you win (the other player left)");
+                    Announce("Match over: " + Name(g.me) + " wins (" + Name(Other(g.me)) + " left the match)");
                 }
                 else
                 {
@@ -1988,6 +2010,8 @@ namespace Duels
             Data &d = g.data;
             if (g.local) Ai::OnFrame();
             if (d.phase == Phase::Choice) ChoiceNews();
+            if (BetweenFights() && !Net::Replaying()) Refit::KeepAir();
+            if (d.phase == Phase::Prep && !Net::Replaying()) Refit::OnPrepFrame();
 
             if (d.phase == Phase::Fight && !g.fightBegun && d.fightStart >= 0.0 && now >= FromHost(d.fightStart)) BeginFight();
             if (g.fightBegun && (d.phase == Phase::Fight || d.phase == Phase::Ending)) CountDamage();
@@ -2109,6 +2133,14 @@ namespace Duels
         bool InPreparation()
         {
             return g.active && g.data.phase == Phase::Prep;
+        }
+
+        bool BetweenFights()
+        {
+            if (!g.active || g.data.settings.free) return false;
+            Phase phase = g.data.phase;
+            return phase == Phase::Choice || phase == Phase::Prep || phase == Phase::Starting || phase == Phase::RoundOver ||
+                   phase == Phase::MatchOver;
         }
 
         bool InMatch()
@@ -2720,7 +2752,8 @@ namespace Duels
                       ": " + PhaseName(d.phase);
             if (d.phase == Phase::MatchOver)
             {
-                s.state = d.matchWinner == NOBODY ? "match over: a draw" : d.matchWinner == g.me ? "match over: you win" : "match over: you lose";
+                // The winner by name (roadmap BK: the lines name the players; the end screen's YOU WIN goes by matchWinner).
+                s.state = d.matchWinner == NOBODY ? std::string("match over: a draw") : "match over: " + Name(d.matchWinner) + " wins";
                 s.state += std::string(" (") + ReasonText(d.matchReason) + ")";
             }
             // The ship choice (roadmap 3.9).
@@ -2799,15 +2832,16 @@ namespace Duels
             s.rounds = d.settings.rounds;
             s.free = d.settings.free;
             s.me = Viewer();
-            s.names[g.me] = Match::ScreenName(Match::PlayerName());
-            s.names[them] = g.local ? Match::ScreenName(Ai::Name())
-                                    : Net::PeerName().empty() ? std::string("Opponent") : Match::ScreenName(Net::PeerName());
+            s.names[g.me] = Match::PlayerName();
+            s.names[them] = g.local ? Ai::Name() : Net::PeerName().empty() ? std::string("Opponent") : Net::PeerName();
             if (Net::Replaying())
             {
                 // A replay (roadmap AW): the recorded players' names.
-                s.names[HOST] = Match::ScreenName(Who(HOST));
-                s.names[GUEST] = Match::ScreenName(Who(GUEST));
+                s.names[HOST] = Who(HOST);
+                s.names[GUEST] = Who(GUEST);
             }
+            for (int player = 0; player < 2; ++player) s.shortNames[player] = Match::ScreenName(s.names[player]);
+            s.matchWinner = d.phase == Phase::MatchOver && d.matchWinner != NOBODY ? (int)d.matchWinner : -1;
             s.points[HOST] = Points(d, HOST);
             s.points[GUEST] = Points(d, GUEST);
             s.opponentReady = d.ready[them];

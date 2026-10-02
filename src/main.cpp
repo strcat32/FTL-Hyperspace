@@ -1,16 +1,28 @@
 #include "main.h"
 #include <stdio.h>
 #include "Global.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifdef __APPLE__
 #include "features/freeze-watchdog/FreezeWatchdog.h"
 #endif
 
-// Backup log files from previous session before they get overwritten
+// Backup log files from previous session before they get overwritten. (FTL: Duels: the old backup goes first, as
+// Windows' rename never replaces a file: after the first .bak, every later session's logs were lost. FTL's own log too,
+// and the folder FTL's crash handler writes its crash logs to, Debugging.cpp.)
 static void BackupLogFiles()
 {
+    std::remove("zhl.log.bak");
     std::rename("zhl.log", "zhl.log.bak");
+    std::remove("FTL_HS.log.bak");
     std::rename("FTL_HS.log", "FTL_HS.log.bak");
+    std::remove("FTL.log.bak");
+    std::rename("FTL.log", "FTL.log.bak");
+#ifdef _WIN32
+    CreateDirectoryA("crashlogs", nullptr);
+#endif
 }
 
 // TODO: Add GCC poison pragma for some of the Windows specific bullshit functions & types so that we stop other devs from reintroducing them. https://gcc.gnu.org/onlinedocs/cpp/Pragmas.html#Pragmas (like sfopen!)

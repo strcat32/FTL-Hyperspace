@@ -85,6 +85,11 @@ namespace Duels
         bool ShoppingAllowed();
         // A match runs and is in a round's preparation (ShoppingAllowed is also true outside a match).
         bool InPreparation();
+        // A match of rounds runs and no round is being fought: the ship choice, a preparation, the ships meeting, a
+        // round's or the match's end. Nothing harms a crew then (no air, fire: CrewMember::UpdateHealth doesn't run) and
+        // the air stays full (Refit::KeepAir): a player who sold the oxygen system lost the whole crew in the preparation,
+        // and the round before it began (the ranked test of 2026-10-02).
+        bool BetweenFights();
 
         // Running away (roadmap AD; rules, section 3): in a match's fight the FTL drive charges as in FTL, and its jump
         // ends the round, half a point for the other player and none for the runner. InMatch: a match runs (FTL's
@@ -172,7 +177,9 @@ namespace Duels
             int round = 0, rounds = 0;
             bool free = false;
             uint8_t me = 0;                 // 0: we host (red), 1: we joined (blue)
-            std::string names[2];           // the host's (red) and the guest's (blue)
+            std::string names[2];           // the host's (red) and the guest's (blue), in full
+            std::string shortNames[2];      // the same, cut for the score panel (it has room for about ten letters)
+            int matchWinner = -1;           // MatchOver: 0 the host, 1 the guest, -1 a draw
             std::string points[2];          // "1.5"
             bool opponentReady = false;
             bool weOfferDraw = false;       // our draw offer is open (the round's or the match's)

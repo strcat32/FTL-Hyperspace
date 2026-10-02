@@ -789,7 +789,7 @@ namespace Duels
                 float ty = box.y + 4.f;
                 Text(FONT, cCode, ty, Fit(FONT, room.code, 66.f), sameVersion ? light : soft);
                 Text(FONT, cName, ty, Fit(FONT, room.roomName.empty() ? "(no title)" : room.roomName, 170.f), sameVersion ? white : soft);
-                Text(FONT, cHost, ty, Fit(FONT, Match::ScreenName(room.hostName), 116.f), sameVersion ? light : soft);
+                Text(FONT, cHost, ty, Fit(FONT, room.hostName, 116.f), sameVersion ? light : soft);
                 Text(FONT, cRelay, ty, Fit(FONT, room.relay.name, 110.f), soft);
                 if (!sameVersion) Text(FONT, cLock, ty, "v" + Fit(FONT, room.version, 56.f), red);
                 else if (room.ranked) Text(FONT, cLock, ty, room.password ? "RANKED, PW" : "RANKED", Rgb(140, 255, 130));
@@ -1199,9 +1199,10 @@ namespace Duels
             if (g.pending == Pending::Replay)
             {
                 // Once FTL's first message box is gone (it takes its answer only while paused, and a replay doesn't
-                // pause), or a second without one.
+                // pause), or five seconds without one (a slower computer shows it later: it came after the replay had
+                // begun, roadmap BO).
                 bool boxOpen = G_->GetWorld()->commandGui->choiceBox.bOpen;
-                if (boxOpen || (!FirstBoxAnswered() && WallMs() < g.runSinceMs + 1000.0)) return;
+                if (boxOpen || (!FirstBoxAnswered() && WallMs() < g.runSinceMs + 5000.0)) return;
                 g.pending = Pending::None;
                 std::string message;
                 bool started = Demo::StartReplay(g.replayPath, message);

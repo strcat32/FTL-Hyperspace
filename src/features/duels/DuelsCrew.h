@@ -25,6 +25,11 @@ namespace Duels
 
         void Reset();
 
+        // A crew member taken off a ship for good (a puppet the owner's roster no longer has, the copy's blueprint crew,
+        // the AI's dead under Permanent Death): FTL's removal kills them, and a clone bay on that ship cloned them back
+        // (roadmap BO: a Kestrel C's copy, and a replay of it, gained crew each time, up to "too many crew").
+        void RemoveForGood(ShipManager *ship, CrewMember *crew);
+
         // Our side. The roster goes out when it changed (checked with every state); the state message carries where
         // each crew member is and how they are.
         bool RosterChanged();

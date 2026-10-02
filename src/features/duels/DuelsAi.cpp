@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsAi.h"
+#include "DuelsCrew.h"
 #include "DuelsLobby.h"
 #include "DuelsMatch.h"
 #include "DuelsRounds.h"
@@ -403,7 +404,7 @@ namespace Duels
                 TextString name(wanted[i].name, true);
                 member->SetName(&name, true);
             }
-            for (CrewMember *member : leaving) ship->RemoveCrewmember(member);
+            for (CrewMember *member : leaving) Crew::RemoveForGood(ship, member);
             if (!leaving.empty() || !captainThere)
             {
                 Log("Ai: round %d: %u of its crew stay dead%s", g.round, (unsigned)leaving.size(),
@@ -529,7 +530,7 @@ namespace Duels
             {
                 if (member->bDead) continue;
                 if (ship) MoveCrew(member, own, ship, 0);
-                else own->RemoveCrewmember(member);
+                else Crew::RemoveForGood(own, member);
                 ++left;
             }
 

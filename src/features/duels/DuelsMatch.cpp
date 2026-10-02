@@ -609,6 +609,19 @@ namespace Duels
             return r.Ok();
         }
 
+        void AfterShipSwitch()
+        {
+            WorldManager *world = G_->GetWorld();
+            ShipManager *own = G_->GetShipManager(0);
+            if (!world || !world->commandGui || !own) return;
+            std::vector<ShipManager*> &ships = world->space.ships;
+            bool inSpace = std::find(ships.begin(), ships.end(), own) != ships.end();
+            if (!inSpace) world->space.AddShip(own);
+            world->commandGui->combatControl.LinkShip(own);
+            Log("Match: our ship %s is in space again (%s) and our weapon and drone controls follow it", own->myBlueprint.blueprintName.c_str(),
+                inSpace ? "it was" : "the switch had taken it out");
+        }
+
         void ReplayOwnLoadout(const uint8_t *data, size_t size)
         {
             Reader r(data, size);
@@ -622,6 +635,7 @@ namespace Duels
                 Bays::PrepareBlueprint(G_->GetBlueprints()->GetShipBlueprint(loadout.blueprint, -1));
                 bool switched = world->SwitchShip(loadout.blueprint);
                 Log("Match: replay: our ship becomes the recorder's %s (%s)", loadout.blueprint.c_str(), switched ? "switched" : "the switch failed");
+                if (switched) AfterShipSwitch();
                 own = G_->GetShipManager(0);
             }
             if (!own) return;
@@ -3081,7 +3095,7 @@ namespace Duels
                 {
                     Headline(std::string("DEBUG DUEL: test commands are on (") + (ours ? "yours on" : "yours off") + ", " +
                              Net::PeerName() + "'s " + (theirs ? "on" : "off") + "); the match is unranked");
-                    if (theirs) EnableDebug("the other player's game has debug mode on");
+                    if (theirs) EnableDebug(((Net::PeerName().empty() ? std::string("the other player") : Net::PeerName()) + "'s game has debug mode on").c_str());
                 }
                 // The match: the host's game starts it (round 1's preparation, or at once a free fight).
                 Rounds::OnConnected();
@@ -3141,7 +3155,7 @@ namespace Duels
                         Net::SetPeerDebug();
                         Headline("DEBUG DUEL: " + Net::PeerName() + " switched debug mode on; test commands work for both, and the match is unranked");
                     }
-                    EnableDebug("the other player's game has debug mode on");
+                    EnableDebug(((Net::PeerName().empty() ? std::string("the other player") : Net::PeerName()) + "'s game has debug mode on").c_str());
                     break;
                 case MSG_LOADOUT:
                     ApplyLoadout(reader);
