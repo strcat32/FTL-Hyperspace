@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -697,9 +698,30 @@ namespace Duels
                 message = "our handshakes name the game's data as " + GameDataHash();
                 return true;
             }
+            // Another version of this game (roadmap CE): one that differs only in its looks ("fair version 0.8.9"), or
+            // one of another protocol ("fair protocol 17"); "real": its own again.
+            if (ArgIs(cmd, 1, "version") && cmd.args.size() > 2)
+            {
+                Net::SetTestVersion(ArgIs(cmd, 2, "real") ? std::string() : cmd.args[2]);
+                message = "this game's version: " + Net::Version();
+                return true;
+            }
+            if (ArgIs(cmd, 1, "protocol") && cmd.args.size() > 2)
+            {
+                int protocol = ArgIs(cmd, 2, "real") ? 0 : std::atoi(cmd.args[2].c_str());
+                if (protocol < 0 || protocol > 65535)
+                {
+                    message = "usage: fair protocol <1-65535>|real";
+                    return false;
+                }
+                Net::SetTestProtocol((uint16_t)protocol);
+                message = "this game speaks protocol " + std::to_string(Net::Protocol());
+                return true;
+            }
             if (cmd.args.size() > 1)
             {
-                message = "usage: fair [cheat dodge|evasion <n>|chain|hull|shields|power|charge|rapid|off | data <text>|real]";
+                message = "usage: fair [cheat dodge|evasion <n>|chain|hull|shields|power|charge|rapid|off | data <text>|real | version <text>|real "
+                          "| protocol <n>|real]";
                 return false;
             }
             message = Status();

@@ -207,7 +207,7 @@ namespace Duels
 
         static void WriteIdentity(Writer &writer)
         {
-            writer.U16(PROTOCOL_VERSION);
+            writer.U16(Protocol());
             writer.Str(g_session.version);
             writer.Str(g_session.build);
             writer.Str(g_session.name);
@@ -387,17 +387,19 @@ namespace Duels
             g_session.peerDebug = (flags & 1) != 0;
             g_session.peerCold = (flags & 2) != 0;
             g_session.peerToken = tokenLow | (tokenHigh << 32);
-            if (protocol != PROTOCOL_VERSION || version != g_session.version)
+            // The protocol decides (roadmap CE): versions that differ only in their looks play each other.
+            if (protocol != Protocol())
             {
                 // (The text goes to the other side too: it names the host's and the guest's, as the data's below.)
                 char ours[100], theirs[100];
-                snprintf(ours, sizeof(ours), "%s (protocol %u)", g_session.version.c_str(), (unsigned)PROTOCOL_VERSION);
+                snprintf(ours, sizeof(ours), "%s (protocol %u)", g_session.version.c_str(), (unsigned)Protocol());
                 snprintf(theirs, sizeof(theirs), "%s (protocol %u)", version.c_str(), (unsigned)protocol);
                 bool host = IsHost();
                 problem = std::string("another version of FTL: Duels: the host's ") + (host ? ours : theirs) + ", the guest's " + (host ? theirs : ours) +
-                          "; both players need the same (install the newest on both computers)";
+                          "; both players need the same protocol (install the newest on both computers)";
                 return false;
             }
+            if (version != g_session.version) Log("Net: the other game runs %s, this one %s (the same protocol: they play)", version.c_str(), g_session.version.c_str());
             if (dataHash != g_session.dataHash)
             {
                 // Changed weapons, drones, augments or ships would change the fight (roadmap 4.1, layer 5). (The text
@@ -516,10 +518,31 @@ namespace Duels
             g_session.listener = listener;
         }
 
+        static uint16_t g_testProtocol = 0;
+        static std::string g_testVersion;
+
+        uint16_t Protocol()
+        {
+            return g_testProtocol ? g_testProtocol : PROTOCOL_VERSION;
+        }
+
+        void SetTestProtocol(uint16_t protocol)
+        {
+            g_testProtocol = protocol;
+            Log("Net: test: this game speaks protocol %u", (unsigned)Protocol());
+        }
+
+        void SetTestVersion(const std::string &version)
+        {
+            g_testVersion = version;
+            if (!version.empty()) g_session.version = version;
+            Log("Net: test: this game's version is %s", version.empty() ? "its own again" : version.c_str());
+        }
+
         void SetIdentity(const std::string &playerName, const std::string &version, const std::string &build)
         {
             g_session.name = playerName;
-            g_session.version = version;
+            g_session.version = g_testVersion.empty() ? version : g_testVersion;
             g_session.build = build;
         }
 
@@ -637,7 +660,7 @@ namespace Duels
             s.resultQueued = s.resultAcked = false;
             s.resultTries = 0;
             if (s.ticket.size() >= 17) s.lastTicketNonce = s.ticket.substr(1, 16);
-            s.relayClient.Create(s.name, s.version, roomName, password, listed, s.now, s.ticket, s.ticketKey);
+            s.relayClient.Create(s.name, RelayVersion(), roomName, password, listed, s.now, s.ticket, s.ticketKey);
             s.ticket.clear();
             s.ticketKey.clear();
             SetPhase(Phase::Hosting);
@@ -671,7 +694,7 @@ namespace Duels
                 s.resultTries = 0;
             }
             if (s.ticket.size() >= 17) s.lastTicketNonce = s.ticket.substr(1, 16);
-            s.relayClient.Join(code, password, s.name, s.version, s.now, s.ticket, s.ticketKey);
+            s.relayClient.Join(code, password, s.name, RelayVersion(), s.now, s.ticket, s.ticketKey);
             s.ticket.clear();
             s.ticketKey.clear();
             SetPhase(Phase::Joining);
@@ -698,7 +721,7 @@ namespace Duels
                 return false;
             }
             b.relay = address;
-            b.client.List(page, g_session.version, g_session.now);
+            b.client.List(page, RelayVersion(), g_session.now);
             b.active = true;
             message = "asking the relay " + address.ToString() + " for its open rooms";
             Log("Net: %s", message.c_str());
@@ -743,7 +766,7 @@ namespace Duels
                 {
                     std::string line = "  " + room.code + "  " + (room.roomName.empty() ? "(no name)" : "\"" + room.roomName + "\"") +
                                        ", " + room.hostName;
-                    if (room.version != g_session.version) line += ", version " + room.version;
+                    if (!RoomCompatible(room.version)) line += ", " + RoomVersionText(room.version);
                     if (room.password) line += ", password";
                     Notice(line);
                 }
@@ -764,6 +787,23 @@ namespace Duels
         const std::string &Version()
         {
             return g_session.version;
+        }
+
+        std::string RelayVersion()
+        {
+            return "p" + std::to_string(Protocol());
+        }
+
+        bool RoomCompatible(const std::string &roomVersion)
+        {
+            return roomVersion == RelayVersion();
+        }
+
+        std::string RoomVersionText(const std::string &roomVersion)
+        {
+            if (roomVersion.size() > 1 && roomVersion[0] == 'p' && roomVersion.find_first_not_of("0123456789", 1) == std::string::npos)
+                return "protocol " + roomVersion.substr(1);
+            return roomVersion;   // a game before 0.8.1 gives its version
         }
 
         void SearchRooms(const std::vector<RelayAddress> &relays)
@@ -800,7 +840,7 @@ namespace Duels
                     g_search.errors.push_back(address.name + ": " + error);
                     continue;
                 }
-                searcher->client.List(0, g_session.version, g_session.now);
+                searcher->client.List(0, RelayVersion(), g_session.now);
                 searcher->active = true;
                 g_searchers.push_back(std::move(searcher));
             }
@@ -860,7 +900,7 @@ namespace Duels
                     }
                     if (!event.rooms.empty() && event.page + 1 < event.pages && event.page + 1 < SEARCH_PAGES)
                     {
-                        s.client.List(event.page + 1, g_session.version, now);
+                        s.client.List(event.page + 1, RelayVersion(), now);
                     }
                     else
                     {

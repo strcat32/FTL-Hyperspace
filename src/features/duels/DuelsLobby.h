@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DuelsNet.h"
+
 #include <string>
 #include <vector>
 
@@ -20,6 +22,11 @@ namespace Duels
         // FTL's CONTINUE (roadmap BR): back into the match the last session lost (DuelsRejoin.cpp): a run starts as START
         // starts one, and once it is there our ship is made as the file has it and the way back is tried.
         void StartRejoin();
+        // The ranked queue's pair (roadmap BW, DuelsQueue.cpp): a ranked room at the master's relay, unlisted, with the
+        // master's password, opened (host) or joined by its code (guest) without the windows; the run starts as START
+        // starts one.
+        void StartQueuedRoom(bool host, const Net::RelayAddress &relay, const std::string &code, const std::string &password,
+                             const std::string &opponent);
         bool IsOpen();
         void Render();
         void MouseMove(int x, int y);
@@ -42,6 +49,10 @@ namespace Duels
         // box goes then; a match against the AI has no pause from that moment, as FTL answers boxes only in a pause).
         void OnFrame();
         bool FirstBoxAnswered();
+        // The run began for a duel whose room is still being opened or joined (HOST DUEL's or JOIN DUEL's START).
+        bool OpeningDuel();
+        // The title of the room this game opened or joined from the list ("": none known, a room joined by its code).
+        std::string RoomTitle();
         // START without the hangar (roadmap 3.9, AL): a dark screen from the click until that box is gone (FTL would
         // show its hangar for a frame, then the box and its PAUSED for another). Over everything, in the menu and the run.
         void RenderCover();

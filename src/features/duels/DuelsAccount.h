@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DuelsHttp.h"
+
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -46,6 +48,15 @@ namespace Duels
         void Refresh();
         // Ranked matches' demos for the master (roadmap BQ): each waits as demos\<file>.upload until the master has it.
         void UploadDemos();
+        // A request to the account's master with the account's key (the ranked queue, DuelsQueue.cpp): path from "/api".
+        void Request(const std::string &method, const std::string &path, const std::string &body, Http::Callback done);
+        // This game for the master's ranked requests (roadmap CE): "\"protocol\": 18, \"version\": \"0.8.1\"" (fields of
+        // a JSON object), so that an older game is told to update.
+        std::string GameFields();
+        // The master's newest version and the protocol ranked play needs (GET /api/client, asked once a session): a
+        // line for the main menu when this game is older ("" if not), and whether ranked play needs the update.
+        void FetchClient();
+        std::string UpdateNote(bool &needed);
 
         // The player's last ranked matches at the master (roadmap BR, the main menu's STATS: GET /api/matches?player=).
         struct RecentMatch

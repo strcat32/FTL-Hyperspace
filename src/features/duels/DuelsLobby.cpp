@@ -101,6 +101,7 @@ namespace Duels
             // After CHOOSE SHIP: the room waits for the run, then the relays are tried in order (part 4).
             Pending pending = Pending::None;
             std::string roomName, roomPassword, roomCode;
+            std::string roomTitle;               // the room's title as the Duels window's caption shows it (BX)
             bool roomListed = true;
             // Ranked (roadmap BG): the room we open is ranked; the room we join is (its listing said so, or the relay's
             // ERROR 10); the ticket for the attempt's relay, asked for first (a later answer of an earlier ask is dropped).
@@ -292,6 +293,7 @@ namespace Duels
                 return;
             }
             g.roomName = g.name.Text();
+            g.roomTitle = g.roomName;
             g.roomPassword = g.password.Text();
             g.roomListed = g.listed;
             g.roomRanked = g.ranked && !g.vsAi;
@@ -345,6 +347,28 @@ namespace Duels
             OpenHangar(Pending::Replay, true);
         }
 
+        void StartQueuedRoom(bool host, const Net::RelayAddress &relay, const std::string &code, const std::string &password,
+                             const std::string &opponent)
+        {
+            Close();
+            g.vsAi = false;
+            g.ranked = true;
+            g.roomName = "Ranked queue";
+            g.roomTitle = "Ranked match against " + opponent;
+            g.roomPassword = password;
+            g.roomListed = false;
+            g.roomRanked = host;
+            g.joinRanked = !host;
+            g.roomCode = code;
+            g.attemptRelays = {relay};
+            // Both games start without the hangar, as a guest's always does: the queue's room waits for nobody's click (a
+            // season of each player's own ship plays the hangar's ship as it was last chosen).
+            const bool start = true;
+            Log("Lobby: the ranked queue's room against %s: %s at %s", opponent.c_str(), host ? "opened" : ("joined (" + code + ")").c_str(),
+                relay.name.c_str());
+            OpenHangar(host ? Pending::Host : Pending::Join, start);
+        }
+
         void StartRejoin()
         {
             Log("Lobby: CONTINUE: back into the match the last session lost (%s)", Rejoin::Describe().c_str());
@@ -366,8 +390,8 @@ namespace Duels
             y += 34.f;
             if (g.vsAi && g.next.ships == 1)
             {
-                // With bans the AI bans and picks at random (roadmap 3.9); its ship isn't set here.
-                Text(FONT, lx, y + 6.f, "The AI bans and picks its ship at random.", light);
+                // The AI picks one of the ships drawn at random (roadmap 3.9, CC); its ship isn't set here.
+                Text(FONT, lx, y + 6.f, "The AI picks one of the ships drawn, at random.", light);
                 g.aiShipLess.w = g.aiShipMore.w = 0.f;
             }
             else if (g.vsAi)
@@ -494,15 +518,15 @@ namespace Duels
             else Paragraph(FONT, rx, y, rw, "The anti-ship battery comes from round 5 on.", soft);
             y += 26.f;
 
-            // The ships (roadmap 3.9), against a player or the AI: bans from the ticked types, then a pick of the three
-            // left; or a pick from the list, its ships ticked by layout. (Each player's own, the hangar's, is the
+            // The ships (roadmap 3.9), against a player or the AI: three drawn from the ticked types, then a pick (CC: no
+            // bans for now); or a pick from the list, its ships ticked by layout. (Each player's own, the hangar's, is the
             // console's, for tests.)
             Text(TEXT, rx, y + 6.f, "Ships", light);
             float bx = rx + 70.f;
             ButtonAt(g.shipsLess, bx, y, 30.f, 28.f, "<");
             CSurface::GL_SetColor(n.ships == 0 ? gold : white);
             freetype::easy_printCenter(TEXT, bx + 30.f + 105.f, y + 6.f,
-                                       n.ships == 1 ? "Bans, then a pick" : n.ships == 2 ? "A pick from a list" : "Their own (console)");
+                                       n.ships == 1 ? "Three drawn, a pick" : n.ships == 2 ? "A pick from a list" : "Their own (console)");
             ButtonAt(g.shipsMore, bx + 30.f + 210.f, y, 30.f, 28.f, ">");
             y += 36.f;
             const float column = rw / 2.f, rowH = 27.f;
@@ -712,6 +736,7 @@ namespace Duels
                     return;
                 }
                 g.roomCode = code;
+                g.roomTitle.clear();   // (a room by its code: its title isn't known)
                 g.roomRanked = false;
                 g.joinRanked = false;   // a ranked room says so (ERROR 10): a ticket then
                 g.attemptRelays = Net::RelayList();
@@ -726,9 +751,10 @@ namespace Duels
                 g.message = "Pick a room in the list, or type a room's code.";
                 return;
             }
-            if (room.version != Net::Version())
+            if (!Net::RoomCompatible(room.version))
             {
-                g.message = "That room's game is version " + room.version + ", yours " + Net::Version() + ": a duel needs the same.";
+                g.message = "Another version there (" + Net::RoomVersionText(room.version) + "; yours: protocol " + std::to_string(Net::Protocol()) +
+                            "): both need the same.";
                 return;
             }
             if (room.password && g.roomPassword.empty())
@@ -743,6 +769,7 @@ namespace Duels
                 return;
             }
             g.roomCode = room.code;
+            g.roomTitle = room.roomName;
             g.roomRanked = false;
             g.joinRanked = room.ranked;
             if (room.ranked && !Rounds::SeasonKnown()) Account::FetchSeason();
@@ -775,13 +802,14 @@ namespace Duels
             y += 34.f;
 
             // The rooms: a head row, then a page of them. The code (the relay's, unique) and the title (the host's) have a
-            // column each (AR).
-            const float cCode = lx + 10.f, cName = lx + 82.f, cHost = lx + 258.f, cRelay = lx + 380.f, cLock = lx + 498.f;
+            // column each (AR); a ranked room's host's rating has one too (BV).
+            const float cCode = lx + 10.f, cName = lx + 76.f, cHost = lx + 232.f, cRating = lx + 342.f, cRelay = lx + 398.f, cLock = lx + 500.f;
             float listY = LIST_Y, listH = ROW_H * (ROWS + 1) + 8.f;
             Style::Field(lx, listY, lw, listH, false);
             Text(FONT, cCode, listY + 6.f, "CODE", soft);
             Text(FONT, cName, listY + 6.f, "TITLE", soft);
             Text(FONT, cHost, listY + 6.f, "HOST", soft);
+            Text(FONT, cRating, listY + 6.f, "RATING", soft);
             Text(FONT, cRelay, listY + 6.f, "RELAY", soft);
             std::vector<Net::FoundRoom> shown = Shown();
             int pages = std::max(1, ((int)shown.size() + ROWS - 1) / ROWS);
@@ -795,13 +823,14 @@ namespace Duels
                 bool picked = room.relay.name == g.pickedRelay && room.code == g.pickedCode;
                 if (picked) CSurface::GL_DrawRect(box.x, box.y, box.w, box.h, Rgb(255, 230, 94, 0.28f));
                 else if (Hover(box)) CSurface::GL_DrawRect(box.x, box.y, box.w, box.h, Rgb(255, 255, 255, 0.08f));
-                bool sameVersion = room.version == Net::Version();
+                bool sameVersion = Net::RoomCompatible(room.version);
                 float ty = box.y + 4.f;
-                Text(FONT, cCode, ty, Fit(FONT, room.code, 66.f), sameVersion ? light : soft);
-                Text(FONT, cName, ty, Fit(FONT, room.roomName.empty() ? "(no title)" : room.roomName, 170.f), sameVersion ? white : soft);
-                Text(FONT, cHost, ty, Fit(FONT, room.hostName, 116.f), sameVersion ? light : soft);
-                Text(FONT, cRelay, ty, Fit(FONT, room.relay.name, 110.f), soft);
-                if (!sameVersion) Text(FONT, cLock, ty, "v" + Fit(FONT, room.version, 56.f), red);
+                Text(FONT, cCode, ty, Fit(FONT, room.code, 60.f), sameVersion ? light : soft);
+                Text(FONT, cName, ty, Fit(FONT, room.roomName.empty() ? "(no title)" : room.roomName, 150.f), sameVersion ? white : soft);
+                Text(FONT, cHost, ty, Fit(FONT, room.hostName, 104.f), sameVersion ? light : soft);
+                Text(FONT, cRating, ty, room.ranked && room.rating > 0 ? std::to_string(room.rating) : std::string("-"), sameVersion ? light : soft);
+                Text(FONT, cRelay, ty, Fit(FONT, room.relay.name, 96.f), soft);
+                if (!sameVersion) Text(FONT, cLock, ty, Fit(FONT, Net::RoomVersionText(room.version), 76.f), red);
                 else if (room.ranked) Text(FONT, cLock, ty, room.password ? "RANKED, PW" : "RANKED", Rgb(140, 255, 130));
                 else if (room.password) Text(FONT, cLock, ty, "PASSWORD", gold);
                 g.rows.push_back(box);
@@ -837,14 +866,14 @@ namespace Duels
                 line("Host", room.hostName, light);
                 line("Relay", room.relay.name, light);
                 line("Code", room.code, light);
-                bool sameVersion = room.version == Net::Version();
-                line("Version", room.version + (sameVersion ? "" : " (yours: " + Net::Version() + ")"), sameVersion ? light : red);
+                bool sameVersion = Net::RoomCompatible(room.version);
+                line("Version", sameVersion ? std::string("the same protocol as yours") :
+                                              Net::RoomVersionText(room.version) + " (yours: protocol " + std::to_string(Net::Protocol()) + ")",
+                     sameVersion ? light : red);
                 line("Password", room.password ? "needed: type it below" : "none", room.password ? gold : light);
-                line("Ranked", room.ranked ? "yes: the host's rating " + std::to_string(room.rating) + "; a Steam sign-in needed" : "no",
-                     room.ranked ? Rgb(140, 255, 130) : light);
-                dy += 6.f;
-                if (room.ranked) Paragraph(FONT, dx, dy, dw, "A ranked match plays by the season's settings, and the master rates both "
-                                                             "players.", soft);
+                // "Ranked: yes" alone, the host's rating a line of its own (BV, the user 2026-10-02).
+                line("Ranked", room.ranked ? "yes" : "no", room.ranked ? Rgb(140, 255, 130) : light);
+                if (room.ranked) line("Rating", room.rating > 0 ? std::to_string(room.rating) : std::string("-"), light);
             }
             else Paragraph(FONT, dx, dy, dw, "A click on a room in the list shows it here.", soft);
 
@@ -1048,8 +1077,17 @@ namespace Duels
             std::string text;
             int error = Net::LastRelayError(&text);
             why = text.empty() ? "the connection failed" : text;
-            // The relay's ERROR 5: the host's game is another version (the room list shows it in red; a code doesn't).
-            if (error == 5) why += " (both players need the same version of FTL: Duels: install the newest on both computers)";
+            // The relay's ERROR 5: the host's game is another version (the room list shows it in red; a code doesn't). The
+            // relay says "version differs: host has p17" (an older game: its own version, "0.8.0-dev").
+            if (error == 5)
+            {
+                size_t at = text.find("host has ");
+                std::string theirs = at == std::string::npos ? std::string() : text.substr(at + 9);
+                why = "the host's game is another version of FTL: Duels";
+                if (!theirs.empty())
+                    why += " (" + Net::RoomVersionText(theirs) + "; yours: " + Net::Version() + ", protocol " + std::to_string(Net::Protocol()) + ")";
+                why += ": both players need the same (install the newest on both computers)";
+            }
             // A relay that takes no tickets (ERROR 9) may be followed by one that does.
             retry = error == Relay::Event::NO_ANSWER || error == 4 || error == 6 || (g.pending == Pending::Join && error == 2) ||
                     error == Relay::Event::TICKET_REFUSED;
@@ -1115,6 +1153,16 @@ namespace Duels
         bool FirstBoxAnswered()
         {
             return g.inRun && g.boxKeys > 0;
+        }
+
+        bool OpeningDuel()
+        {
+            return g.pending == Pending::Host || g.pending == Pending::Join;
+        }
+
+        std::string RoomTitle()
+        {
+            return g.roomTitle;
         }
 
         void RenderCover()

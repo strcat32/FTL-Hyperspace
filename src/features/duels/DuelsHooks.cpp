@@ -150,7 +150,9 @@ HOOK_METHOD_PRIORITY(CommandGui, IsPaused, -1000, () -> bool)
     // A duel pauses only while its connection is lost (roadmap AA) and in a timeout both players took (roadmap BF): FTL's
     // world stands still for both players. A replay's pause stops it too (roadmap 5.1), and a message box of FTL's in a
     // replay (its first one, come late: FTL answers a box only while paused, roadmap BO). Going back into a match after a
-    // crash, our ship waits as the file made it until the match is there (roadmap BR).
+    // crash, our ship waits as the file made it until the match is there (roadmap BR). While a duel's room waits for its
+    // guest, the run stands still too: nobody prepares before the match (roadmap BT).
+    if (Duels::Match::WaitingForMatch()) return true;   // (FTL's first message box is answered in a pause too)
     if (Duels::GetState().noPause)
     {
         return Duels::Rounds::NetPaused() || Duels::Rejoin::Trying() || Duels::Demo::ReplayPaused() || Duels::Rounds::TimeoutPaused() ||
@@ -266,10 +268,11 @@ HOOK_METHOD_PRIORITY(CommandGui, ShowWriteError, -2000, () -> void)
 }
 
 // A duel never pauses (no-pause): FTL's "PAUSED" banner, drawn while the store or a menu is open, would say it does.
+// While a room waits, the run stands still, but SPACE doesn't go on (roadmap BT): the Duels window says why instead.
 HOOK_METHOD_PRIORITY(CommandGui, RenderPause, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::RenderPause -> Begin (DuelsHooks.cpp)\n")
-    if (Duels::GetState().noPause) return;
+    if (Duels::GetState().noPause || Duels::Match::WaitingForMatch()) return;
     super();
 }
 
@@ -283,14 +286,16 @@ HOOK_METHOD_PRIORITY(TutorialManager, AllowUpgrades, -2000, () -> bool)
 }
 
 // Running away (roadmap AD): in a match FTL's JUMP button (and the jump key) ends the round as an escape, when FTL
-// would jump (the drive charged, the engines and piloting working); the star map stays shut.
+// would jump (the drive charged, the engines and piloting working); the star map stays shut, and outside a match too
+// (roadmap BU: the ship jumped to other beacons). FTL's tutorial keeps its own jump.
 HOOK_METHOD_PRIORITY(FTLButton, MouseClick, -2000, (int mX, int mY) -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> FTLButton::MouseClick -> Begin (DuelsHooks.cpp)\n")
     bool jump = super(mX, mY);
-    if (!jump || !Duels::Rounds::InMatch()) return jump;
+    TutorialManager *tutorial = G_->GetTutorialManager();
+    if (!jump || (tutorial && tutorial->Running())) return jump;
     std::string message;
-    Duels::Rounds::Escape(message);
+    if (Duels::Rounds::InMatch()) Duels::Rounds::Escape(message);
     return false;
 }
 
@@ -1502,7 +1507,8 @@ static bool OrdersHeld(CommandGui *gui, int mX, int mY)
 {
     // The connection lost (the match waits), or a replay (the recorder's ship isn't ours to command). A message box of
     // FTL's takes its click (a replay's first box, come late, roadmap BO).
-    if ((!Duels::Rounds::NetPaused() && !Duels::Rejoin::Trying() && !Duels::Net::Replaying()) || gui->menuBox.bOpen || gui->choiceBox.bOpen) return false;
+    if ((!Duels::Rounds::NetPaused() && !Duels::Rejoin::Trying() && !Duels::Net::Replaying() && !Duels::Match::WaitingForMatch()) ||
+        gui->menuBox.bOpen || gui->choiceBox.bOpen) return false;
     const Globals::Rect &options = gui->optionsButton.hitbox;
     return !(mX >= options.x && mX < options.x + options.w && mY >= options.y && mY < options.y + options.h);
 }
@@ -1513,13 +1519,15 @@ HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) ->
     if (Duels::Console::KeyDown(this, key)) return;
     if (Duels::Window::KeyDown((int)key)) return;
     if (Duels::ReplayUi::KeyDown((int)key)) return;   // a replay's keys, and no other reaches the game then
-    if ((Duels::Rounds::NetPaused() || Duels::Rejoin::Trying()) && !menuBox.bOpen && key != SDLK_ESCAPE) return;
+    if ((Duels::Rounds::NetPaused() || Duels::Rejoin::Trying() || Duels::Match::WaitingForMatch()) && !menuBox.bOpen && key != SDLK_ESCAPE) return;
     Duels::Refit::SwitchScreensKey((int)key);   // the preparation: the store and the ship's screens switch
-    if (Duels::Rounds::InMatch() && key == Settings::GetHotkey("jump") && (int)key > 0)
+    TutorialManager *tutorial = G_->GetTutorialManager();
+    if (key == Settings::GetHotkey("jump") && (int)key > 0 && !(tutorial && tutorial->Running()))
     {
-        // The jump key as the JUMP button: running away when FTL would jump, never the star map (roadmap AD).
+        // The jump key as the JUMP button: running away when FTL would jump in a match's fight, never the star map
+        // (roadmap AD; BU: outside a match it jumped to other beacons). FTL's tutorial keeps its own jump.
         std::string message;
-        if (Duels::Rounds::EscapeAllowed() && Duels::Rounds::DriveReady()) Duels::Rounds::Escape(message);
+        if (Duels::Rounds::InMatch() && Duels::Rounds::EscapeAllowed() && Duels::Rounds::DriveReady()) Duels::Rounds::Escape(message);
         return;
     }
     super(key, shiftHeld);

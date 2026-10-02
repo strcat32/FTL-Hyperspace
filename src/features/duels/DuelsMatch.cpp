@@ -15,6 +15,7 @@
 #include "DuelsDemo.h"
 #include "DuelsDrones.h"
 #include "DuelsFair.h"
+#include "DuelsLobby.h"
 #include "DuelsVision.h"
 #include "DuelsHacking.h"
 #include "DuelsAi.h"
@@ -25,6 +26,7 @@
 #include "DuelsNet.h"
 #include "DuelsRejoin.h"
 #include "DuelsShipControl.h"
+#include "DuelsShips.h"
 #include "DuelsTrace.h"
 #include "DuelsTune.h"
 #include "DuelsView.h"
@@ -727,7 +729,8 @@ namespace Duels
             g_match.replicaReady = true;
             Rounds::OnReplicaBuilt(replica);
             Net::Send(MSG_READY, Writer(), true);
-            Announce("opponent's ship " + blueprint + " is here");
+            // (The log only: before the ship choice this is the opponent's hangar ship, and the choice names both ships.)
+            Log("Match: the opponent's ship is built: the %s (%s)", Ships::Title(blueprint).c_str(), blueprint.c_str());
         }
 
         // --------------------------------------------------------------------------------------------------------
@@ -3426,6 +3429,14 @@ namespace Duels
                 bool ranked = Rounds::Ranked(why);
                 Demo::NoteStatus(ranked, why);
             }
+        }
+
+        bool WaitingForMatch()
+        {
+            // (A crashed game going back into its match holds the ship with its own window, DuelsRejoin.cpp.)
+            if (Net::Replaying() || Rounds::IsLocal() || Rounds::InMatch() || Rejoin::Trying() || !InGame()) return false;
+            Net::Phase phase = Net::GetPhase();
+            return phase != Net::Phase::Idle || Lobby::OpeningDuel();
         }
 
         std::string LastRefusal()

@@ -5,6 +5,7 @@
 #include "DuelsLobby.h"
 #include "DuelsMatchUi.h"
 #include "DuelsNet.h"
+#include "DuelsRefit.h"
 #include "DuelsRounds.h"
 #include "DuelsShips.h"
 #include "DuelsStyle.h"
@@ -234,6 +235,13 @@ namespace Duels
             if (G_->GetSoundControl()) G_->GetSoundControl()->PlaySoundMix("powerUpSystem", -1.f, false);
         }
 
+        // The preparation's countdown and READY, right of the store: away while the store shows an item's description there
+        // (roadmap BY: they covered it; the right side has no room left then). They come back as the mouse leaves the item.
+        static bool PrepHidden(bool prepLayout)
+        {
+            return prepLayout && Refit::StoreDescriptionShown();
+        }
+
         static void RenderCountdown(const Rounds::Summary &s, bool prepLayout)
         {
             if (s.countdownMs < 0.0 || s.countdownLabel.empty()) return;
@@ -246,6 +254,7 @@ namespace Duels
             std::string time = Clock(s.countdownMs);
             if (prepLayout)
             {
+                if (PrepHidden(prepLayout)) return;
                 Panel(PREP_CENTRE - 75.f, PREP_TOP - 6.f, 150.f, 58.f);
                 PrintCentre(12, PREP_CENTRE, PREP_TOP, s.countdownLabel, ColourOf(WHITE, 0.9f));
                 PrintCentre(24, PREP_CENTRE, PREP_TOP + 12.f, time, colour);   // font 24 draws 15 px below its y
@@ -314,7 +323,7 @@ namespace Duels
             const GL_Color green(0.55f, 1.f, 0.5f, 1.f), grey(0.75f, 0.75f, 0.75f, 1.f);
             const GL_Color greenBody(0.59f, 0.93f, 0.53f, 1.f), goldBody(1.f, 0.84f, 0.35f, 1.f), redBody(1.f, 0.5f, 0.43f, 1.f);
 
-            if (s.phase == Rounds::Phase::Prep && !s.free)
+            if (s.phase == Rounds::Phase::Prep && !s.free && !PrepHidden(prepLayout))
             {
                 float x = prepLayout ? PREP_CENTRE - 65.f : FIGHT_SPLIT;
                 float y = prepLayout ? PREP_TOP + 58.f : FIGHT_TOP;
@@ -806,7 +815,7 @@ namespace Duels
 
             // The rules of it, at the bottom.
             std::string rule;
-            if (ch.bans && !revealed)
+            if (ch.bans && ch.bansTotal > 0 && !revealed)
             {
                 int pool = 0;
                 for (int type = 0; type < Ships::TYPE_COUNT; ++type) pool += (ch.pool >> type) & 1;
@@ -814,6 +823,7 @@ namespace Duels
                        std::to_string(pool - ch.bansTotal) +
                        " ship types, each with a layout drawn for it. Time up: a ban or a pick is drawn for you. Both may pick the same ship.";
             }
+            else if (!revealed && ch.bans) rule = "Three ships drawn from the pool. Time up: a pick is drawn for you. Both may pick the same ship.";
             else if (!revealed) rule = "Pick any ship of the host's list. Time up: a pick is drawn for you. Both may pick the same ship.";
             if (!rule.empty()) PrintCentre(10, CX + CW / 2.f, CY + CH - 34.f, Fit(10, rule, CW - 60.f), GL_Color(0.7f, 0.73f, 0.78f, 1.f));
             CSurface::GL_SetColor(COLOR_WHITE);
@@ -901,7 +911,9 @@ namespace Duels
 
         void OnEscMenuOpen(MenuScreen *menu)
         {
-            if (!menu || !DuelEscMenu()) return;
+            // HANGAR and RESTART never: FTL: Duels has no runs of FTL's own (roadmap CA; FTL's tutorial keeps them).
+            TutorialManager *tutorial = G_->GetTutorialManager();
+            if (!menu || (tutorial && tutorial->Running())) return;
             int greyed = 0;
             for (TextButton *button : menu->buttons)
             {

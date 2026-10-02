@@ -80,6 +80,9 @@ namespace Duels
         // meet.
         void OpenShop(int round, const std::vector<ShopItem> &stock);
         void CloseShop();
+        // The store shows the description of the item under the mouse, right of it (roadmap BY: the preparation's
+        // countdown and READY covered it; they step aside meanwhile).
+        bool StoreDescriptionShown();
         // Each frame of a preparation: after a system's sale the store is built again (once its window is closed), with
         // the system on the buy-back page (roadmap BJ: a sixth page, our sold systems at FTL's price).
         void OnPrepFrame();

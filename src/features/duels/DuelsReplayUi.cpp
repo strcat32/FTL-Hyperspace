@@ -21,7 +21,7 @@ namespace Duels
         static const double STEP_MS = 10000.0;
         // Under the enemy window (its bottom stays where FTL has it, DuelsView.cpp), above the drone box (from y 615) and
         // left of the subsystems (from x 1030): whose side is shown, and full sensors (roadmap BA).
-        static const float SIDE_X = 852.f, SIDE_Y = 586.f, SIDE_H = 24.f, W_VIEW = 118.f, W_SENSORS = 118.f;
+        static const float SIDE_X = 852.f, SIDE_Y = 586.f, SIDE_H = 24.f, W_VIEW = 118.f, W_SENSORS = 134.f;   // (BZ: its label filled it)
 
         enum class Icon { Stop, Back, Play, Pause, On };
 

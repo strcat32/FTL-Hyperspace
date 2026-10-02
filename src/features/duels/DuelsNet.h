@@ -15,7 +15,10 @@ namespace Duels
     namespace Net
     {
         static const uint16_t DEFAULT_PORT = 47620;
-        static const uint16_t PROTOCOL_VERSION = 17;   // bump whenever a message changes
+        // Bump whenever a message changes, or anything that changes how a match plays out (the rules, the shop, the
+        // ships, a fix in the fight): two games play each other only with the same protocol (roadmap CE). A change
+        // only of the looks (the windows, a text) keeps it: such versions play each other.
+        static const uint16_t PROTOCOL_VERSION = 18;
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;
@@ -169,6 +172,18 @@ namespace Duels
         const RoomSearch &Search();
         // Our version, as the relay compares it (a room of another version can't be joined).
         const std::string &Version();
+        // What the relays get as this game's version (roadmap CE): the protocol alone ("p18"), so versions that differ
+        // only in their looks join each other's rooms (the relay refuses a guest whose text differs from the host's).
+        std::string RelayVersion();
+        // The protocol this game speaks: PROTOCOL_VERSION, unless a test says another ("fair protocol <n>"); and the
+        // tests' other version ("fair version <text>": a version that differs only in its looks).
+        uint16_t Protocol();
+        void SetTestProtocol(uint16_t protocol);
+        void SetTestVersion(const std::string &version);
+        // A listed room's game plays with ours (its version text is our RelayVersion), and how to show its version
+        // ("protocol 17"; an older game's own version, "0.8.0-dev").
+        bool RoomCompatible(const std::string &roomVersion);
+        std::string RoomVersionText(const std::string &roomVersion);
         bool UsesRelay();
         std::string RelayCode();
         // The room we host is private: not in the relay's room list, joined only with its code (roadmap AR).

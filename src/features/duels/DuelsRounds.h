@@ -164,6 +164,8 @@ namespace Duels
         {
             bool inMatch = false;           // a match runs, or has just ended
             // The window's rows (AS): each a short line, the same rows whatever the match.
+            // The settings as the Duels window's points (roadmap BX): a label and its value ("Rounds", "best of 5").
+            std::vector<std::pair<std::string, std::string>> ruleItems;
             std::vector<std::string> rules; // the settings (the next duel's outside a match): "Best of 5 rounds, 60 s
                                             // preparation", "Permanent death on", "No progress for 5 min ends a round",
                                             // "No hazards", "Ranked" (or "Unranked: " and why)

@@ -6,6 +6,7 @@
 #include "DuelsMatch.h"
 #include "DuelsScreen.h"
 #include "DuelsLobby.h"
+#include "DuelsQueue.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
 #include "DuelsView.h"
@@ -177,6 +178,7 @@ namespace Duels
         RunDueScriptCommands();
         SwapOnFrame();
         Lobby::OnFrame();
+        Queue::OnFrame();   // the ranked queue (roadmap BW)
         AutotestOnFrame();
         TraceFrame();
         TraceProjectiles();

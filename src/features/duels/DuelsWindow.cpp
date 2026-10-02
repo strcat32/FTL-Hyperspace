@@ -306,7 +306,9 @@ namespace Duels
                 }
                 else if (Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
                 {
-                    big = "ROOM " + Net::RelayCode();
+                    // The room's title as the caption, cut to fit (BX); its code is in the column below.
+                    std::string title = Lobby::RoomTitle();
+                    big = title.empty() ? "ROOM " + Net::RelayCode() : Fit(BIG, title, w - 40.f);
                     small = "Waiting for a guest";
                 }
                 else if (Net::GetPhase() == Net::Phase::Joining)
@@ -361,7 +363,17 @@ namespace Duels
                 row("Opponent: " + opponent, gold);
                 row(Net::UsesRelay() ? "Room " + code : "Direct connection", soft);
             }
-            for (const std::string &rule : s.rules) row(rule, soft);
+            // The settings as points, each value in bold (BX: "- Rounds: best of 5"); bold is the text twice, a pixel apart.
+            for (const std::pair<std::string, std::string> &item : s.ruleItems)
+            {
+                std::string head = "- " + item.first + ": ";
+                float headWidth = Width(FONT, head);
+                std::string value = Fit(FONT, item.second, w - headWidth - 2.f);
+                Text(FONT, x, y, head, soft);
+                Text(FONT, x + headWidth, y, value, white);
+                Text(FONT, x + headWidth + 1.f, y, value, white);
+                y += ROW_H;
+            }
             y += 6.f;
             row(s.inMatch ? "Now: " + s.state : "", white);
             row(s.inMatch && !s.score.empty() ? std::string(1, (char)toupper(s.score[0])) + s.score.substr(1) : "", white);
@@ -468,6 +480,16 @@ namespace Duels
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
+        // While the room waits (the window closed): why the ship stands still (roadmap BT).
+        static void RenderWaitingLine()
+        {
+            const float w = 560.f, h = 46.f, x = (1280.f - w) / 2.f, y = 112.f;
+            Style::Blend(x, y, w, h, Rgb(122, 28, 32, 0.92f), Rgb(26, 50, 124, 0.92f), 4.f);
+            bool hosting = Net::GetPhase() == Net::Phase::Hosting;
+            TextCentre(TEXT, x + w / 2.f, y + 4.f, hosting ? "Waiting for a guest" : "Opening the duel", Rgb(255, 255, 255));
+            TextCentre(FONT, x + w / 2.f, y + 25.f, "Your ship stands still until the match begins", Rgb(220, 224, 230));
+        }
+
         void Render()
         {
             if (!InGame()) return;
@@ -477,6 +499,7 @@ namespace Duels
             RenderButton();
             CSurface::GL_PopMatrix();
             if (g_win.open) RenderWindow();
+            else if (Match::WaitingForMatch()) RenderWaitingLine();
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 

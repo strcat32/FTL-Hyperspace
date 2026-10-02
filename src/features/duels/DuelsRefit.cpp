@@ -54,6 +54,7 @@ namespace Duels
         };
 
         static RefitState g_refit;
+        static Store *g_store = nullptr;   // the round's store, while it is open (its description's place, BY)
         static const char *const STORE_ID = "FTL_DUELS_ROUND";
         static const int PAGE_ITEMS = 6;     // a kind's page in the shop: two sections of three (AP)
         static const int STORE_LOWER = 20;   // px below FTL's place (AQ)
@@ -790,6 +791,7 @@ namespace Duels
             CustomStore::instance->forceCustomStore = STORE_ID;
             Store *store = gui->CreateNewStore(world->starMap.worldLevel);
             CustomStore::instance->forceCustomStore = "";
+            g_store = store;
             // A little lower than FTL has it (roadmap AQ): the score panel (DuelsMatchUi.cpp) covered its BUY tab.
             if (!g_storePlaced)
             {
@@ -802,6 +804,15 @@ namespace Duels
             ++g_refit.shops;
             Log("Refit: round %d's shop is open (%u items, %u to buy back)%s", round, (unsigned)stock.size(), (unsigned)buyBack.size(),
                 store ? "" : ", but no store came");
+        }
+
+        bool StoreDescriptionShown()
+        {
+            CommandGui *gui = Gui();
+            if (!g_store || !gui || !gui->storeScreens.bOpen || !Rounds::InPreparation()) return false;
+            // (Hyperspace's store draws its Store's info box right of it, the item's tip box under it: the right side, from
+            // the store's top down to FTL's systems.)
+            return !g_store->infoBox.IsEmpty();
         }
 
         void OnPrepFrame()
@@ -844,6 +855,7 @@ namespace Duels
             // The window first: closing it looks at its current tab.
             if (gui->storeScreens.bOpen) gui->storeScreens.Close();
             gui->SetStore(nullptr, false);
+            g_store = nullptr;
             // The upgrade (crew, equipment) screens close too; upgrades already paid for are made.
             if (gui->shipScreens.bOpen) gui->shipScreens.Close();
         }

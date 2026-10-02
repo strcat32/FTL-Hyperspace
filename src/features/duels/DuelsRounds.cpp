@@ -416,10 +416,12 @@ namespace Duels
         }
 
         // The bans: as many as leave three types of the pool (rules, section 4: seven of ten); none for a list.
+        // No bans for now (roadmap CC, the user 2026-10-02): the pool's mode draws three ships from it at once (MakeOffer).
+        // The bans' messages and steps stay for when they come back.
         static int BansTotal(const Data &d)
         {
-            if (d.settings.ships != SHIPS_BANS) return 0;
-            return std::max(0, TypeCount(d.settings.pool & Ships::ALL_TYPES) - OFFER_SIZE);
+            (void)d;
+            return 0;
         }
 
         static bool BansDone(const Data &d)
@@ -446,7 +448,7 @@ namespace Duels
         {
             switch (s.ships)
             {
-            case SHIPS_BANS: return "bans from " + Ships::TypesText(s.pool) + ", then a pick";
+            case SHIPS_BANS: return "three drawn from " + Ships::TypesText(s.pool) + ", then a pick";
             case SHIPS_LIST:
             {
                 std::string list;
@@ -837,6 +839,7 @@ namespace Duels
             if (::Duels::Window::IsOpen()) ::Duels::Window::Close();
             Log("Rounds: the ship choice: %s; first banner %s", ShipsModeName(d.settings).c_str(), d.firstBanner == HOST ? "host" : "guest");
             if (d.settings.ships == SHIPS_LIST) Announce("Ship choice: each picks one of the host's list");
+            else if (BansTotal(d) == 0) Announce("Ship choice: three ships drawn from the pool; each picks one");   // (CC: no bans)
             else
             {
                 Announce("Ship choice: " + std::to_string(BansTotal(d)) + " bans in turn, " + (d.firstBanner == g.me ? std::string("you") : Who(d.firstBanner)) +
@@ -1173,23 +1176,40 @@ namespace Duels
             else SetPhase(Phase::Prep, Now() + d.settings.prepSeconds * 1000.0);
         }
 
-        // The ships to pick from: the host's list, or each type the bans left, with one of its layouts at random (the
-        // server's, rules section 4).
+        // The ships to pick from (roadmap CC): three drawn from the pool, each of another type while there are three types
+        // or more (a layout drawn for each); with fewer types, their layouts make up the three (one type: its A, B and C).
+        static std::vector<std::string> DrawOffer(uint16_t pool)
+        {
+            std::vector<std::vector<std::string>> types;
+            for (int type = 0; type < Ships::TYPE_COUNT; ++type)
+            {
+                std::vector<std::string> variants = Ships::Variants(type);
+                if ((pool & (1 << type)) && !variants.empty()) types.push_back(variants);
+            }
+            std::shuffle(types.begin(), types.end(), g.random);
+            std::vector<std::string> offer;
+            // A layout of each type first (three types at most), then the other layouts of those types, at random.
+            std::vector<std::string> rest;
+            for (size_t i = 0; i < types.size() && offer.size() < (size_t)OFFER_SIZE; ++i)
+            {
+                std::vector<std::string> &variants = types[i];
+                std::shuffle(variants.begin(), variants.end(), g.random);
+                offer.push_back(variants.front());
+                rest.insert(rest.end(), variants.begin() + 1, variants.end());
+            }
+            std::shuffle(rest.begin(), rest.end(), g.random);
+            for (size_t i = 0; i < rest.size() && offer.size() < (size_t)OFFER_SIZE; ++i) offer.push_back(rest[i]);
+            return offer;
+        }
+
+        // The ships to pick from: the host's list, or three drawn from the types the bans left (for now the whole pool),
+        // each with a layout at random (the server's, rules section 4).
         static void MakeOffer()
         {
             Data &d = g.data;
             d.offer.clear();
             if (d.settings.ships == SHIPS_LIST) d.offer = d.settings.list;
-            else
-            {
-                uint16_t left = TypesLeft(d);
-                for (int type = 0; type < Ships::TYPE_COUNT; ++type)
-                {
-                    std::vector<std::string> variants = Ships::Variants(type);
-                    if (!(left & (1 << type)) || variants.empty()) continue;
-                    d.offer.push_back(variants[std::uniform_int_distribution<size_t>(0, variants.size() - 1)(g.random)]);
-                }
-            }
+            else d.offer = DrawOffer(TypesLeft(d));
             d.phaseEnd = Now() + PickMs();
             g.dirty = true;
         }
@@ -2939,8 +2959,8 @@ namespace Duels
             if (s.env == Environment::MODE_OFF || (s.env == Environment::MODE_AUTO && s.hazards == 0)) rows.push_back("No hazards");
             else if (s.env != Environment::MODE_AUTO) rows.push_back(std::string("Every fight near ") + Environment::KindName(s.env - 1));
             else rows.push_back("Hazards from round 3: " + Environment::HazardsName(s.hazards));
-            rows.push_back(s.ships == SHIPS_BANS ? "Ships: bans, then a pick" : s.ships == SHIPS_LIST ? "Ships: a pick from a list"
-                                                                                                    : "Ships: each player's own");
+            rows.push_back(s.ships == SHIPS_BANS ? "Ships: three drawn, then a pick" : s.ships == SHIPS_LIST ? "Ships: a pick from a list"
+                                                                                                           : "Ships: each player's own");
             char xp[48];
             std::snprintf(xp, sizeof(xp), "Crew experience x%g, %u timeouts a round", g_season.xp, (unsigned)s.timeouts);
             rows.push_back(xp);
@@ -2971,6 +2991,33 @@ namespace Duels
             return rows;
         }
 
+        // The settings as the Duels window's points (roadmap BX, the user 2026-10-02: "- Rounds: 5", the value in bold).
+        static std::vector<std::pair<std::string, std::string>> SettingsItems(const Settings &s)
+        {
+            std::vector<std::pair<std::string, std::string>> items;
+            std::string reasons = UnrankedReasons(s);
+            if (s.free) items.push_back(std::make_pair(std::string("Fight"), std::string("a free fight, no rounds")));
+            else
+            {
+                items.push_back(std::make_pair(std::string("Rounds"), "best of " + std::to_string(s.rounds)));
+                items.push_back(std::make_pair(std::string("Preparation"), std::to_string(s.prepSeconds) + " s"));
+                items.push_back(std::make_pair(std::string("Permanent death"), std::string(s.permadeath ? "on" : "off")));
+                items.push_back(std::make_pair(std::string("No progress ends a round"), s.stallSeconds > 0 ? "after " + Duration(s.stallSeconds) : std::string("never")));
+            }
+            std::string hazards;
+            if (s.env == Environment::MODE_OFF || (s.env == Environment::MODE_AUTO && s.hazards == 0)) hazards = "none";
+            else if (s.env != Environment::MODE_AUTO) hazards = std::string("every fight near ") + Environment::KindName(s.env - 1);
+            else if (s.hazards == Environment::DEFAULT_HAZARDS) hazards = "by chance from round 3";
+            else hazards = "from round 3: " + Environment::HazardsName(s.hazards);
+            items.push_back(std::make_pair(std::string("Hazards"), hazards));
+            items.push_back(std::make_pair(std::string("Ships"), std::string(s.ships == SHIPS_BANS ? "three drawn, each picks one"
+                                                                              : s.ships == SHIPS_LIST ? "a pick from the host's list"
+                                                                              : "each player's own")));
+            if (!s.free) items.push_back(std::make_pair(std::string("Timeouts"), std::to_string(s.timeouts) + " a round, " + std::to_string(s.timeoutSeconds) + " s each"));
+            items.push_back(std::make_pair(std::string("Ranked"), reasons.empty() ? std::string("yes") : "no (" + reasons + ")"));
+            return items;
+        }
+
         Summary GetSummary()
         {
             LoadSettings();
@@ -2980,10 +3027,12 @@ namespace Duels
             if (!s.inMatch)
             {
                 s.rules = SettingsRows(g.settings);
+                s.ruleItems = SettingsItems(g.settings);
                 return s;
             }
             uint8_t them = Other(g.me);
             s.rules = SettingsRows(d.settings);
+            s.ruleItems = SettingsItems(d.settings);
             s.state = (d.settings.free ? std::string("free fight") : "round " + std::to_string(d.round) + " of " +
                                                                         std::to_string(d.settings.rounds)) +
                       ": " + PhaseName(d.phase);

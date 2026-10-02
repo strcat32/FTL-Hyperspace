@@ -119,6 +119,10 @@ namespace Duels
         std::string OpponentShip();
         // The last player our game refused (another version, other game data), with why, while a room waits ("": none).
         std::string LastRefusal();
+        // A duel's run whose match hasn't begun: the room is being opened or joined, or waits for its guest (roadmap BT,
+        // the user's two-PC test: the host prepared its ship while the room waited). FTL's world stands still and the
+        // ship takes no orders until the match begins (DuelsHooks.cpp).
+        bool WaitingForMatch();
         // Players' names (roadmap AG): the name prompt and the name command take up to NAME_MAX characters, and the
         // console and the chat log show them whole. On the screen (the score panel, the lines under the buttons, the
         // splashes, the Duels window) a name is cut after SCREEN_NAME_MAX characters, as FTL cuts crew names: what the

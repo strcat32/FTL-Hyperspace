@@ -3,6 +3,7 @@
 #include "DuelsAccount.h"
 #include "DuelsConfig.h"
 #include "DuelsHttp.h"
+#include "DuelsNet.h"
 #include "DuelsRounds.h"
 #include "DuelsScript.h"
 #include "DuelsTrace.h"
@@ -50,6 +51,10 @@ namespace Duels
             int wins = 0, losses = 0, draws = 0, rank = 0;
             std::string seasonName;
             RecentView recent;              // the last ranked matches (roadmap BR)
+            // The master's newest version and the protocol ranked play needs (roadmap CE).
+            bool clientAsked = false, clientKnown = false;
+            std::string newest;
+            int rankedProtocol = 0;
         };
 
         static AccountState g;
@@ -351,6 +356,12 @@ namespace Duels
             Log("Account: the sign-in cancelled");
         }
 
+        void Request(const std::string &method, const std::string &path, const std::string &body, Http::Callback done)
+        {
+            Load();
+            Http::Send(method, Base() + path, body, g.key, done);
+        }
+
         void SignOut()
         {
             Load();
@@ -501,6 +512,72 @@ namespace Duels
             return out;
         }
 
+        std::string GameFields()
+        {
+            return "\"protocol\": " + std::to_string(Net::Protocol()) + ", \"version\": " + Http::Quote(VERSION);
+        }
+
+        void FetchClient()
+        {
+            if (g.clientAsked) return;
+            g.clientAsked = true;
+            Http::Send("GET", Base() + "/api/client", "", "",
+                       [](const Http::Response &r)
+                       {
+                           Http::Object client;
+                           if (r.status != 200 || !Http::ReadObject(r.body, client)) return;   // (an older master: nothing to say)
+                           g.clientKnown = true;
+                           g.newest = client["newest"] == "null" ? std::string() : client["newest"];
+                           g.rankedProtocol = client["protocol"] == "null" ? 0 : std::atoi(client["protocol"].c_str());
+                           Log("Account: the master's newest version %s, ranked play needs protocol %d (ours %s, %d)",
+                               g.newest.empty() ? "-" : g.newest.c_str(), g.rankedProtocol, VERSION, (int)Net::PROTOCOL_VERSION);
+                       });
+        }
+
+        // "0.8.1" against "0.8.1-dev": by their numbers, then a release after its development builds. Negative: a is older.
+        static int CompareVersions(const std::string &a, const std::string &b)
+        {
+            auto split = [](const std::string &text, std::vector<int> &numbers, std::string &suffix)
+            {
+                size_t dash = text.find('-');
+                std::string head = text.substr(0, dash);
+                suffix = dash == std::string::npos ? std::string() : text.substr(dash + 1);
+                size_t start = 0;
+                while (start <= head.size())
+                {
+                    size_t dot = head.find('.', start);
+                    numbers.push_back(std::atoi(head.substr(start, dot == std::string::npos ? std::string::npos : dot - start).c_str()));
+                    if (dot == std::string::npos) break;
+                    start = dot + 1;
+                }
+                while (numbers.size() < 3) numbers.push_back(0);
+            };
+            std::vector<int> na, nb;
+            std::string sa, sb;
+            split(a, na, sa);
+            split(b, nb, sb);
+            for (size_t i = 0; i < std::max(na.size(), nb.size()); ++i)
+            {
+                int x = i < na.size() ? na[i] : 0, y = i < nb.size() ? nb[i] : 0;
+                if (x != y) return x < y ? -1 : 1;
+            }
+            if (sa.empty() != sb.empty()) return sa.empty() ? 1 : -1;
+            return 0;
+        }
+
+        std::string UpdateNote(bool &needed)
+        {
+            needed = false;
+            if (!g.clientKnown) return "";
+            if (g.rankedProtocol > (int)Net::Protocol())
+            {
+                needed = true;
+                return "Ranked play needs " + (g.newest.empty() ? std::string("a newer FTL: Duels") : "FTL: Duels " + g.newest) + " (yours: " + VERSION + ").";
+            }
+            if (!g.newest.empty() && CompareVersions(VERSION, g.newest) < 0) return "FTL: Duels " + g.newest + " is out (yours: " + VERSION + ").";
+            return "";
+        }
+
         void Ticket(const std::string &relayId, TicketDone done)
         {
             Load();
@@ -509,7 +586,7 @@ namespace Duels
                 if (done) done(false, "", "", "not signed in");
                 return;
             }
-            Http::Send("POST", Base() + "/api/ticket", "{\"relay\": " + Http::Quote(relayId) + "}", g.key,
+            Http::Send("POST", Base() + "/api/ticket", "{\"relay\": " + Http::Quote(relayId) + ", " + GameFields() + "}", g.key,
                        [done](const Http::Response &r)
                        {
                            Http::Object ticket;

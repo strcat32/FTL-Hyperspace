@@ -10,6 +10,7 @@
 #include "DuelsMatch.h"
 #include "DuelsMenu.h"
 #include "DuelsNet.h"
+#include "DuelsQueue.h"
 #include "DuelsRejoin.h"
 #include "DuelsStyle.h"
 #include "DuelsTrace.h"
@@ -67,6 +68,7 @@ namespace Duels
             bool guideLoaded = false;
             Style::Box ok, guideButton, check, up, down, close, field;
             Style::Box panelHost, panelJoin, panelReplays, panelName, panelGuide;   // the title screen's panel
+            Style::Box panelQueue;                   // RANKED QUEUE (roadmap BW)
             Style::Box panelAccount;                 // SIGN IN, CANCEL or SIGN OUT (the master, roadmap BG)
             bool titleShown = false;                 // the title screen was there last frame (the rating asked on its return)
             std::string note;                        // the note to show (Window::Note)
@@ -719,7 +721,7 @@ namespace Duels
         // takes the empty left side.
         // ---------------------------------------------------------------------------------------------------------
 
-        static const float PX = 70.f, PY = 330.f, PW = 380.f, PH = 326.f;
+        static const float PX = 70.f, PY = 266.f, PW = 380.f, PH = 390.f;   // (RANKED QUEUE above HOST DUEL, BW)
 
         // FTL's menu shows its title screen: not the hangar, the options, the stats, the credits or a question.
         static bool OnTitle()
@@ -744,13 +746,14 @@ namespace Duels
         static void RenderPanel()
         {
             Style::Dialog(PX, PY, PW, PH, "FTL: DUELS", false);
-            BigButton(g.panelHost, PX + 30.f, PY + 30.f, PW - 60.f, 50.f, "HOST DUEL", 63);
-            BigButton(g.panelJoin, PX + 30.f, PY + 94.f, PW - 60.f, 50.f, "JOIN DUEL", 63);
-            BigButton(g.panelReplays, PX + 30.f, PY + 158.f, PW - 60.f, 50.f, "REPLAYS", 63);
+            BigButton(g.panelQueue, PX + 30.f, PY + 30.f, PW - 60.f, 50.f, "RANKED QUEUE", 63);
+            BigButton(g.panelHost, PX + 30.f, PY + 94.f, PW - 60.f, 50.f, "HOST DUEL", 63);
+            BigButton(g.panelJoin, PX + 30.f, PY + 158.f, PW - 60.f, 50.f, "JOIN DUEL", 63);
+            BigButton(g.panelReplays, PX + 30.f, PY + 222.f, PW - 60.f, 50.f, "REPLAYS", 63);
             // The player's Steam account at the master (roadmap BG): ranked play needs it.
             {
                 Account::View a = Account::GetView();
-                float ay = PY + 226.f;
+                float ay = PY + 290.f;
                 std::string line, button;
                 if (a.state == Account::State::SignedIn)
                 {
@@ -784,11 +787,21 @@ namespace Duels
             freetype::easy_print(TEXT, PX + 30.f, y + 7.f, you);
             BigButton(g.panelName, PX + PW - 30.f - 84.f - 8.f - 72.f, y, 72.f, 28.f, "NAME", TEXT);
             BigButton(g.panelGuide, PX + PW - 30.f - 84.f, y, 84.f, 28.f, "GUIDE", TEXT);
+            // A newer FTL: Duels at the master (roadmap CE): a line under the panel, red when ranked play needs it.
+            Account::FetchClient();
+            bool needed = false;
+            std::string update = Account::UpdateNote(needed);
+            if (!update.empty())
+            {
+                CSurface::GL_SetColor(needed ? Rgb(255, 150, 140) : Rgb(255, 225, 150));
+                freetype::easy_printAutoNewlines(TEXT, PX + 10.f, PY + PH + 10.f, (int)(PW - 20.f), update);
+            }
         }
 
         static bool ClickPanel(int x, int y)
         {
-            if (g.panelHost.Contains(x, y)) Lobby::OpenHost();
+            if (g.panelQueue.Contains(x, y)) Queue::Start();
+            else if (g.panelHost.Contains(x, y)) Lobby::OpenHost();
             else if (g.panelJoin.Contains(x, y)) Lobby::OpenJoin();
             else if (g.panelReplays.Contains(x, y)) ReplayList::Open();
             else if (g.panelName.Contains(x, y)) OpenName(false);
@@ -879,9 +892,11 @@ namespace Duels
             else
             {
                 g.panelHost.w = g.panelJoin.w = g.panelReplays.w = g.panelName.w = g.panelGuide.w = g.panelAccount.w = 0.f;   // not there: no clicks
+                g.panelQueue.w = 0.f;
             }
             Lobby::Render();
             ReplayList::Render();
+            Queue::Render();
             switch (g.open)
             {
             case Window::Name: RenderName(); break;
@@ -898,7 +913,7 @@ namespace Duels
         // One of our windows is open (ours or the lobby's): FTL's menu gets no input.
         bool IsOpen()
         {
-            return g.open != Window::None || Lobby::IsOpen() || ReplayList::IsOpen();
+            return g.open != Window::None || Lobby::IsOpen() || ReplayList::IsOpen() || Queue::IsOpen();
         }
 
         bool MouseMove(int x, int y)
@@ -907,6 +922,7 @@ namespace Duels
             g.mouseY = y;
             Lobby::MouseMove(x, y);
             ReplayList::MouseMove(x, y);
+            Queue::MouseMove(x, y);
             return IsOpen();
         }
 
@@ -914,6 +930,7 @@ namespace Duels
         {
             if (g.open == Window::None)
             {
+                if (Queue::MouseClick(x, y)) return true;
                 if (ReplayList::MouseClick(x, y)) return true;
                 if (Lobby::MouseClick(x, y)) return true;
                 if (OnTitle() && ClickPanel(x, y)) return true;
@@ -986,7 +1003,7 @@ namespace Duels
 
         bool KeyDown(int key)
         {
-            if (g.open == Window::None) return ReplayList::KeyDown(key) || Lobby::KeyDown(key);
+            if (g.open == Window::None) return Queue::KeyDown(key) || ReplayList::KeyDown(key) || Lobby::KeyDown(key);
             switch (g.open)
             {
             case Window::Name:
@@ -1021,6 +1038,14 @@ namespace Duels
             else if (args.size() >= 2 && args[1] == "tutorial") OpenTutorial();
             else if (args.size() >= 2 && args[1] == "crashed") OpenCrashed();   // the note about the last session (test)
             else if (args.size() >= 2 && args[1] == "stats") OpenStats();       // STATS (roadmap BR)
+            else if (args.size() >= 2 && args[1] == "queue")
+            {
+                // RANKED QUEUE (roadmap BW): menu queue | menu queue cancel | menu queue status
+                if (args.size() >= 3 && args[2] == "cancel") Queue::Cancel("the menu verb");
+                else if (args.size() < 3 || args[2] != "status") Queue::Start();
+                message = Queue::Status();
+                return true;
+            }
             else if (args.size() >= 2 && args[1] == "continue")
             {
                 // FTL's CONTINUE, clicked as a player clicks it (roadmap BR: back into the match the last session lost).
