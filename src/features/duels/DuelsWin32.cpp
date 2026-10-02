@@ -1,5 +1,7 @@
 #include "DuelsWin32.h"
 
+#include <cstdio>
+
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN
@@ -85,6 +87,11 @@ namespace Duels
         return true;
     }
 
+    bool PutFileInPlace(const std::string &from, const std::string &to)
+    {
+        return MoveFileExA(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    }
+
     bool MoveGameWindow(int x, int y, int width, int height, std::string &details)
     {
         HWND window = GameWindow();
@@ -155,6 +162,7 @@ namespace Duels
     bool MapToTestDisplay(int &, int &, int &, int &) { return false; }
     void PlaceOnTestDisplay() {}
     bool SetGameWindowTitle(const char *, std::string &details) { details = "not supported"; return false; }
+    bool PutFileInPlace(const std::string &from, const std::string &to) { return std::rename(from.c_str(), to.c_str()) == 0; }
 }
 
 #endif

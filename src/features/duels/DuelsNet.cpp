@@ -79,6 +79,9 @@ namespace Duels
             uint64_t matchToken = 0;
             uint64_t peerToken = 0;
             bool resumed = false;
+            // Back after a crash (StartColdRejoin): this game, or the other one (its handshake says so); until the
+            // connection's OnConnected is done.
+            bool cold = false, peerCold = false;
             enum class Lost { None, Waiting, Rejoining };
             Lost lost = Lost::None;
             double lostAt = 0.0;
@@ -111,6 +114,7 @@ namespace Duels
 
         static Session g_session;
         static std::string Other();
+        static bool ColdRoomGone(int errorCode);
         static std::function<void(const std::string &, TicketDone)> g_ticketSource;
         static const double RESULT_RETRY_MS = 1000.0;
         static const int RESULT_TRIES = 10;
@@ -207,7 +211,7 @@ namespace Duels
             writer.Str(g_session.version);
             writer.Str(g_session.build);
             writer.Str(g_session.name);
-            writer.U8(g_session.debug ? 1 : 0);   // flags: 1 = debug mode
+            writer.U8((uint8_t)((g_session.debug ? 1 : 0) | (g_session.cold ? 2 : 0)));   // flags: 1 = debug mode, 2 = back cold
             writer.U32((uint32_t)(g_session.matchToken & 0xffffffffu));   // the match to continue (0: a new one)
             writer.U32((uint32_t)(g_session.matchToken >> 32));
             writer.Str(g_session.dataHash);
@@ -234,6 +238,7 @@ namespace Duels
                     g_lastRelayError = events.front().errorCode;
                     g_lastRelayErrorText = events.front().text;
                     Notice("relay: " + events.front().text);
+                    if (ColdRoomGone(events.front().errorCode)) return;
                     Close();
                     return;
                 }
@@ -286,7 +291,19 @@ namespace Duels
             }
         }
 
-        static void Disconnect(const std::string &reason, bool notifyPeer, bool opponentGone = false)
+        static void Disconnect(const std::string &reason, bool notifyPeer, bool opponentGone = false);
+
+        // Back cold into a match (StartColdRejoin): the relay has no such room any more (ERROR 2: the other game gave up
+        // and left it, and it closed): nothing to try again.
+        static bool ColdRoomGone(int errorCode)
+        {
+            Session &s = g_session;
+            if (!s.cold || s.lost != Session::Lost::Rejoining || errorCode != 2) return false;
+            Disconnect("the match's room at the relay is gone", false);
+            return true;
+        }
+
+        static void Disconnect(const std::string &reason, bool notifyPeer, bool opponentGone)
         {
             Session &s = g_session;
             Phase before = s.phase;
@@ -305,6 +322,7 @@ namespace Duels
             Log("Net: disconnected (%s)", reason.c_str());
             bool waited = s.lost != Session::Lost::None;
             s.lost = Session::Lost::None;
+            s.cold = s.peerCold = false;
             Close();
             if ((before == Phase::Connected || waited) && s.listener) s.listener->OnDisconnected(reason, opponentGone);
         }
@@ -367,6 +385,7 @@ namespace Duels
                 return false;
             }
             g_session.peerDebug = (flags & 1) != 0;
+            g_session.peerCold = (flags & 2) != 0;
             g_session.peerToken = tokenLow | (tokenHigh << 32);
             if (protocol != PROTOCOL_VERSION || version != g_session.version)
             {
@@ -430,8 +449,10 @@ namespace Duels
                 WriteIdentity(body);
                 SendControl(MSG_WELCOME, body);
                 SetPhase(Phase::Connected);
-                Log("Net: %s %s from %s", peerName.c_str(), s.resumed ? "came back" : "joined", s.peer.ToString().c_str());
+                Log("Net: %s %s from %s", peerName.c_str(), s.resumed ? (s.peerCold ? "came back (the game started again)" : "came back") : "joined",
+                    s.peer.ToString().c_str());
                 if (s.listener) s.listener->OnConnected();
+                s.peerCold = false;
                 return;
             }
             if (type == MSG_WELCOME && !s.acceptsJoin && s.phase == Phase::Joining)
@@ -453,8 +474,10 @@ namespace Duels
                 s.resumed = s.matchToken != 0 && s.peerToken == s.matchToken;
                 s.lost = Session::Lost::None;
                 SetPhase(Phase::Connected);
-                Log("Net: %s %s at %s", s.resumed ? "back with" : "joined", peerName.c_str(), s.peer.ToString().c_str());
+                Log("Net: %s %s at %s", s.resumed ? (s.cold ? "back (after starting again) with" : "back with") : "joined", peerName.c_str(),
+                    s.peer.ToString().c_str());
                 if (s.listener) s.listener->OnConnected();
+                s.cold = s.peerCold = false;
                 return;
             }
             if (type == MSG_REJECT && !s.acceptsJoin)
@@ -946,6 +969,7 @@ namespace Duels
                     g_lastRelayError = event.errorCode;
                     g_lastRelayErrorText = event.text;
                     Notice("relay: " + event.text);
+                    if (ColdRoomGone(event.errorCode)) return false;
                     Close();
                     return false;
                 }
@@ -1264,6 +1288,63 @@ namespace Duels
 
         void SetMatchToken(uint64_t token) { g_session.matchToken = token; }
         bool Resumed() { return g_session.resumed; }
+        bool Cold() { return g_session.cold; }
+        bool PeerCold() { return g_session.peerCold; }
+
+        Way CurrentWay()
+        {
+            const Session &s = g_session;
+            Way way;
+            bool rejoining = s.lost == Session::Lost::Rejoining;
+            way.relay = rejoining ? s.backViaRelay : s.relay;
+            way.server = s.backServer;
+            way.port = s.backPort;
+            way.code = rejoining ? s.backCode : s.relayCode;
+            way.password = s.relayPassword;
+            way.host = s.host;
+            way.ranked = rejoining ? s.backRanked : s.relay && s.relayClient.Ranked();
+            way.token = s.matchToken;
+            return way;
+        }
+
+        bool StartColdRejoin(const Way &way, double windowMs, std::string &message)
+        {
+            Session &s = g_session;
+            if (s.phase != Phase::Idle || s.lost != Session::Lost::None) Disconnect("starting a new session", true);
+            if (way.token == 0 || way.server.empty() || (way.relay && !Relay::Client::IsRoomCode(way.code)) || (!way.relay && way.host))
+            {
+                message = "no way back into that match";
+                return false;
+            }
+            s.host = way.host;
+            s.acceptsJoin = false;
+            s.matchToken = way.token;
+            s.backViaRelay = way.relay;
+            s.backServer = way.server;
+            s.backPort = way.port;
+            s.backCode = way.code;
+            s.relayPassword = way.password;
+            s.backRanked = way.relay && way.ranked;
+            s.ticket.clear();
+            s.ticketKey.clear();
+            s.ticketAsked = false;
+            s.resultQueued = s.resultAcked = false;
+            s.resultTries = 0;
+            s.closeAt = 0.0;
+            s.resumed = false;
+            s.cold = true;
+            s.peerCold = false;
+            s.attempts = 0;
+            // The time the other game still waits, as the grace's rest (Reconnecting shows it).
+            double window = windowMs < 0.0 ? 0.0 : windowMs > REJOIN_GRACE_MS ? REJOIN_GRACE_MS : windowMs;
+            s.lostAt = s.now - (REJOIN_GRACE_MS - window);
+            s.nextAttempt = s.now;
+            s.lost = Session::Lost::Rejoining;
+            message = std::string("back into the match as its ") + (way.host ? "host" : "guest") + ": " +
+                      (way.relay ? "room " + way.code + " at the relay " + RelayName(way.server, way.port) : "the host at " + way.server + ":" + std::to_string(way.port));
+            Log("Net: %s (%s, %.0f s left)", message.c_str(), way.ranked ? "a ranked room" : "unranked", window / 1000.0);
+            return true;
+        }
 
         bool Reconnecting(double &msLeft, bool &cutOff)
         {

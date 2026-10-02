@@ -9,6 +9,7 @@
 #include "DuelsRounds.h"
 #include "DuelsTrace.h"
 #include "DuelsTune.h"
+#include "DuelsWire.h"
 
 #include <algorithm>
 #include <cmath>
@@ -247,6 +248,131 @@ namespace Duels
                 Log("Refit: the captain is %s (%s); %u crew at the start", g_refit.captain.name.c_str(),
                     g_refit.captain.species.c_str(), (unsigned)crew.size());
             }
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // Back after a crash (roadmap BR)
+        // ---------------------------------------------------------------------------------------------------------
+
+        static const int SKILLS = 6;   // piloting, engines, shields, weapons, repair, combat
+        static const uint8_t REJOIN_FORMAT = 1;
+
+        static void WriteMember(Writer &w, const Member &member)
+        {
+            w.Str(member.species);
+            w.Str(member.name);
+            w.Bool(member.blueprint.male);
+            for (int skill = 0; skill < SKILLS; ++skill)
+            {
+                bool known = skill < (int)member.blueprint.skillLevel.size();
+                w.U8((uint8_t)std::max(0, known ? member.blueprint.skillLevel[skill].first : 0));
+                w.U8((uint8_t)std::max(0, known ? member.blueprint.skillLevel[skill].second : 0));
+            }
+            w.I16((int16_t)member.station.roomId);
+            w.I16((int16_t)member.station.slotId);
+        }
+
+        // A member as the file has them: their race's blueprint with their name, sex and skills (the look is the race's
+        // first).
+        static Member ReadMember(Reader &r)
+        {
+            Member member;
+            member.species = r.Str();
+            member.name = r.Str();
+            bool male = r.Bool();
+            int skills[SKILLS][2];
+            for (int skill = 0; skill < SKILLS; ++skill)
+            {
+                skills[skill][0] = r.U8();
+                skills[skill][1] = r.U8();
+            }
+            member.station.roomId = r.I16();
+            member.station.slotId = r.I16();
+            if (!r.Ok()) return member;
+            if (BlueprintManager *blueprints = G_->GetBlueprints()) member.blueprint = blueprints->GetCrewBlueprint(member.species);
+            member.blueprint.name = member.species;
+            member.blueprint.crewName = TextString(member.name, true);
+            member.blueprint.crewNameLong = TextString(member.name, true);
+            member.blueprint.male = male;
+            for (int skill = 0; skill < SKILLS && skill < (int)member.blueprint.skillLevel.size(); ++skill)
+            {
+                member.blueprint.skillLevel[skill].first = skills[skill][0];
+                member.blueprint.skillLevel[skill].second = skills[skill][1];
+            }
+            if (member.station.roomId >= 0 && member.station.slotId >= 0)
+            {
+                if (ShipGraph *graph = ShipGraph::GetShipInfo(0)) member.station.worldLocation = graph->GetSlotWorldPosition(member.station.slotId, member.station.roomId);
+            }
+            return member;
+        }
+
+        void WriteRejoin(Writer &w)
+        {
+            const RefitState &s = g_refit;
+            w.U8(REJOIN_FORMAT);
+            w.U8((uint8_t)std::min<size_t>(s.startLevels.size(), 255));
+            for (const std::pair<const int, int> &level : s.startLevels)
+            {
+                w.U8((uint8_t)level.first);
+                w.U8((uint8_t)level.second);
+            }
+            w.U8((uint8_t)s.startReactor);
+            w.Bool(s.haveCaptain);
+            if (s.haveCaptain) WriteMember(w, s.captain);
+            size_t crew = std::min<size_t>(s.crew.size(), 255);
+            w.U8((uint8_t)crew);
+            for (size_t i = 0; i < crew; ++i) WriteMember(w, s.crew[i]);
+            size_t weapons = std::min<size_t>(s.weaponsPowered.size(), 255);
+            w.U8((uint8_t)weapons);
+            for (size_t i = 0; i < weapons; ++i) w.Bool(s.weaponsPowered[i]);
+            w.U8((uint8_t)std::min<size_t>(s.systemsPowered.size(), 255));
+            for (const std::pair<const int, int> &system : s.systemsPowered)
+            {
+                w.U8((uint8_t)system.first);
+                w.U8((uint8_t)system.second);
+            }
+        }
+
+        void ColdStart(const std::vector<uint8_t> &saved)
+        {
+            g_refit = RefitState();
+            Reader r(saved);
+            RefitState s;
+            if (r.U8() != REJOIN_FORMAT)
+            {
+                Log("Refit: back after a crash: the file's part is of another format; as a new match");
+                OnMatchStart();
+                return;
+            }
+            int levels = r.U8();
+            for (int i = 0; i < levels; ++i)
+            {
+                int id = r.U8();
+                s.startLevels[id] = r.U8();
+            }
+            s.startReactor = r.U8();
+            s.haveCaptain = r.Bool();
+            if (s.haveCaptain) s.captain = ReadMember(r);
+            s.crew.resize(r.U8());
+            for (Member &member : s.crew) member = ReadMember(r);
+            s.weaponsPowered.resize(r.U8());
+            for (size_t i = 0; i < s.weaponsPowered.size(); ++i) s.weaponsPowered[i] = r.Bool();
+            int systems = r.U8();
+            for (int i = 0; i < systems; ++i)
+            {
+                int id = r.U8();
+                s.systemsPowered[id] = r.U8();
+            }
+            if (!r.Ok())
+            {
+                Log("Refit: back after a crash: the file's part doesn't read; as a new match");
+                OnMatchStart();
+                return;
+            }
+            g_refit = s;
+            Log("Refit: back after a crash: the captain %s (%s), %u crew as the last fight began, %u systems' levels as the match began",
+                s.haveCaptain ? s.captain.name.c_str() : "-", s.haveCaptain ? s.captain.species.c_str() : "-", (unsigned)s.crew.size(),
+                (unsigned)s.startLevels.size());
         }
 
         void OnFightStart()

@@ -52,6 +52,9 @@ namespace Duels
         void WriteMatch(Writer &w);
         bool ReadMatch(Reader &r, std::string &note);
         void EndMatch();
+        // Back in a match after a crash (roadmap BR, DuelsRejoin.cpp): the match's as the host's game kept them (those
+        // off their defaults, as MatchChanged gives them).
+        void UseMatch(const std::vector<std::pair<std::string, std::string>> &changed);
 
         // Ranked play (roadmap BG): a season's fine setting as it is kept ("" and why when the name or the value isn't
         // one; isDefault when it is the default, which a season's list leaves out); the season's fine settings in

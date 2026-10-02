@@ -36,6 +36,11 @@ namespace Duels
         void WriteRoster(Writer &w);
         // After a lost connection: the roster goes again with the next state.
         void SendRosterAgain();
+        // Back after a crash (roadmap BR, DuelsRejoin.cpp): our crew aboard our ship for the file (their ids, which the
+        // other game's puppets have, names, races, skills, health, rooms and stations), and that crew again on our ship
+        // in place of the one its blueprint brought.
+        void WriteOwnCrew(Writer &w);
+        bool RestoreOwnCrew(Reader &r, std::string &message);
         // record: our ship's full state for a demo, written right after the one that goes (DuelsDemo.cpp): the same
         // ids, without the ids' bookkeeping, and with the guests that state reported dead.
         void WriteState(Writer &w, bool record = false);

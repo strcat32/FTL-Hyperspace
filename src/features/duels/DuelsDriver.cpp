@@ -243,10 +243,11 @@ namespace Duels
     }
 
     // A test scenario without debug mode (@nodebug, a ranked match's test: debug mode makes a match unranked) may still
-    // drive the menus as a player's mouse does: these only click and look.
+    // drive the menus as a player's mouse does: these only click and look. And end the game as a crash would (a ranked
+    // match's test of coming back after a crash, roadmap BR).
     static bool IsUiVerb(const std::string &verb)
     {
-        return verb == "menu" || verb == "click" || verb == "aim" || verb == "describe";
+        return verb == "menu" || verb == "click" || verb == "aim" || verb == "describe" || verb == "crash";
     }
 
     void EnableDebug(const char *why)

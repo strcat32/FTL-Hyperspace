@@ -8,7 +8,9 @@
 #include "DuelsDemo.h"
 #include "DuelsLobby.h"
 #include "DuelsMatch.h"
+#include "DuelsMenu.h"
 #include "DuelsNet.h"
+#include "DuelsRejoin.h"
 #include "DuelsRelay.h"
 #include "DuelsRounds.h"
 #include "DuelsShips.h"
@@ -55,7 +57,8 @@ namespace Duels
             Host,   // a room opens when the run begins
             Join,   // the room is joined when the run begins
             Ai,     // the match against FTL's AI begins with the run (roadmap 3.6)
-            Replay  // a demo plays with the run (roadmap AU)
+            Replay, // a demo plays with the run (roadmap AU)
+            Rejoin  // back into the match the last session lost, with the run (CONTINUE, roadmap BR)
         };
 
         struct LobbyState
@@ -340,6 +343,13 @@ namespace Duels
             g.replayPath = path;
             Log("Lobby: the replay of %s begins with the run", path.c_str());
             OpenHangar(Pending::Replay, true);
+        }
+
+        void StartRejoin()
+        {
+            Log("Lobby: CONTINUE: back into the match the last session lost (%s)", Rejoin::Describe().c_str());
+            OpenHangar(Pending::Rejoin, true);
+            g.coverUntilMs = WallMs() + 10000.0;   // until our ship is made again
         }
 
         static void RenderHost()
@@ -1111,7 +1121,8 @@ namespace Duels
             }
             CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, Rgb(6, 8, 12));
             CSurface::GL_SetColor(Rgb(226, 230, 236));
-            freetype::easy_printCenter(24, 640.f, 330.f, g.saving ? "SAVING THE REPLAY" : "STARTING THE DUEL");   // font 24: its letters 15 px lower
+            freetype::easy_printCenter(24, 640.f, 330.f, g.saving ? "SAVING THE REPLAY" : g.pending == Pending::Rejoin ? "BACK INTO THE MATCH"
+                                       : "STARTING THE DUEL");   // font 24: its letters 15 px lower
             CSurface::GL_SetColor(COLOR_WHITE);
         }
 
@@ -1120,6 +1131,15 @@ namespace Duels
             bool asked = g.toMenu;
             g.toMenu = false;
             return asked;
+        }
+
+        void RequestMenu(const std::string &note)
+        {
+            g.pending = Pending::None;
+            g.cover = false;
+            g.toMenu = true;
+            Menu::ShowNote(note);
+            Log("Lobby: to FTL's main menu: %s", note.c_str());
         }
 
         void OnFrame()
@@ -1168,8 +1188,10 @@ namespace Duels
                     g.closeBoxUntilMs = 0.0;
                 }
             }
-            // The cover goes once the box is gone (or none came in a second); the one for the swap stays until LOBBY.
-            if (g.cover && !g.saving && inRun && !G_->GetWorld()->commandGui->choiceBox.bOpen && (g.boxKeys > 0 || WallMs() > g.runSinceMs + 1000.0))
+            // The cover goes once the box is gone (or none came in a second); the one for the swap stays until LOBBY, the
+            // one for CONTINUE until our ship is made again.
+            if (g.cover && !g.saving && g.pending != Pending::Rejoin && inRun && !G_->GetWorld()->commandGui->choiceBox.bOpen &&
+                (g.boxKeys > 0 || WallMs() > g.runSinceMs + 1000.0))
             {
                 g.cover = false;
                 Log("Lobby: the run is in: the cover goes");
@@ -1208,6 +1230,23 @@ namespace Duels
                 bool started = Demo::StartReplay(g.replayPath, message);
                 Log("Lobby: the replay with the run: %s", message.c_str());
                 if (!started) Console::Feed("The replay can't start: " + message);
+                return;
+            }
+            if (g.pending == Pending::Rejoin)
+            {
+                // As a replay's: once FTL's first message box is gone (or five seconds without one).
+                bool boxOpen = G_->GetWorld()->commandGui->choiceBox.bOpen;
+                if (boxOpen || (!FirstBoxAnswered() && WallMs() < g.runSinceMs + 5000.0)) return;
+                g.pending = Pending::None;
+                g.cover = false;
+                std::string message;
+                bool started = Rejoin::Begin(message);
+                Log("Lobby: back into the match: %s%s", started ? "" : "can't: ", message.c_str());
+                if (!started)
+                {
+                    Console::Feed("Can't go back into the match: " + message);
+                    RequestMenu("Can't go back into the match: " + message + ".");
+                }
                 return;
             }
             if (!g.attempting)

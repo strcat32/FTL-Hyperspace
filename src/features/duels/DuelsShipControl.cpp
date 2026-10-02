@@ -1332,6 +1332,13 @@ namespace Duels
             message = "quit requested";
             return true;
         }
+        if (verb == "crash")
+        {
+            // Coming back after a crash (roadmap BR): the game ends at once, as a crash ends it (no leaving the duel, no
+            // saving, Hyperspace's crash flag left behind).
+            Log("Test: the game ends at once, as a crash would end it (crash command)");
+            std::_Exit(3);
+        }
         message = "unknown verb '" + verb + "'";
         return false;
     }

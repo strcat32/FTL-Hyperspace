@@ -17,6 +17,9 @@ namespace Duels
         // The demo browser's PLAY (roadmap AU): a run starts as START starts one (no hangar, its cover), and the demo
         // plays with it.
         void PlayReplay(const std::string &path);
+        // FTL's CONTINUE (roadmap BR): back into the match the last session lost (DuelsRejoin.cpp): a run starts as START
+        // starts one, and once it is there our ship is made as the file has it and the way back is tried.
+        void StartRejoin();
         bool IsOpen();
         void Render();
         void MouseMove(int x, int y);
@@ -29,6 +32,8 @@ namespace Duels
         // (as its pause menu's MAIN MENU: CommandGui::GetCommand gives FTL command 5 once), and the room list opens there.
         void ToLobby();
         bool TakeMenuRequest();
+        // FTL's main menu with a note there (a way back into a match that didn't work).
+        void RequestMenu(const std::string &note);
 
         // Every frame: a room waits for the run the hangar starts (the menu gone, our ship there), then opens or is
         // joined; back from the hangar to the menu drops it. At a run's start FTL's first message box (its story) is

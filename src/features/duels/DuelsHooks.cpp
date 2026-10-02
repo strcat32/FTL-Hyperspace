@@ -17,6 +17,7 @@
 #include "DuelsMatch.h"
 #include "DuelsMatchUi.h"
 #include "DuelsRefit.h"
+#include "DuelsRejoin.h"
 #include "DuelsNet.h"
 #include "DuelsRooms.h"
 #include "DuelsReplayUi.h"
@@ -148,10 +149,11 @@ HOOK_METHOD_PRIORITY(CommandGui, IsPaused, -1000, () -> bool)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::IsPaused -> Begin (DuelsHooks.cpp)\n")
     // A duel pauses only while its connection is lost (roadmap AA) and in a timeout both players took (roadmap BF): FTL's
     // world stands still for both players. A replay's pause stops it too (roadmap 5.1), and a message box of FTL's in a
-    // replay (its first one, come late: FTL answers a box only while paused, roadmap BO).
+    // replay (its first one, come late: FTL answers a box only while paused, roadmap BO). Going back into a match after a
+    // crash, our ship waits as the file made it until the match is there (roadmap BR).
     if (Duels::GetState().noPause)
     {
-        return Duels::Rounds::NetPaused() || Duels::Demo::ReplayPaused() || Duels::Rounds::TimeoutPaused() ||
+        return Duels::Rounds::NetPaused() || Duels::Rejoin::Trying() || Duels::Demo::ReplayPaused() || Duels::Rounds::TimeoutPaused() ||
                (Duels::Net::Replaying() && choiceBox.bOpen);
     }
     return super();
@@ -1500,7 +1502,7 @@ static bool OrdersHeld(CommandGui *gui, int mX, int mY)
 {
     // The connection lost (the match waits), or a replay (the recorder's ship isn't ours to command). A message box of
     // FTL's takes its click (a replay's first box, come late, roadmap BO).
-    if ((!Duels::Rounds::NetPaused() && !Duels::Net::Replaying()) || gui->menuBox.bOpen || gui->choiceBox.bOpen) return false;
+    if ((!Duels::Rounds::NetPaused() && !Duels::Rejoin::Trying() && !Duels::Net::Replaying()) || gui->menuBox.bOpen || gui->choiceBox.bOpen) return false;
     const Globals::Rect &options = gui->optionsButton.hitbox;
     return !(mX >= options.x && mX < options.x + options.w && mY >= options.y && mY < options.y + options.h);
 }
@@ -1511,7 +1513,7 @@ HOOK_METHOD_PRIORITY(CommandGui, KeyDown, -2000, (SDLKey key, bool shiftHeld) ->
     if (Duels::Console::KeyDown(this, key)) return;
     if (Duels::Window::KeyDown((int)key)) return;
     if (Duels::ReplayUi::KeyDown((int)key)) return;   // a replay's keys, and no other reaches the game then
-    if (Duels::Rounds::NetPaused() && !menuBox.bOpen && key != SDLK_ESCAPE) return;
+    if ((Duels::Rounds::NetPaused() || Duels::Rejoin::Trying()) && !menuBox.bOpen && key != SDLK_ESCAPE) return;
     Duels::Refit::SwitchScreensKey((int)key);   // the preparation: the store and the ship's screens switch
     if (Duels::Rounds::InMatch() && key == Settings::GetHotkey("jump") && (int)key > 0)
     {
@@ -1580,6 +1582,7 @@ HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
     Duels::ReplayUi::Render();
     Duels::Window::Render();
     Duels::MatchUi::RenderSplash();
+    Duels::Rejoin::Render();
     Duels::ReplayUi::RenderSeekCover();
     Duels::Lobby::RenderCover();
     Duels::Hud::EndFrame();

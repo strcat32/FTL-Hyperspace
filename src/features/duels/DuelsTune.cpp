@@ -278,6 +278,20 @@ namespace Duels
             return true;
         }
 
+        void UseMatch(const std::vector<std::pair<std::string, std::string>> &changed)
+        {
+            g.match.clear();
+            for (const std::pair<std::string, std::string> &entry : changed)
+            {
+                std::string why;
+                const Setting *setting = Find(entry.first);
+                std::string normal = setting ? Normal(*setting, entry.second, why) : std::string();
+                if (!normal.empty() && normal != Default(*setting)) g.match[entry.first] = normal;
+            }
+            g.inMatch = true;
+            Log("Tune: the match's fine settings again from the file (%u off their defaults)", (unsigned)g.match.size());
+        }
+
         void EndMatch()
         {
             if (!g.inMatch) return;

@@ -14,6 +14,7 @@
 #include "DuelsRounds.h"
 #include "DuelsScript.h"
 #include "DuelsRefit.h"
+#include "DuelsRejoin.h"
 #include "DuelsShips.h"
 #include "DuelsStats.h"
 #include "DuelsTrace.h"
@@ -255,6 +256,15 @@ namespace Duels
             uint8_t pickedShown[2] = {PICK_NONE, PICK_NONE};
             uint8_t turnShown = NOBODY;
             bool shipsShown = false;
+
+            // Back after a crash (roadmap BR): the damage our ship had taken in the round as the file has it (counting
+            // goes on from it). A guest whose host came back cold: the host's clock is a new one (the fight's start, on
+            // ours, as it was before: the environment's schedule moves by the difference).
+            bool coldTaken = false;
+            uint8_t coldTakenRound = 0;
+            Damage coldDamage;
+            bool hostClockChanged = false;
+            double lostFightStartLocal = -1.0;
         };
 
         static Local g;
@@ -618,6 +628,7 @@ namespace Duels
             WriteData(w, g.data);
             Net::Send(MSG_MATCH, w, true);
             g.dirty = false;
+            Rejoin::OnSaveNeeded();   // the host's file has the match as the guest has it (roadmap BR)
         }
 
         static void SendEvent(uint8_t type, uint8_t arg)
@@ -678,6 +689,22 @@ namespace Duels
                 d.crewPool += crew->health.second;
                 d.lastHealth[crew] = Health(crew);
             }
+        }
+
+        // Back after a crash (roadmap BR): the damage our ship had taken in the round as the file has it; counting goes on
+        // from our ship as it is now.
+        static void RestoreTaken()
+        {
+            if (!g.coldTaken) return;
+            g.coldTaken = false;
+            if (g.coldTakenRound != g.data.round) return;
+            StartCounting();
+            g.taken.hullPool = g.coldDamage.hullPool;
+            g.taken.crewPool = g.coldDamage.crewPool;
+            g.taken.hullLost = g.coldDamage.hullLost;
+            g.taken.crewLost = g.coldDamage.crewLost;
+            Log("Rounds: the damage our ship took in round %u before the crash: %.1f (hull %.0f of %.0f, crew %.0f of %.0f)",
+                (unsigned)g.data.round, g.taken.Taken(), g.taken.hullLost, g.taken.hullPool, g.taken.crewLost, g.taken.crewPool);
         }
 
         static void CountDamage()
@@ -914,6 +941,7 @@ namespace Duels
             if (!g.data.settings.free) Refit::ResetWeaponCharge();
             Refit::OnFightStart();
             StartCounting();
+            RestoreTaken();   // back after a crash in this fight (roadmap BR)
             if (!g.data.settings.free) Environment::Begin(g.data.env, g.data.round, FromHost(g.data.fightStart));
             if (!g.data.settings.free) Announce("Round " + std::to_string(g.data.round) + ": fight!");
             MatchUi::Splash("FIGHT!", MatchUi::GOLD, 1300.0, "surgeWarning");
@@ -1794,6 +1822,147 @@ namespace Duels
             return seed;
         }
 
+        // ---------------------------------------------------------------------------------------------------------
+        // Back after a crash (roadmap BR)
+        // ---------------------------------------------------------------------------------------------------------
+
+        static const uint8_t REJOIN_FORMAT = 1;
+
+        void WriteRejoin(Writer &w)
+        {
+            const Data &d = g.data;
+            double now = Now();
+            w.U8(REJOIN_FORMAT);
+            w.U8(g.me);
+            w.F64(now);
+            w.F64(now - g.startedMs);
+            w.U8(g.scrapRound);
+            w.U8(d.round);
+            w.U8((uint8_t)d.phase);
+            w.Bool(g.taken.counting);
+            w.F32(g.taken.hullPool);
+            w.F32(g.taken.crewPool);
+            w.F32(g.taken.hullLost);
+            w.F32(g.taken.crewLost);
+            w.I8((int8_t)g.ownPick);
+            w.Bool(g.defeatSent);
+            if (g.me != HOST) return;
+            WriteData(w, d);
+            w.I8((int8_t)g.picks[HOST]);
+            w.I8((int8_t)g.picks[GUEST]);
+            for (const float (&low)[2] : g.lows)
+            {
+                w.F32(low[0]);
+                w.F32(low[1]);
+            }
+            for (int player = 0; player < 2; ++player)
+            {
+                w.F64(g.defeatAt[player]);
+                w.U8(g.defeatReason[player]);
+                w.F64(g.lastOffer[player]);
+            }
+        }
+
+        void ColdConnected(const std::vector<uint8_t> &rounds, const std::vector<uint8_t> &refit)
+        {
+            Reset();
+            Environment::ClearBeacon();
+            g.active = true;
+            g.me = Net::IsHost() ? HOST : GUEST;
+            g.startedMs = Now();
+            g.random.seed(NewSeed() ^ (uint32_t)(Net::MatchSeed() & 0xffffffffu));
+            Refit::ColdStart(refit);
+
+            Reader r(rounds);
+            uint8_t format = r.U8(), me = r.U8();
+            double savedNow = r.F64(), played = r.F64();
+            uint8_t scrapRound = r.U8(), round = r.U8(), phase = r.U8();
+            Damage taken;
+            taken.counting = r.Bool();
+            taken.hullPool = r.F32();
+            taken.crewPool = r.F32();
+            taken.hullLost = r.F32();
+            taken.crewLost = r.F32();
+            int ownPick = r.I8();
+            bool defeatSent = r.Bool();
+            Data data;
+            bool dataOk = true;
+            int picks[2] = {-1, -1};
+            float lows[2][2] = {{1.f, 1.f}, {1.f, 1.f}};
+            double defeatAt[2] = {-1.0, -1.0}, lastOffer[2] = {-1.0e12, -1.0e12};
+            uint8_t defeatReason[2] = {REASON_NONE, REASON_NONE};
+            if (me == HOST)
+            {
+                dataOk = ReadData(r, data);
+                picks[HOST] = r.I8();
+                picks[GUEST] = r.I8();
+                for (float (&low)[2] : lows)
+                {
+                    low[0] = r.F32();
+                    low[1] = r.F32();
+                }
+                for (int player = 0; player < 2; ++player)
+                {
+                    defeatAt[player] = r.F64();
+                    defeatReason[player] = r.U8();
+                    lastOffer[player] = r.F64();
+                }
+            }
+            if (!r.Ok() || !dataOk || format != REJOIN_FORMAT || me != g.me)
+            {
+                Log("Rounds: back after a crash: the file's match doesn't read (format %u, role %u, ours %u)", (unsigned)format,
+                    (unsigned)me, (unsigned)g.me);
+                if (g.me == HOST) Announce("The match can't go on: this game's file of it doesn't read");
+                return;
+            }
+            g.startedMs = Now() - played;
+            g.scrapRound = scrapRound;
+            g.ownPick = ownPick;
+            bool fighting = phase == (uint8_t)Phase::Fight || phase == (uint8_t)Phase::Ending;
+            g.defeatSent = defeatSent && fighting;
+            if (taken.counting && fighting)
+            {
+                g.coldTaken = true;
+                g.coldTakenRound = round;
+                g.coldDamage = taken;
+            }
+            if (g.me != HOST)
+            {
+                Log("Rounds: back after a crash as the guest (round %u, %s, scrap of round %u had): the host's match comes", (unsigned)round,
+                    PhaseName((Phase)phase), (unsigned)scrapRound);
+                return;
+            }
+            // The host's match from the file: its times on the new clock, as far off as they were at the save (the
+            // match was paused from there: the other game waited meanwhile).
+            double shift = Now() - savedNow;
+            for (double *time : {&data.phaseEnd, &data.fightStart, &data.stallEnd, &data.drawEnd, &data.timeoutStart, &data.timeoutEnd})
+            {
+                if (*time >= 0.0) *time += shift;
+            }
+            g.data = data;
+            g.picks[HOST] = picks[HOST];
+            g.picks[GUEST] = picks[GUEST];
+            for (int player = 0; player < 2; ++player)
+            {
+                g.lows[player][0] = lows[player][0];
+                g.lows[player][1] = lows[player][1];
+                g.defeatAt[player] = defeatAt[player] >= 0.0 ? defeatAt[player] + shift : -1.0;
+                g.defeatReason[player] = defeatReason[player];
+                g.lastOffer[player] = lastOffer[player] > -1.0e11 ? lastOffer[player] + shift : -1.0e12;
+            }
+            Net::SetMatchToken(data.token);
+            g.dirty = true;
+            Log("Rounds: back after a crash as the host: %s, round %u, points %s %s; the match's times moved on by %.1f s to the new clock",
+                PhaseName(data.phase), (unsigned)data.round, Points(data, HOST).c_str(), Points(data, GUEST).c_str(), shift / 1000.0);
+            ApplyLocal();
+            // A ship already down: the fight had begun (its damage counts on).
+            if (data.phase == Phase::Ending)
+            {
+                g.fightBegun = true;
+                RestoreTaken();
+            }
+        }
+
         void OnConnected()
         {
             if (Net::Resumed() && g.data.phase != Phase::None && g.data.phase != Phase::MatchOver)
@@ -1814,8 +1983,10 @@ namespace Duels
                     Environment::Shift(paused);
                     g.dirty = true;
                 }
-                Log("Rounds: the match goes on after the lost connection (%s, round %u, paused %.1f s)", PhaseName(g.data.phase),
-                    (unsigned)g.data.round, paused / 1000.0);
+                // The host came back after a crash (roadmap BR): its clock is a new one; the times that come are on it.
+                if (g.me == GUEST && Net::PeerCold()) g.hostClockChanged = true;
+                Log("Rounds: the match goes on after the lost connection (%s, round %u, paused %.1f s%s)", PhaseName(g.data.phase),
+                    (unsigned)g.data.round, paused / 1000.0, Net::PeerCold() ? (g.me == GUEST ? "; the host's game started again" : "; the guest's game started again") : "");
                 return;
             }
             Reset();
@@ -1911,6 +2082,9 @@ namespace Duels
             Phase phase = g.data.phase;
             if (phase == Phase::None || phase == Phase::MatchOver) return;
             g.pausedSince = Now();
+            // The fight's start on our clock while the host's clock is still the one we know (a host back after a crash
+            // has a new one, roadmap BR).
+            g.lostFightStartLocal = g.data.fightStart >= 0.0 ? FromHost(g.data.fightStart) : -1.0;
             Log("Rounds: the match is paused while the connection is lost");
         }
 
@@ -1993,9 +2167,24 @@ namespace Duels
                 double timeoutEndBefore = g.data.timeoutEnd;
                 Phase phaseBefore = g.data.phase;
                 bool readyBefore = g.data.ready[HOST];
+                if (g.hostClockChanged)
+                {
+                    // The host came back after a crash (roadmap BR): its times are on a new clock. Once ours knows it, the
+                    // fight's start moves on ours by the difference to before, and the environment's schedule with it.
+                    if (Net::HasClock())
+                    {
+                        g.hostClockChanged = false;
+                        if (g.fightBegun && data.round == g.data.round && data.fightStart >= 0.0 && g.lostFightStartLocal >= 0.0)
+                        {
+                            double shift = Net::HostToLocalTime(data.fightStart) - g.lostFightStartLocal;
+                            Environment::Shift(shift);
+                            Log("Rounds: the host's new clock: the fight's start moved %.1f s on ours", shift / 1000.0);
+                        }
+                    }
+                }
                 // The host moved the fight's start on by a pause (a lost connection): the environment's schedule too.
-                if (g.fightBegun && data.round == g.data.round && data.fightStart >= 0.0 && g.data.fightStart >= 0.0 &&
-                    data.fightStart != g.data.fightStart)
+                else if (g.fightBegun && data.round == g.data.round && data.fightStart >= 0.0 && g.data.fightStart >= 0.0 &&
+                         data.fightStart != g.data.fightStart)
                 {
                     Environment::Shift(data.fightStart - g.data.fightStart);
                 }
@@ -2020,6 +2209,13 @@ namespace Duels
                 }
                 if (data.ready[HOST] && !readyBefore && data.phase == Phase::Prep) Announce(Who(HOST) + " is ready");
                 ApplyLocal();
+                // Back after a crash with our ship already down (roadmap BR): the fight had begun, its damage counts on.
+                if (g.coldTaken && data.phase == Phase::Ending && data.round == g.coldTakenRound)
+                {
+                    g.fightBegun = true;
+                    RestoreTaken();
+                }
+                Rejoin::OnSaveNeeded();
             }
             else if (type == MSG_MATCH_EVENT)
             {
@@ -2131,6 +2327,8 @@ namespace Duels
         {
             // Not a target before a round's fight begins (a free fight begins at once).
             if (replica && g.active && !g.fightBegun && !g.data.settings.free) replica->_targetable.hostile = false;
+            // Built when the fight had begun (a game back after a crash, roadmap BR): a target at once.
+            else if (replica && g.active && g.fightBegun && g.data.phase == Phase::Fight) MakeTarget();
         }
 
         void WriteState(Writer &w)

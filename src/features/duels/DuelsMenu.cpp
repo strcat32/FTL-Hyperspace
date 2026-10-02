@@ -10,6 +10,7 @@
 #include "DuelsMatch.h"
 #include "DuelsMenu.h"
 #include "DuelsNet.h"
+#include "DuelsRejoin.h"
 #include "DuelsStyle.h"
 #include "DuelsTrace.h"
 #include "../crash-detection/core/CrashDetector.h"
@@ -32,7 +33,8 @@ namespace Duels
             Tutorial,   // a duel in short
             Guide,      // the players' guide (USAGE.md)
             Crashed,    // the last session didn't end normally (roadmap BL): its logs are kept
-            Stats       // the player's online play (roadmap BR): this computer's record and the master's rating
+            Stats,      // the player's online play (roadmap BR): this computer's record and the master's rating
+            Note        // a note (a way back into a match that didn't work, roadmap BR)
         };
 
         struct GuideRow
@@ -67,6 +69,9 @@ namespace Duels
             Style::Box panelHost, panelJoin, panelReplays, panelName, panelGuide;   // the title screen's panel
             Style::Box panelAccount;                 // SIGN IN, CANCEL or SIGN OUT (the master, roadmap BG)
             bool titleShown = false;                 // the title screen was there last frame (the rating asked on its return)
+            std::string note;                        // the note to show (Window::Note)
+            bool noteWaits = false;                  // shown when the menu is there
+            Style::Box rejoin;                       // the crash note's CONTINUE THE MATCH (roadmap BR)
         };
 
         static MenuState g;
@@ -228,17 +233,53 @@ namespace Duels
 
         static void RenderCrashed()
         {
-            const float w = 640.f, h = 300.f, x = (1280.f - w) / 2.f, y = 210.f;
+            // A match the session lost can go on (roadmap BR): CONTINUE THE MATCH, as FTL's CONTINUE.
+            bool rejoin = Rejoin::Available();
+            const float w = 640.f, h = rejoin ? 370.f : 300.f, x = (1280.f - w) / 2.f, y = rejoin ? 180.f : 210.f;
             Style::Dialog(x, y, w, h, "FTL: DUELS");
             float left = x + 30.f, top = y + 24.f, width = w - 60.f;
             top += Style::Label(left, top, "THE LAST SESSION") + 14.f;
             top += Paragraph(TEXT, left, top, width, "FTL: Duels didn't close normally the last time it ran: it crashed, or it was "
                                                      "ended from outside.", Rgb(226, 230, 236)) + 12.f;
+            if (rejoin)
+            {
+                top += Paragraph(TEXT, left, top, width, "Its match can go on: " + Rejoin::Describe() + ". CONTINUE THE MATCH takes you back "
+                                                         "into it (FTL's CONTINUE does too).", Rgb(255, 235, 170)) + 12.f;
+            }
             top += Paragraph(TEXT, left, top, width, "Its logs are kept in the FTL: Duels folder: duels_log.1.txt, FTL_HS.log.bak and "
                                                      "FTL.log.bak, and after a crash the crashlogs folder.", Rgb(226, 230, 236)) + 12.f;
             Paragraph(FONT, left, top, width, "If you report it, please send these files with what you were doing.", Rgb(190, 196, 204));
             ButtonAt(g.ok, x + w - 30.f - 120.f, y + h - 58.f, 120.f, "OK");
+            if (rejoin) ButtonAt(g.rejoin, x + 30.f, y + h - 58.f, 240.f, "CONTINUE THE MATCH");
+            else g.rejoin.w = 0.f;
         }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // A note (roadmap BR: a way back into a match that didn't work)
+        // ---------------------------------------------------------------------------------------------------------
+
+        void ShowNote(const std::string &text)
+        {
+            g.note = text;
+            g.noteWaits = true;
+        }
+
+        static void OpenNote()
+        {
+            g.noteWaits = false;
+            g.open = Window::Note;
+            Log("Menu: a note: %s", g.note.c_str());
+        }
+
+        static void RenderNote()
+        {
+            const float w = 560.f, h = 200.f, x = (1280.f - w) / 2.f, y = 240.f;
+            Style::Dialog(x, y, w, h, "FTL: DUELS");
+            float left = x + 30.f, top = y + 24.f, width = w - 60.f;
+            Paragraph(TEXT, left, top, width, g.note, Rgb(226, 230, 236));
+            ButtonAt(g.ok, x + w - 30.f - 120.f, y + h - 58.f, 120.f, "OK");
+        }
+
 
         static void CloseCrashed()
         {
@@ -639,7 +680,7 @@ namespace Duels
             // Back in the main menu (FTL's MAIN MENU in its ESC menu, roadmap BO): a replay or a duel that still ran
             // ends here. A replay went on unseen behind the menu and got in the way of what came next.
             if (Net::Replaying()) Demo::StopReplay("back to the main menu");
-            else if (Net::GetPhase() != Net::Phase::Idle)
+            else if (Net::GetPhase() != Net::Phase::Idle || Rejoin::Trying())   // (a way back into a match: given up)
             {
                 Log("Menu: back in the main menu: the duel is left");
                 Match::Leave();
@@ -766,25 +807,51 @@ namespace Duels
         // FTL's own runs aren't played in FTL: Duels (roadmap BR, the user 2026-10-02): NEW GAME greyed (the TUTORIAL stays),
         // CONTINUE too (it would go on with a saved run of FTL's). Before FTL draws its menu: its loop sets CONTINUE again
         // while a saved run is there.
+        // CONTINUE (roadmap BR): back into the match the last session lost.
+        static void StartRejoin()
+        {
+            Close();
+            Lobby::StartRejoin();
+        }
+
         void BeforeRender()
         {
             CApp *app = G_->GetCApp();
             if (!app) return;
             app->menu.startButton.bActive = false;
-            app->menu.continueButton.bActive = false;
+            // CONTINUE only goes back into a match the last session lost (roadmap BR; the user, 2026-10-02).
+            app->menu.continueButton.bActive = Rejoin::Available();
         }
 
-        // A click on FTL's NEW GAME or CONTINUE does nothing (greyed, BeforeRender; FTL's loop may have set CONTINUE again).
+        static bool OnButton(const Button &button, int x, int y)
+        {
+            const Globals::Rect &r = button.hitbox;
+            return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        }
+
+        // A click on FTL's NEW GAME does nothing (greyed, BeforeRender), nor one on its CONTINUE (FTL's loop may have set it
+        // again) unless the last session lost a match: then CONTINUE goes back into it (roadmap BR).
         static bool OnRunButton(int x, int y)
         {
             CApp *app = G_->GetCApp();
             if (!app) return false;
-            for (const Button *button : {&app->menu.startButton, &app->menu.continueButton})
+            if (OnButton(app->menu.continueButton, x, y))
             {
-                const Globals::Rect &r = button->hitbox;
-                if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return true;
+                if (Rejoin::Available()) StartRejoin();
+                return true;
             }
-            return false;
+            return OnButton(app->menu.startButton, x, y);
+        }
+
+        // Next to FTL's CONTINUE while it goes back into a match: which one.
+        static void RenderRejoinHint()
+        {
+            CApp *app = G_->GetCApp();
+            if (!app || !OnTitle() || !Rejoin::Available()) return;
+            const Globals::Rect &r = app->menu.continueButton.hitbox;
+            CSurface::GL_SetColor(Rgb(255, 235, 170));
+            freetype::easy_printRightAlign(TEXT, (float)r.x - 14.f, (float)r.y + r.h / 2.f - 8.f, Rejoin::Describe());
+            CSurface::GL_SetColor(COLOR_WHITE);
         }
 
         void Render()
@@ -798,12 +865,16 @@ namespace Duels
                 {
                     OpenCrashed();
                 }
+                else if (g.noteWaits) OpenNote();
                 else if (Config::PlayerName().empty()) OpenName(true);
                 else if (!g.tutorialShown && Config::Value("tutorial") != "off") OpenTutorial();
             }
             bool title = OnTitle();
             if (title && !g.titleShown) Account::Refresh();   // back on the title screen: the rating again (after a match)
             g.titleShown = title;
+            // A note that came while the menu was already there (or a test scenario's start, with its own windows).
+            if (g.noteWaits && g.open == Window::None && !g.pending) OpenNote();
+            if (g.open == Window::None) RenderRejoinHint();
             if (title) RenderPanel();
             else
             {
@@ -818,6 +889,7 @@ namespace Duels
             case Window::Guide: RenderGuide(); break;
             case Window::Crashed: RenderCrashed(); break;
             case Window::Stats: RenderStats(); break;
+            case Window::Note: RenderNote(); break;
             default: break;
             }
             CSurface::GL_SetColor(COLOR_WHITE);
@@ -876,7 +948,9 @@ namespace Duels
                 return true;
             case Window::Crashed:
                 if (g.ok.Contains(x, y)) CloseCrashed();
+                else if (g.rejoin.w > 0.f && g.rejoin.Contains(x, y) && Rejoin::Available()) StartRejoin();
                 return true;
+            case Window::Note:
             case Window::Stats:
                 if (g.ok.Contains(x, y)) g.open = Window::None;
                 return true;
@@ -924,6 +998,7 @@ namespace Duels
             case Window::Crashed:
                 if (key == SDLK_ESCAPE || key == SDLK_RETURN || key == SDLK_KP_ENTER) CloseCrashed();
                 return true;
+            case Window::Note:
             case Window::Stats:
                 if (key == SDLK_ESCAPE || key == SDLK_RETURN || key == SDLK_KP_ENTER) g.open = Window::None;
                 return true;
@@ -946,6 +1021,23 @@ namespace Duels
             else if (args.size() >= 2 && args[1] == "tutorial") OpenTutorial();
             else if (args.size() >= 2 && args[1] == "crashed") OpenCrashed();   // the note about the last session (test)
             else if (args.size() >= 2 && args[1] == "stats") OpenStats();       // STATS (roadmap BR)
+            else if (args.size() >= 2 && args[1] == "continue")
+            {
+                // FTL's CONTINUE, clicked as a player clicks it (roadmap BR: back into the match the last session lost).
+                CApp *app = G_->GetCApp();
+                if (!app || !app->menu.bOpen)
+                {
+                    message = "the main menu isn't open";
+                    return false;
+                }
+                const Globals::Rect &r = app->menu.continueButton.hitbox;
+                int x = r.x + r.w / 2, y = r.y + r.h / 2;
+                app->menu.MouseMove(x, y);
+                app->menu.MouseClick(x, y);
+                app->menu.MouseUp(x, y);
+                message = "clicked FTL's CONTINUE (" + Rejoin::Status() + ")";
+                return true;
+            }
             else if (args.size() >= 2 && args[1] == "guide") OpenGuide(Window::None);
             else if (args.size() >= 2 && args[1] == "close") Close();
             else if (args.size() >= 2 && args[1] == "replays") return ReplayList::RunVerb(args, message);
@@ -959,7 +1051,8 @@ namespace Duels
                 }
                 return false;
             }
-            const char *names[] = {"nothing", "the name prompt", "the tutorial box", "the players' guide"};
+            const char *names[] = {"nothing", "the name prompt", "the tutorial box", "the players' guide", "the note about the last session",
+                                   "STATS", "a note"};
             message = std::string("menu: ") + names[(int)g.open] + " open" + (Lobby::IsOpen() ? ", and a lobby window" : "") +
                       "; the player's name '" + Match::PlayerName() + "'";
             return true;

@@ -11,6 +11,9 @@ struct UpgradeBox;
 
 namespace Duels
 {
+    class Reader;
+    class Writer;
+
     // Our ship between the rounds of a match (DuelsRounds.cpp, docs/design/match-flow.md): what FTL does at the end
     // of a fight is replaced by the duel's own round end, and each preparation starts with a whole ship.
     namespace Refit
@@ -43,6 +46,11 @@ namespace Duels
 
         // The match starts: who the captain is (the first crew member; they always return, rules section 2).
         void OnMatchStart();
+        // Back after a crash (roadmap BR, DuelsRejoin.cpp): what the refit keeps over the match (the levels as it began,
+        // the captain, the crew and the power as the last fight began) for the file, and from it in place of
+        // OnMatchStart when the game is back in the match.
+        void WriteRejoin(Writer &w);
+        void ColdStart(const std::vector<uint8_t> &saved);
 
         // The fight begins: the crew as they are (with Permanent Death off, everyone who dies in it returns).
         void OnFightStart();

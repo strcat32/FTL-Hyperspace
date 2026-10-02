@@ -65,7 +65,7 @@ namespace Duels
             "droneparts", "dronepower", "export", "fire", "host", "import", "install", "ionize", "join", "keys", "leave", "lobby",
             "name", "nebula", "net", "netsim", "netstats", "nopause", "note", "pausetest", "power", "quit", "relay", "rooms", "say", "screenshot", "swap",
             "script", "spawn", "status", "stop", "supershield", "trace", "tracepower", "upgrade", "version", "view",
-            "weapon", "window", "xp", "match", "ready", "forfeit", "concede", "draw", "hull", "kill", "duels", "fonttest", "mouse", "click", "chatflood", "shake", "drag", "hotkey", "rclick", "escape", "ftlcharge", "menu", "upgradeclick", "aim"};
+            "weapon", "window", "xp", "match", "ready", "forfeit", "concede", "draw", "hull", "kill", "duels", "fonttest", "mouse", "click", "chatflood", "shake", "drag", "hotkey", "rclick", "escape", "ftlcharge", "menu", "upgradeclick", "aim", "crash"};
 
         static std::string Lower(std::string text)
         {

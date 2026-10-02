@@ -15,7 +15,7 @@ namespace Duels
     namespace Net
     {
         static const uint16_t DEFAULT_PORT = 47620;
-        static const uint16_t PROTOCOL_VERSION = 16;   // bump whenever a message changes
+        static const uint16_t PROTOCOL_VERSION = 17;   // bump whenever a message changes
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;
@@ -48,8 +48,9 @@ namespace Duels
             virtual void OnOpponentGone() {}
         };
 
-        // Coming back after a lost connection (roadmap 3.1, docs/design/match-flow.md): how long the match waits.
-        static const double REJOIN_GRACE_MS = 60000.0;
+        // Coming back after a lost connection (roadmap 3.1, docs/design/match-flow.md): how long the match waits. Two
+        // minutes: a game that crashed has the time to start again and go back into the match (roadmap BR).
+        static const double REJOIN_GRACE_MS = 120000.0;
         // The game's match (0: none, nothing to come back to); it goes with the handshake, so a player coming back
         // continues the same match, and a stranger can't take the missing player's place.
         void SetMatchToken(uint64_t token);
@@ -57,6 +58,28 @@ namespace Duels
         bool Resumed();
         // While the connection is lost and the match waits: the time left, and whether we are the one cut off.
         bool Reconnecting(double &msLeft, bool &cutOff);
+
+        // The way to the match as this session has it (DuelsRejoin.cpp keeps it in a file): through a relay's room, or
+        // to the host's address; the match's role, its token, a ranked room.
+        struct Way
+        {
+            bool relay = false;
+            std::string server;
+            uint16_t port = 0;
+            std::string code, password;   // the relay's room, its password as typed
+            bool host = false, ranked = false;
+            uint64_t token = 0;
+        };
+        Way CurrentWay();
+        // Back into a match after this game crashed (roadmap BR): the way back the last session had, as if the
+        // connection had just been cut off here (the tries every few seconds, a ranked room's new ticket), for the
+        // time the other game still waits (windowMs). The handshake says that this game comes back cold, without the
+        // match's state: the other game sends what such a game needs (DuelsMatch.cpp, DuelsRounds.cpp). A host
+        // without a relay can't come back so (its guest can't take the handshake).
+        bool StartColdRejoin(const Way &way, double windowMs, std::string &message);
+        // During Listener::OnConnected: this game came back cold (Cold), or the other one did (PeerCold).
+        bool Cold();
+        bool PeerCold();
 
         void SetListener(Listener *listener);
         // Sent in the handshake. Versions must match exactly; a different build only gets a warning in the log.

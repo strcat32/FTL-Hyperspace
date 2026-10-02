@@ -23,6 +23,7 @@
 #include "DuelsRooms.h"
 #include "DuelsRounds.h"
 #include "DuelsNet.h"
+#include "DuelsRejoin.h"
 #include "DuelsShipControl.h"
 #include "DuelsTrace.h"
 #include "DuelsTune.h"
@@ -456,12 +457,8 @@ namespace Duels
             return loadout;
         }
 
-        static void SendLoadout()
+        void WriteLoadout(Writer &w, const Loadout &loadout)
         {
-            ShipManager *ship = G_->GetShipManager(0);
-            if (!ship) return;
-            Loadout loadout = TakeLoadout(ship);
-            Writer w;
             w.Str(loadout.blueprint);
             w.I16((int16_t)loadout.hullMax);
             w.I16((int16_t)loadout.hull);
@@ -481,7 +478,15 @@ namespace Duels
             w.I16((int16_t)loadout.droneParts);
             w.U8((uint8_t)loadout.augments.size());
             for (const std::string &augment : loadout.augments) w.Str(augment);
+        }
 
+        static void SendLoadout()
+        {
+            ShipManager *ship = G_->GetShipManager(0);
+            if (!ship) return;
+            Loadout loadout = TakeLoadout(ship);
+            Writer w;
+            WriteLoadout(w, loadout);
             Net::Send(MSG_LOADOUT, w, true);
             g_match.loadoutSent = true;
             g_match.sentArmament = Armament(ship);
@@ -585,7 +590,7 @@ namespace Duels
             SetReplicaAugments(replica, augments);
         }
 
-        static bool ReadLoadout(Reader &r, Loadout &loadout)
+        bool ReadLoadout(Reader &r, Loadout &loadout)
         {
             loadout.blueprint = r.Str();
             loadout.hullMax = r.I16();
@@ -620,6 +625,37 @@ namespace Duels
             world->commandGui->combatControl.LinkShip(own);
             Log("Match: our ship %s is in space again (%s) and our weapon and drone controls follow it", own->myBlueprint.blueprintName.c_str(),
                 inSpace ? "it was" : "the switch had taken it out");
+        }
+
+        bool RestoreOwnShip(const Loadout &loadout, std::string &message)
+        {
+            WorldManager *world = G_->GetWorld();
+            ShipManager *own = G_->GetShipManager(0);
+            if (!world || !world->playerShip || !own || loadout.blueprint.empty())
+            {
+                message = "no ship to restore";
+                return false;
+            }
+            if (own->myBlueprint.blueprintName != loadout.blueprint)
+            {
+                // As the ship choice switches ships (DuelsRounds.cpp): the bays come with the blueprint first.
+                Bays::PrepareBlueprint(G_->GetBlueprints()->GetShipBlueprint(loadout.blueprint, -1));
+                bool switched = world->SwitchShip(loadout.blueprint);
+                Log("Match: back after a crash: our ship becomes the %s again (%s)", loadout.blueprint.c_str(), switched ? "switched" : "the switch failed");
+                if (!switched)
+                {
+                    message = "the switch to the " + loadout.blueprint + " failed";
+                    return false;
+                }
+                AfterShipSwitch();
+                own = G_->GetShipManager(0);
+                if (!own) return false;
+            }
+            FitShip(own, loadout);
+            message = loadout.blueprint + ", hull " + std::to_string(loadout.hull) + "/" + std::to_string(loadout.hullMax) + ", " +
+                      std::to_string(loadout.weapons.size()) + " weapons, " + std::to_string(loadout.drones.size()) + " drones, " +
+                      std::to_string(loadout.augments.size()) + " augments";
+            return true;
         }
 
         void ReplayOwnLoadout(const uint8_t *data, size_t size)
@@ -3047,11 +3083,45 @@ namespace Duels
             g_match.havePeerState = false;
         }
 
+        // Back after this game crashed (roadmap BR, DuelsRejoin.cpp): our ship and crew are as the file has them
+        // (restored before the way back was tried); the match goes on from the file (the host's game) or from the host's
+        // state (a guest's). No demo here: the match's start isn't in this game any more (the other game's has it all).
+        static void ColdConnected()
+        {
+            g_match.loadoutSent = false;
+            g_match.peerReady = false;
+            g_match.stateDirty = true;
+            Fair::OnConnected(false);
+            GetState().noPause = true;
+            g_xpCarry = 0.f;
+            if (Net::IsHost())
+            {
+                // The match's crew experience and fine settings as this game had them (the guest keeps the ones it got).
+                g_xpMatch = Rejoin::MatchXp();
+                Tune::UseMatch(Rejoin::MatchFine());
+            }
+            bool ours = GetState().debug, theirs = Net::PeerDebug();
+            if (ours || theirs)
+            {
+                Headline(std::string("DEBUG DUEL: test commands are on (") + (ours ? "yours on" : "yours off") + ", " + Net::PeerName() + "'s " +
+                         (theirs ? "on" : "off") + "); the match is unranked");
+                if (theirs) EnableDebug(((Net::PeerName().empty() ? std::string("the other player") : Net::PeerName()) + "'s game has debug mode on").c_str());
+            }
+            Headline("Back in the match against " + Net::PeerName());
+            Rounds::ColdConnected(Rejoin::RoundsPart(), Rejoin::RefitPart());
+            Rejoin::OnColdConnected();
+        }
+
         class Listener : public Net::Listener
         {
         public:
             void OnConnected() override
             {
+                if (Net::Cold())
+                {
+                    ColdConnected();
+                    return;
+                }
                 if (Net::Resumed())
                 {
                     // Back after a lost connection, in the same match: both ships stay; the loadouts, the crew
@@ -3061,7 +3131,14 @@ namespace Duels
                     g_match.stateDirty = true;
                     Crew::SendRosterAgain();
                     Fair::OnConnected(true);
-                    Headline(Net::PeerName() + " is back: the match goes on");
+                    // Their game started again after a crash (roadmap BR): it knows the match only from its file. A guest's
+                    // gets the host's settings again; its states count from the start again.
+                    if (Net::PeerCold())
+                    {
+                        g_match.havePeerState = false;
+                        if (Net::IsHost()) SendSettings();
+                    }
+                    Headline(Net::PeerName() + (Net::PeerCold() ? " is back (their game started again): the match goes on" : " is back: the match goes on"));
                     Rounds::OnConnected();
                     return;
                 }
@@ -3127,6 +3204,7 @@ namespace Duels
                 Tune::EndMatch();   // our own fine settings again (roadmap BE)
                 Tune::UseSeason(nullptr);
                 UseRankedName("");
+                Rejoin::OnDisconnected(reason);
             }
 
             void OnOpponentGone() override
@@ -3262,6 +3340,8 @@ namespace Duels
         {
             Init();
             Net::Update(now);
+            // The match's file for coming back after a crash, and a way back being tried (roadmap BR).
+            Rejoin::OnFrame(now);
             // A ranked match's result reached the relay (roadmap BG): the master rates it; the new rating comes.
             static int resultState = 0;
             int state = Net::ResultState();
@@ -3415,9 +3495,27 @@ namespace Duels
             return Net::JoinRelay(server, port, code, password, message);
         }
 
+        uint32_t NextShotId()
+        {
+            return g_match.nextNetId;
+        }
+
+        void ContinueShotIds(uint32_t next)
+        {
+            if (next > g_match.nextNetId) g_match.nextNetId = next;
+        }
+
+        void PrepareRejoin(const std::string &rankedName)
+        {
+            Init();
+            UseRankedName(rankedName);
+            ShareGameData();
+        }
+
         void Leave()
         {
             FlushShotLog();
+            Rejoin::Clear("left the duel");   // the other game is told: nothing waits for this one any more
             Demo::End("left the duel");
             Net::Leave("left the duel");
             ResetMatch();

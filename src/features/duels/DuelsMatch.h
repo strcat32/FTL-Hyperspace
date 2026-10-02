@@ -34,6 +34,9 @@ struct SpaceDrone;
 // Hooks live in DuelsHooks.cpp and call in here.
 namespace Duels
 {
+    class Reader;
+    class Writer;
+
     namespace Match
     {
         void Init();
@@ -78,6 +81,18 @@ namespace Duels
         // old ship's boxes, which point at its weapons and drones, freed with it. FTL's new game does both
         // (SpaceManager::AddShip, CommandGui::LinkShip).
         void AfterShipSwitch();
+        // The loadout as MSG_LOADOUT carries it (a game's file of its match keeps it so, DuelsRejoin.cpp).
+        void WriteLoadout(Writer &w, const Loadout &loadout);
+        bool ReadLoadout(Reader &r, Loadout &loadout);
+        // Back after a crash (roadmap BR, DuelsRejoin.cpp): before the way back is tried, our name and the game's data
+        // for the handshake (a ranked room's players go by their Steam names); our ship becomes the loadout's again
+        // (FTL's ship switch, as a replay's), fitted as it was.
+        void PrepareRejoin(const std::string &rankedName);
+        bool RestoreOwnShip(const Loadout &loadout, std::string &message);
+        // Our shots' ids go on past the ones the other game knows from before the crash (its verdicts for those may
+        // still come).
+        uint32_t NextShotId();
+        void ContinueShotIds(uint32_t next);
         // And its full states (KIND_FULL_STATE): our ship's hull, shields, systems, weapons, cloak, battery, crew and
         // rooms follow them as the opponent's copy follows its owner's (its drones come with a later stage).
         void ReplayOwnState(const uint8_t *data, size_t size);

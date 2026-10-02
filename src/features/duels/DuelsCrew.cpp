@@ -486,6 +486,143 @@ namespace Duels
             Log("Crew: roster applied (%u crew; %u removed from the replica's own)", (unsigned)roster.size(), (unsigned)others.size());
         }
 
+        // ---------------------------------------------------------------------------------------------------------
+        // Back after a crash (roadmap BR)
+        // ---------------------------------------------------------------------------------------------------------
+
+        void WriteOwnCrew(Writer &w)
+        {
+            std::vector<CrewMember*> crew;
+            if (ShipManager *own = G_->GetShipManager(0))
+            {
+                for (CrewMember *member : own->vCrewList)
+                {
+                    if (member && member->iShipId == 0 && !member->IsDrone() && !member->bDead && member->health.first > 0.f) crew.push_back(member);
+                }
+            }
+            if (crew.size() > 255) crew.resize(255);
+            w.U16(g_crew.nextId);
+            w.U8((uint8_t)crew.size());
+            for (CrewMember *member : crew)
+            {
+                std::map<const CrewMember*, uint16_t>::const_iterator found = g_crew.ownIds.find(member);
+                w.U16(found != g_crew.ownIds.end() ? found->second : 0);
+                w.Str(member->species);
+                w.Str(member->GetName());
+                w.Bool(member->blueprint.male);
+                for (int skill = 0; skill < SKILLS; ++skill)
+                {
+                    bool known = skill < (int)member->blueprint.skillLevel.size();
+                    w.U8((uint8_t)std::max(0, known ? member->blueprint.skillLevel[skill].first : 0));
+                    w.U8((uint8_t)std::max(0, known ? member->blueprint.skillLevel[skill].second : 0));
+                }
+                w.F32(member->health.first);
+                w.I16((int16_t)member->iRoomId);
+                w.I16((int16_t)member->savedPosition.roomId);
+                w.I16((int16_t)member->savedPosition.slotId);
+            }
+        }
+
+        bool RestoreOwnCrew(Reader &r, std::string &message)
+        {
+            struct Saved
+            {
+                RosterEntry entry;
+                float health = 0.f;
+                int room = -1, stationRoom = -1, stationSlot = -1;
+            };
+            uint16_t nextId = r.U16();
+            std::vector<Saved> saved(r.U8());
+            for (Saved &member : saved)
+            {
+                member.entry.id = r.U16();
+                member.entry.species = r.Str();
+                member.entry.name = r.Str();
+                member.entry.male = r.Bool();
+                for (int skill = 0; skill < SKILLS; ++skill)
+                {
+                    member.entry.skills[skill][0] = r.U8();
+                    member.entry.skills[skill][1] = r.U8();
+                }
+                member.health = r.F32();
+                member.room = r.I16();
+                member.stationRoom = r.I16();
+                member.stationSlot = r.I16();
+            }
+            ShipManager *own = G_->GetShipManager(0);
+            ShipGraph *graph = ShipGraph::GetShipInfo(0);
+            if (!r.Ok() || !own || !graph)
+            {
+                message = !r.Ok() ? "the crew in the file doesn't read" : "no ship";
+                return false;
+            }
+            // Ours in place of the crew the ship's blueprint brought, with the ids it had: a blueprint's crew member of the
+            // same race becomes one of ours (name, skills, health; the look stays the blueprint's), the rest come aboard;
+            // whoever of the blueprint's is left over goes (FTL's removal kills them: the fewer, the better).
+            std::vector<CrewMember*> blueprintCrew;
+            for (CrewMember *crew : own->vCrewList)
+            {
+                if (crew && crew->iShipId == 0 && !crew->IsDrone() && !crew->bDead) blueprintCrew.push_back(crew);
+            }
+            g_crew.ownIds.clear();
+            g_crew.heldIds.clear();
+            g_crew.prevIds.clear();
+            uint16_t highest = 0;
+            int made = 0, kept = 0, rooms = graph->RoomCount();
+            for (const Saved &member : saved)
+            {
+                int room = member.room >= 0 && member.room < rooms ? member.room : 0;
+                CrewMember *crew = nullptr;
+                for (CrewMember *&candidate : blueprintCrew)
+                {
+                    if (!candidate || candidate->species != member.entry.species) continue;
+                    crew = candidate;
+                    candidate = nullptr;
+                    ++kept;
+                    break;
+                }
+                if (!crew) crew = own->AddCrewMemberFromString(member.entry.name, member.entry.species, false, room, false, member.entry.male);
+                if (!crew)
+                {
+                    Log("Crew: %s (%s) can't come back aboard", member.entry.name.c_str(), member.entry.species.c_str());
+                    continue;
+                }
+                TextString name(member.entry.name, true);
+                crew->SetName(&name, true);
+                ApplySkills(crew, member.entry);
+                if (member.health > 0.f) crew->health.first = std::min(member.health, crew->health.second);
+                if (member.stationRoom >= 0 && member.stationRoom < rooms && member.stationSlot >= 0)
+                {
+                    Slot station;
+                    station.roomId = member.stationRoom;
+                    station.slotId = member.stationSlot;
+                    station.worldLocation = graph->GetSlotWorldPosition(member.stationSlot, member.stationRoom);
+                    crew->SetSavePosition(station);
+                }
+                if (member.entry.id != 0)
+                {
+                    g_crew.ownIds[crew] = member.entry.id;
+                    highest = std::max(highest, member.entry.id);
+                }
+                ++made;
+            }
+            int gone = 0;
+            for (CrewMember *crew : blueprintCrew)
+            {
+                if (!crew) continue;
+                RemoveForGood(own, crew);
+                ++gone;
+            }
+            g_crew.nextId = std::max<uint16_t>(nextId, (uint16_t)(highest + 1));
+            g_crew.sentRoster.clear();
+            own->RestoreCrewPositions();   // to their stations
+            RenewCrewBoxes();
+            message = std::to_string(made) + " of " + std::to_string(saved.size()) + " crew back aboard (" + std::to_string(kept) +
+                      " of them the blueprint's, renamed; " + std::to_string(gone) + " of the blueprint's gone)";
+            Log("Crew: back after a crash: %s", message.c_str());
+            return made > 0 || saved.empty();
+        }
+
         void ApplyRoster(Reader &r)
         {
             ApplyRosterTo(g_sides[1], G_->GetShipManager(1), r);

@@ -37,6 +37,12 @@ namespace Duels
 
         void Reset();
         void OnConnected();
+        // Back after a crash (roadmap BR, DuelsRejoin.cpp): this game's part of the match for the file (the host's whole
+        // match and what its game keeps to itself; each game's scrap round, the damage its ship took in the round, its
+        // pick), and at the connection's OnConnected of a game back cold, the match from it (with the refit's part):
+        // the host's goes on from the file, its times moved on to its new clock; a guest's comes from the host.
+        void WriteRejoin(Writer &w);
+        void ColdConnected(const std::vector<uint8_t> &rounds, const std::vector<uint8_t> &refit);
 
         // A match against FTL's AI (DuelsAi.cpp, roadmap 3.6): this game hosts it alone and nothing goes over the
         // network; the guest's part (its readiness, its defeat, the damage its ship takes and its hull and crew now, as
