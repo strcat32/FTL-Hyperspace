@@ -15,6 +15,7 @@
 #include "DuelsScript.h"
 #include "DuelsRefit.h"
 #include "DuelsShips.h"
+#include "DuelsStats.h"
 #include "DuelsTrace.h"
 #include "DuelsTune.h"
 #include "DuelsWindow.h"
@@ -26,6 +27,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <map>
 #include <random>
 #include <sstream>
@@ -237,6 +239,7 @@ namespace Duels
 
             double pausedSince = -1.0;      // the connection was lost then (our clock): the match is paused
             double startedMs = 0.0;         // the match began then (our clock): its length for a ranked result
+            bool statsRecorded = false;     // the finished match is in the player's own record (DuelsStats.cpp)
             bool resultSent = false;        // a ranked match's result went to the relay
             uint32_t eventsSent = 0, eventsReceived = 0, statesSent = 0, statesReceived = 0;
             // Guest: we answered the host's draw offer (its end then is no taking back).
@@ -984,6 +987,39 @@ namespace Duels
 
         static void SendRankedResult();
 
+        // The finished match in the player's own record (roadmap BR, DuelsStats.cpp, the main menu's STATS): a match
+        // against another player, not against the AI, not a replay; once.
+        static void RecordStats()
+        {
+            if (g.statsRecorded || g.local || Net::Replaying()) return;
+            g.statsRecorded = true;
+            const Data &d = g.data;
+            uint8_t them = Other(g.me);
+            Stats::MatchLine line;
+            std::time_t now = std::time(nullptr);
+            std::tm local = *std::localtime(&now);
+            char when[32];
+            std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &local);
+            line.when = when;
+            std::string why;
+            line.ranked = Ranked(why);
+            line.host = g.me == HOST;
+            line.name = Name(g.me);
+            line.opponent = Name(them);
+            ShipManager *own = G_->GetShipManager(0);
+            line.ship = own ? own->myBlueprint.blueprintName : std::string();
+            line.opponentShip = Match::OpponentShip();
+            line.result = d.matchWinner == NOBODY ? 0 : d.matchWinner == g.me ? 1 : -1;
+            line.halves = Halves(d, g.me);
+            line.opponentHalves = Halves(d, them);
+            line.rounds = (int)d.results.size();
+            line.damage = d.score[g.me];
+            line.opponentDamage = d.score[them];
+            line.seconds = g.startedMs > 0.0 ? (int)((Now() - g.startedMs) / 1000.0) : 0;
+            line.how = d.matchReason == REASON_LEFT ? std::string("left the match") : std::string(ReasonText(d.matchReason));
+            Stats::Record(line);
+        }
+
         static void EnterMatchOver()
         {
             RoundCleanup();
@@ -1006,6 +1042,7 @@ namespace Duels
             Announce(text + ", " + NamedPoints(d) + " (" + why + ")");
             Note("match over: " + ScoreLine());
             SendRankedResult();
+            RecordStats();
         }
 
         static void ApplyLocal()
@@ -1904,6 +1941,7 @@ namespace Duels
             RoundCleanup();
             Announce("Match over: " + Name(g.me) + " wins (" + Name(Other(g.me)) + " didn't come back)");
             SendRankedResult();
+            RecordStats();
         }
 
         void OnDisconnected(bool opponentGone)
@@ -1926,6 +1964,7 @@ namespace Duels
                     g.appliedPhase = Phase::MatchOver;
                     RoundCleanup();
                     Announce("Match over: " + Name(g.me) + " wins (" + Name(Other(g.me)) + " left the match)");
+                    RecordStats();
                 }
                 else
                 {

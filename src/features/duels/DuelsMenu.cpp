@@ -5,6 +5,8 @@
 #include "DuelsDemo.h"
 #include "DuelsLobby.h"
 #include "DuelsReplayList.h"
+#include "DuelsShips.h"
+#include "DuelsStats.h"
 #include "DuelsMatch.h"
 #include "DuelsMenu.h"
 #include "DuelsNet.h"
@@ -15,6 +17,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <map>
 #include <sstream>
 
 namespace Duels
@@ -27,7 +31,8 @@ namespace Duels
             Name,       // the first start: the player's name
             Tutorial,   // a duel in short
             Guide,      // the players' guide (USAGE.md)
-            Crashed     // the last session didn't end normally (roadmap BL): its logs are kept
+            Crashed,    // the last session didn't end normally (roadmap BL): its logs are kept
+            Stats       // the player's online play (roadmap BR): this computer's record and the master's rating
         };
 
         struct GuideRow
@@ -51,6 +56,7 @@ namespace Duels
             bool dontShow = false;
             bool tutorialShown = false;          // once per start
             bool crashTold = false;              // the last session's crash, told once per start
+            std::vector<Stats::MatchLine> stats; // STATS: this computer's finished matches (duels-stats.txt)
             bool nameThenTutorial = false;       // the name prompt of a first start: the tutorial box follows
             std::vector<GuideRow> guide;
             size_t guideTop = 0;
@@ -239,6 +245,173 @@ namespace Duels
             Log("Menu: the note about the last session closed");
             g.open = Window::None;
             if (!g.tutorialShown && SettingsFromConfig() && !Config::PlayerName().empty() && Config::Value("tutorial") != "off") OpenTutorial();
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // STATS (roadmap BR, the user 2026-10-02): the player's online play instead of FTL's run statistics: their
+        // record on this computer (duels-stats.txt: every finished match against a player) and, signed in, their
+        // rating, place and last ranked matches at the master.
+        // ---------------------------------------------------------------------------------------------------------
+
+        static void OpenStats()
+        {
+            g.stats = Stats::Load();
+            g.open = Window::Stats;
+            Account::Refresh();
+            Account::FetchRecent();
+            Log("Menu: STATS (%u match(es) on this computer)", (unsigned)g.stats.size());
+        }
+
+        static std::string Percent(int part, int whole)
+        {
+            return whole > 0 ? std::to_string((part * 100 + whole / 2) / whole) + "%" : std::string("-");
+        }
+
+        static std::string PointsText(int halves)
+        {
+            return std::to_string(halves / 2) + (halves % 2 ? ".5" : "");
+        }
+
+        static std::string Cut(int font, const std::string &text, float width)
+        {
+            if ((float)freetype::easy_measureWidth(font, text) <= width) return text;
+            std::string cut = text;
+            while (!cut.empty() && (float)freetype::easy_measureWidth(font, cut + "..") > width) cut.pop_back();
+            return cut + "..";
+        }
+
+        static void RenderStats()
+        {
+            const float w = 1060.f, h = 560.f, x = (1280.f - w) / 2.f, y = 96.f;
+            Style::Dialog(x, y, w, h, "FTL: DUELS");
+            const GL_Color light = Rgb(226, 230, 236), soft = Rgb(176, 184, 196), gold = Rgb(255, 214, 90), green = Rgb(140, 226, 120),
+                           red = Rgb(255, 140, 128);
+            const float lx = x + 30.f, rx = x + w / 2.f + 14.f, cw = w / 2.f - 48.f;
+
+            // Online: the master's rating and the last ranked matches.
+            float ly = y + 24.f;
+            ly += Style::Label(lx, ly, "ONLINE") + 14.f;
+            Account::View a = Account::GetView();
+            if (a.state != Account::State::SignedIn)
+            {
+                Paragraph(TEXT, lx, ly, cw, "Not signed in. SIGN IN in the FTL: DUELS panel links the game to your Steam account: "
+                                            "ranked matches, your rating and your place on the leaderboard.", soft);
+            }
+            else
+            {
+                Text(BIG, lx, ly - 14.f, Cut(BIG, a.name, cw), light);
+                ly += 34.f;
+                if (a.ratingKnown)
+                {
+                    std::string rating = "Rating " + std::to_string(a.rating) + (a.rd > 110 ? " (provisional)" : "");
+                    Text(TEXT, lx, ly, rating, gold);
+                    ly += 22.f;
+                    std::string season = a.seasonName.empty() ? std::string("this season") : a.seasonName;
+                    std::string place = a.matches > 0 && a.rank > 0 ? "Place " + std::to_string(a.rank) + " in " + season : "No ranked match in " + season + " yet";
+                    Text(TEXT, lx, ly, place, light);
+                    ly += 22.f;
+                    if (a.matches > 0)
+                    {
+                        Text(TEXT, lx, ly, std::to_string(a.matches) + " ranked: " + std::to_string(a.wins) + " won, " + std::to_string(a.losses) +
+                                               " lost, " + std::to_string(a.draws) + " drawn (" + Percent(a.wins * 2 + a.draws, a.matches * 2) + ")", light);
+                        ly += 22.f;
+                    }
+                }
+                else Text(TEXT, lx, ly, a.message.empty() ? std::string("Asking the master...") : a.message, soft);
+                ly += 16.f;
+                ly += Style::Label(lx, ly, "LAST RANKED MATCHES") + 12.f;
+                Account::RecentView r = Account::GetRecent();
+                if (!r.known) Text(FONT, lx, ly, r.error.empty() ? std::string("Asking the master...") : r.error, soft);
+                else if (r.matches.empty()) Text(FONT, lx, ly, "None yet.", soft);
+                for (size_t i = 0; i < r.matches.size() && i < 9; ++i)
+                {
+                    const Account::RecentMatch &m = r.matches[i];
+                    std::time_t when = (std::time_t)m.ended;
+                    std::tm local = *std::localtime(&when);
+                    char date[24];
+                    std::strftime(date, sizeof(date), "%m-%d %H:%M", &local);
+                    Text(FONT, lx, ly, date, soft);
+                    Text(FONT, lx + 84.f, ly, Cut(FONT, "vs " + m.opponent, 150.f), light);
+                    Text(FONT, lx + 240.f, ly, PointsText(m.halves) + " : " + PointsText(m.opponentHalves), light);
+                    Text(FONT, lx + 300.f, ly, m.result > 0 ? "won" : m.result < 0 ? "lost" : "drawn", m.result > 0 ? green : m.result < 0 ? red : light);
+                    if (m.ratingKnown)
+                    {
+                        int change = m.after - m.before;
+                        Text(FONT, lx + 350.f, ly, std::to_string(m.after) + " (" + (change >= 0 ? "+" : "") + std::to_string(change) + ")",
+                             change >= 0 ? green : red);
+                    }
+                    else if (!m.rated) Text(FONT, lx + 350.f, ly, "not rated", soft);
+                    ly += 19.f;
+                }
+            }
+
+            // This computer: every finished match against a player.
+            float ry = y + 24.f;
+            ry += Style::Label(rx, ry, "THIS COMPUTER") + 14.f;
+            const std::vector<Stats::MatchLine> &all = g.stats;
+            if (all.empty())
+            {
+                Paragraph(TEXT, rx, ry, cw, "No match finished on this computer yet: the record starts with your first.", soft);
+            }
+            else
+            {
+                int won = 0, lost = 0, drawn = 0, ranked = 0;
+                double dealt = 0.0, taken = 0.0;
+                std::map<std::string, std::pair<int, int>> ships;   // played, won
+                for (const Stats::MatchLine &m : all)
+                {
+                    if (m.result > 0) ++won;
+                    else if (m.result < 0) ++lost;
+                    else ++drawn;
+                    if (m.ranked) ++ranked;
+                    dealt += m.damage;
+                    taken += m.opponentDamage;
+                    std::pair<int, int> &ship = ships[m.ship];
+                    ++ship.first;
+                    if (m.result > 0) ++ship.second;
+                }
+                int total = (int)all.size();
+                Text(TEXT, rx, ry, std::to_string(total) + (total == 1 ? " match: " : " matches: ") + std::to_string(won) + " won, " + std::to_string(lost) + " lost, " +
+                                       std::to_string(drawn) + " drawn (" + Percent(won * 2 + drawn, total * 2) + ")", light);
+                ry += 22.f;
+                char damage[96];
+                std::snprintf(damage, sizeof(damage), "Damage score: %.1f dealt, %.1f taken a match", dealt / total, taken / total);
+                Text(TEXT, rx, ry, std::to_string(ranked) + " ranked, " + std::to_string(total - ranked) + " unranked", light);
+                ry += 22.f;
+                Text(TEXT, rx, ry, damage, light);
+                ry += 30.f;
+                ry += Style::Label(rx, ry, "BY SHIP") + 12.f;
+                std::vector<std::pair<std::string, std::pair<int, int>>> byShip(ships.begin(), ships.end());
+                std::stable_sort(byShip.begin(), byShip.end(), [](const std::pair<std::string, std::pair<int, int>> &l,
+                                                                  const std::pair<std::string, std::pair<int, int>> &r) { return l.second.first > r.second.first; });
+                Text(FONT, rx, ry, "SHIP", soft);
+                Text(FONT, rx + 230.f, ry, "PLAYED", soft);
+                Text(FONT, rx + 310.f, ry, "WON", soft);
+                Text(FONT, rx + 380.f, ry, "WIN RATE", soft);
+                ry += 19.f;
+                for (size_t i = 0; i < byShip.size() && i < 6; ++i)
+                {
+                    const std::string title = byShip[i].first.empty() ? std::string("?") : Ships::Title(byShip[i].first);
+                    Text(FONT, rx, ry, Cut(FONT, title, 220.f), light);
+                    Text(FONT, rx + 230.f, ry, std::to_string(byShip[i].second.first), light);
+                    Text(FONT, rx + 310.f, ry, std::to_string(byShip[i].second.second), light);
+                    Text(FONT, rx + 380.f, ry, Percent(byShip[i].second.second, byShip[i].second.first), light);
+                    ry += 19.f;
+                }
+                ry += 12.f;
+                ry += Style::Label(rx, ry, "LAST MATCHES") + 12.f;
+                for (size_t n = 0; n < all.size() && n < 5; ++n)
+                {
+                    const Stats::MatchLine &m = all[all.size() - 1 - n];
+                    Text(FONT, rx, ry, m.when.size() > 5 ? m.when.substr(5) : m.when, soft);
+                    Text(FONT, rx + 84.f, ry, Cut(FONT, "vs " + m.opponent, 150.f), light);
+                    Text(FONT, rx + 240.f, ry, PointsText(m.halves) + " : " + PointsText(m.opponentHalves), light);
+                    Text(FONT, rx + 300.f, ry, m.result > 0 ? "won" : m.result < 0 ? "lost" : "drawn", m.result > 0 ? green : m.result < 0 ? red : light);
+                    Text(FONT, rx + 350.f, ry, m.ranked ? "ranked" : "unranked", m.ranked ? gold : soft);
+                    ry += 19.f;
+                }
+            }
+            ButtonAt(g.ok, x + w - 30.f - 120.f, y + h - 58.f, 120.f, "CLOSE");
         }
 
         static void CloseTutorial()
@@ -590,6 +763,30 @@ namespace Duels
             return true;
         }
 
+        // FTL's own runs aren't played in FTL: Duels (roadmap BR, the user 2026-10-02): NEW GAME greyed (the TUTORIAL stays),
+        // CONTINUE too (it would go on with a saved run of FTL's). Before FTL draws its menu: its loop sets CONTINUE again
+        // while a saved run is there.
+        void BeforeRender()
+        {
+            CApp *app = G_->GetCApp();
+            if (!app) return;
+            app->menu.startButton.bActive = false;
+            app->menu.continueButton.bActive = false;
+        }
+
+        // A click on FTL's NEW GAME or CONTINUE does nothing (greyed, BeforeRender; FTL's loop may have set CONTINUE again).
+        static bool OnRunButton(int x, int y)
+        {
+            CApp *app = G_->GetCApp();
+            if (!app) return false;
+            for (const Button *button : {&app->menu.startButton, &app->menu.continueButton})
+            {
+                const Globals::Rect &r = button->hitbox;
+                if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return true;
+            }
+            return false;
+        }
+
         void Render()
         {
             LogMenuButtons();
@@ -620,6 +817,7 @@ namespace Duels
             case Window::Tutorial: RenderTutorial(); break;
             case Window::Guide: RenderGuide(); break;
             case Window::Crashed: RenderCrashed(); break;
+            case Window::Stats: RenderStats(); break;
             default: break;
             }
             CSurface::GL_SetColor(COLOR_WHITE);
@@ -647,6 +845,18 @@ namespace Duels
                 if (ReplayList::MouseClick(x, y)) return true;
                 if (Lobby::MouseClick(x, y)) return true;
                 if (OnTitle() && ClickPanel(x, y)) return true;
+                if (OnTitle() && OnRunButton(x, y)) return true;
+                // FTL's STATS: the duels' (roadmap BR), not its runs'.
+                CApp *app = G_->GetCApp();
+                if (OnTitle() && !Lobby::IsOpen() && !ReplayList::IsOpen() && app)
+                {
+                    const Globals::Rect &r = app->menu.statButton.hitbox;
+                    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+                    {
+                        OpenStats();
+                        return true;
+                    }
+                }
             }
             switch (g.open)
             {
@@ -666,6 +876,9 @@ namespace Duels
                 return true;
             case Window::Crashed:
                 if (g.ok.Contains(x, y)) CloseCrashed();
+                return true;
+            case Window::Stats:
+                if (g.ok.Contains(x, y)) g.open = Window::None;
                 return true;
             default:
                 return false;
@@ -711,6 +924,9 @@ namespace Duels
             case Window::Crashed:
                 if (key == SDLK_ESCAPE || key == SDLK_RETURN || key == SDLK_KP_ENTER) CloseCrashed();
                 return true;
+            case Window::Stats:
+                if (key == SDLK_ESCAPE || key == SDLK_RETURN || key == SDLK_KP_ENTER) g.open = Window::None;
+                return true;
             case Window::Guide:
                 if (key == SDLK_UP) Scroll(-1);
                 else if (key == SDLK_DOWN) Scroll(1);
@@ -729,6 +945,7 @@ namespace Duels
             if (args.size() >= 2 && args[1] == "name") OpenName(true);   // as on a first start
             else if (args.size() >= 2 && args[1] == "tutorial") OpenTutorial();
             else if (args.size() >= 2 && args[1] == "crashed") OpenCrashed();   // the note about the last session (test)
+            else if (args.size() >= 2 && args[1] == "stats") OpenStats();       // STATS (roadmap BR)
             else if (args.size() >= 2 && args[1] == "guide") OpenGuide(Window::None);
             else if (args.size() >= 2 && args[1] == "close") Close();
             else if (args.size() >= 2 && args[1] == "replays") return ReplayList::RunVerb(args, message);
@@ -763,6 +980,7 @@ HOOK_METHOD_PRIORITY(MainMenu, Open, -2000, () -> bool)
 HOOK_METHOD_PRIORITY(MainMenu, OnRender, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> MainMenu::OnRender -> Begin (DuelsMenu.cpp)\n")
+    Duels::Menu::BeforeRender();
     super();
     Duels::Menu::Render();
 }

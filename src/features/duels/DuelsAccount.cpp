@@ -47,6 +47,9 @@ namespace Duels
             bool changeKnown = false, awaitingChange = false;
             // Ranked matches' demos on their way to the master (roadmap BQ): one at a time.
             bool uploading = false;
+            int wins = 0, losses = 0, draws = 0, rank = 0;
+            std::string seasonName;
+            RecentView recent;              // the last ranked matches (roadmap BR)
         };
 
         static AccountState g;
@@ -111,6 +114,11 @@ namespace Duels
             v.rating = g.rating;
             v.rd = g.rd;
             v.matches = g.matches;
+            v.wins = g.wins;
+            v.losses = g.losses;
+            v.draws = g.draws;
+            v.rank = g.rank;
+            v.seasonName = g.seasonName;
             v.message = g.message;
             return v;
         }
@@ -146,6 +154,11 @@ namespace Duels
                                g.rating = (int)(std::atof(me["rating"].c_str()) + 0.5);
                                g.rd = (int)(std::atof(me["rd"].c_str()) + 0.5);
                                g.matches = std::atoi(me["matches"].c_str());
+                               g.wins = std::atoi(me["wins"].c_str());
+                               g.losses = std::atoi(me["losses"].c_str());
+                               g.draws = std::atoi(me["draws"].c_str());
+                               g.rank = std::atoi(me["rank"].c_str());
+                               g.seasonName = me["season_name"];
                                g.message.clear();
                                // A ranked match counted: the new rating, for the end screen.
                                if (g.awaitingChange && g.matches != g.matchesBefore)
@@ -234,6 +247,58 @@ namespace Duels
                            else Log("Account: the demo %s waits for the next start: %s", demo.c_str(), ErrorOf(r).c_str());
                        },
                        "application/octet-stream");
+        }
+
+        void FetchRecent()
+        {
+            Load();
+            g.recent.asked = true;
+            if (g.state != State::SignedIn || g.steamId.empty())
+            {
+                g.recent.known = false;
+                g.recent.error = "not signed in";
+                return;
+            }
+            const std::string own = g.steamId;
+            Http::Send("GET", Base() + "/api/matches?player=" + own, "", "",
+                       [own](const Http::Response &r)
+                       {
+                           std::vector<Http::Object> list;
+                           if (r.status != 200 || !Http::ReadList(r.body, list))
+                           {
+                               g.recent.known = false;
+                               g.recent.error = ErrorOf(r);
+                               Log("Account: no recent matches: %s", g.recent.error.c_str());
+                               return;
+                           }
+                           g.recent.matches.clear();
+                           for (Http::Object &m : list)
+                           {
+                               bool host = m["host_steam_id"] == own;
+                               RecentMatch match;
+                               match.ended = std::atoll(m["ended"].c_str());
+                               match.opponent = host ? m["guest"] : m["host"];
+                               match.halves = std::atoi((host ? m["host_halves"] : m["guest_halves"]).c_str());
+                               match.opponentHalves = std::atoi((host ? m["guest_halves"] : m["host_halves"]).c_str());
+                               const std::string &winner = m["winner"];
+                               match.result = winner == "draw" || winner == "none" ? 0 : (winner == "host") == host ? 1 : -1;
+                               match.rated = m["rated"] == "true";
+                               const std::string &before = host ? m["host_before"] : m["guest_before"];
+                               const std::string &after = host ? m["host_after"] : m["guest_after"];
+                               match.ratingKnown = !before.empty() && before != "null" && !after.empty() && after != "null";
+                               match.before = (int)(std::atof(before.c_str()) + 0.5);
+                               match.after = (int)(std::atof(after.c_str()) + 0.5);
+                               g.recent.matches.push_back(match);
+                           }
+                           g.recent.known = true;
+                           g.recent.error.clear();
+                           Log("Account: %u recent ranked match(es)", (unsigned)g.recent.matches.size());
+                       });
+        }
+
+        RecentView GetRecent()
+        {
+            return g.recent;
         }
 
         void StartSignIn()

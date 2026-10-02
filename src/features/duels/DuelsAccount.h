@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 // The player's account at the master server (roadmap BG, 4.3; docs/design/ranked-play.md in the FTL: Duels repository):
 // signing in through Steam like a TV app's login (the game asks the master for a code, the player signs in through
@@ -28,6 +30,8 @@ namespace Duels
             std::string name, steamId;      // signed in
             bool ratingKnown = false;
             int rating = 0, rd = 0, matches = 0;
+            int wins = 0, losses = 0, draws = 0, rank = 0;   // the season now's
+            std::string seasonName;
             std::string message;            // the last news ("the code expired", "the master doesn't answer")
         };
         View GetView();
@@ -42,6 +46,26 @@ namespace Duels
         void Refresh();
         // Ranked matches' demos for the master (roadmap BQ): each waits as demos\<file>.upload until the master has it.
         void UploadDemos();
+
+        // The player's last ranked matches at the master (roadmap BR, the main menu's STATS: GET /api/matches?player=).
+        struct RecentMatch
+        {
+            int64_t ended = 0;              // Unix time
+            std::string opponent;
+            int halves = 0, opponentHalves = 0;
+            int result = 0;                 // 1 won, 0 drawn, -1 lost
+            bool rated = false;
+            bool ratingKnown = false;
+            int before = 0, after = 0;
+        };
+        struct RecentView
+        {
+            bool asked = false, known = false;
+            std::vector<RecentMatch> matches;   // the newest first
+            std::string error;
+        };
+        void FetchRecent();
+        RecentView GetRecent();
         void Frame();
 
         // A ticket for a ranked room on a relay (the master's id of it, or "server:port"): its bytes and its key (both

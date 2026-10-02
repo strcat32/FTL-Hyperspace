@@ -17,6 +17,8 @@ namespace Duels
         void OnMenuOpen();
         // Over FTL's menu (MainMenu::OnRender, after FTL's own).
         void Render();
+        // Before FTL draws its main menu: its NEW GAME and CONTINUE greyed (roadmap BR).
+        void BeforeRender();
         // The menu's input while one of our windows is open: true when ours took it (FTL's menu doesn't see it).
         bool MouseMove(int x, int y);
         bool MouseClick(int x, int y);

@@ -3339,6 +3339,11 @@ namespace Duels
             }
         }
 
+        std::string OpponentShip()
+        {
+            return g_match.opponentShip;
+        }
+
         const std::string &PlayerName()
         {
             return g_match.rankedName.empty() ? g_match.playerName : g_match.rankedName;
