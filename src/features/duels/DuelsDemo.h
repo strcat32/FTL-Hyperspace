@@ -24,21 +24,19 @@ namespace Duels
         static const uint8_t COMPRESSION_DEFLATE = 1;
         static const uint8_t FROM_HOST = 0, FROM_GUEST = 1;
         static const uint8_t KIND_MESSAGE = 0;      // a message between the games, as it went
-        static const uint8_t KIND_FULL_STATE = 1;   // a player's own state without the vision (never sent; BA joins the other's)
+        static const uint8_t KIND_FULL_STATE = 1;   // a player's own state without the vision (never sent to the other game;
+                                                    // the relay's demo has both, roadmap CN)
         static const uint8_t KIND_MARKER = 2;       // MARK_*
         static const uint8_t MARK_HEADER = 0, MARK_END = 1;
         static const uint8_t MARK_STATUS = 2;       // the match's status as it changes (BB): ranked (u8), why not (str)
-        static const uint8_t MARK_SWAP = 3;         // the other's full states came after the match (BA): how far their
-                                                    // demo's start is after ours (f64 ms), how many (u32)
+                                                    // (3: the swap after a match, BA part 2, gone in protocol 19)
         static const uint8_t MARK_PEER_COLD = 4;    // the other game came back after a crash (roadmap BR): who (u8,
                                                     // FROM_*); its states count from the start again
-        // The swap after a match (BA, part 2): MSG_DEMO_STATES (reliable, either way, once the match is over) carries our
-        // full states in pieces: the deflated length (u32), the raw length (u32), the piece's place (u32), our demo's
-        // start on our clock (f64; -1 without a demo), the bytes. MSG_DEMO_SAVED (reliable): all of the other's came.
-        static const uint8_t MSG_DEMO_STATES = 43, MSG_DEMO_SAVED = 44;
 
         // A new match's connection (not a return after a lost one): a file opens, if demos are on (duels.cfg
-        // record_demos, on by default; the `demo` verb). The end of the connection or leaving closes it.
+        // record_demos, on by default; the `demo` verb). The end of the connection or leaving closes it. A ranked room's
+        // match is recorded at the relay too (roadmap CN, Net::RecordsAtRelay), whatever the setting: the demo's header,
+        // our full states and its markers go there.
         void Begin(bool host, const std::string &hostName, const std::string &guestName);
         // The other game came back after a crash (roadmap BR, DuelsRejoin.cpp): its states count from the start again,
         // in a replay of this demo too (MARK_PEER_COLD).
@@ -51,17 +49,13 @@ namespace Duels
         void Sent(uint8_t type, const uint8_t *data, size_t size);
         void Received(uint8_t type, const uint8_t *data, size_t size);
         // Our own ship's state as the opponent would get it with all in sight (DuelsMatch.cpp writes it after the one
-        // that goes, with Vision::FullScope), recorded or not: it is kept for the swap after the match.
+        // that goes, with Vision::FullScope, when a demo or the relay records): into the demo, and to the relay.
         void FullState(const Writer &w);
-        // The swap after a match (roadmap BA, part 2; the user, 2026-10-01): when a match is over the two games send each
-        // other their full states (nothing is hidden then), and each adds the other's to its demo at the times they went
-        // (on its own clock), so that each player's own demo has both sides. Match::OnFrame starts it at the match's end
-        // and sends its pieces, one a frame; the listener hands its messages here.
-        void StartSwap();
-        void SwapFrame(double now);
-        void OnSwapMessage(uint8_t type, Reader &r);
-        // Ours not all with the other game yet, or theirs not all here (LOBBY waits for it, 10 s at most).
-        bool SwapBusy();
+        // Whether anything records our full states now (DuelsMatch.cpp writes them only then).
+        bool WantsFullStates();
+        // The relay's record, each frame of a duel (Match::OnFrame): a record is a UDP packet, so the header and the
+        // markers go more than once (the relay keeps one header; a marker again changes nothing).
+        void RelayFrame();
         // The match's status (roadmap BB): ranked, or unranked and why; a recording keeps each change (MARK_STATUS), for
         // its replay's line at the top and the demo browser.
         void NoteStatus(bool ranked, const std::string &why);
@@ -83,8 +77,7 @@ namespace Duels
             double lengthMs = 0.0;
         };
         std::vector<DemoInfo> ListDemos();
-        // Test verb: demo (its state), demo on|off (record the next matches or not), demo stop (close the file now),
-        // demo hold on|off (the swap's pieces wait: LOBBY's wait for the other game, in tests).
+        // Test verb: demo (its state), demo on|off (record the next matches or not), demo stop (close the file now).
         bool RunVerb(const Command &cmd, std::string &message);
 
         // Replay (roadmap 5.1, docs/design/demos.md, stages 1-5): a demo played back in this game, in Net's replay mode.
@@ -98,9 +91,6 @@ namespace Duels
         // its full states at the demo's times. With full sensors the other ship follows the other player's full states,
         // and everything of both ships is in sight (Match::FullSensors).
         bool StartReplay(const std::string &path, std::string &message);
-        // A ranked room's match: its ticket's nonce (Net::LastTicketNonce); its demo goes to the master when it is saved
-        // (roadmap BQ).
-        void SetTicket(const std::string &nonce);
         // A replay that runs ends (FTL's main menu, roadmap BO: it went on unseen behind the menu).
         void StopReplay(const std::string &why);
         void ReplayFrame(double now);   // Net::Update while it replays: a seek's arrival, the replay's end
@@ -149,7 +139,8 @@ namespace Duels
         // sounds are held (SoundControl::PlaySoundMix, roadmap CZ: a seek was a burst of noise).
         bool SoundsHeld();
         // The other player's side (BA): the replay starts again from there and runs to where it was. Full sensors on or
-        // off, at once. Both need both players' full states (ReplayView::bothSides); the feed says so otherwise.
+        // off, at once. Both need both players' full states (ReplayView::bothSides: the relay's demo of a ranked match, or
+        // the other player's demo joined); the feed says so otherwise.
         void ReplaySwitchView();
         void ReplaySetFullSensors(bool on);
         bool ReplayFullSensors();

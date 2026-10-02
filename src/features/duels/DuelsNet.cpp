@@ -102,7 +102,7 @@ namespace Duels
             // which needs a new ticket); the match's result for the relay, until it has it; a disconnection waiting
             // for that.
             std::string ticket, ticketKey;
-            std::string lastTicketNonce;    // the nonce of the last ticket a room was opened or joined with (a demo's upload)
+            std::string lastTicketNonce;    // the nonce of the last ticket a room was opened or joined with (the statistics)
             bool backRanked = false;
             bool ticketAsked = false;
             bool resultQueued = false, resultAcked = false;
@@ -946,6 +946,27 @@ namespace Duels
             SendResultNow();
             Log("Net: the match's result to the relay (outcome %u, half points %u:%u, flags %u)", (unsigned)result.outcome,
                 (unsigned)result.halves, (unsigned)result.peerHalves, (unsigned)result.flags);
+        }
+
+        bool RecordsAtRelay()
+        {
+            const Session &s = g_session;
+            return s.relay && !s.replay && s.phase == Phase::Connected && s.relayClient.Ranked() &&
+                   s.relayClient.GetState() == Relay::State::InRoom;
+        }
+
+        bool SendRecord(uint8_t kind, uint8_t type, const uint8_t *data, size_t size)
+        {
+            Session &s = g_session;
+            std::vector<uint8_t> packet;
+            if (!RecordsAtRelay() || !s.socket.IsOpen() || !s.relayClient.Record(kind, type, data, size, packet)) return false;
+            if (s.cut)
+            {
+                ++s.cutPackets;
+                return false;
+            }
+            s.socket.SendTo(s.peer, packet.data(), packet.size());
+            return true;
         }
 
         int ResultState()

@@ -18,7 +18,7 @@ namespace Duels
         // Bump whenever a message changes, or anything that changes how a match plays out (the rules, the shop, the
         // ships, a fix in the fight): two games play each other only with the same protocol (roadmap CE). A change
         // only of the looks (the windows, a text) keeps it: such versions play each other.
-        static const uint16_t PROTOCOL_VERSION = 18;
+        static const uint16_t PROTOCOL_VERSION = 19;
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;
@@ -131,8 +131,8 @@ namespace Duels
         // The room is ranked: both players came with a valid ticket (the relay says so). The other player's rating
         // from their ticket.
         bool RoomRanked();
-        // The nonce (16 bytes) of the last ticket a ranked room was opened or joined with: a ranked match's demo goes to
-        // the master under it (roadmap BQ).
+        // The nonce (16 bytes) of the last ticket a ranked room was opened or joined with: a ranked match's summary names
+        // it for the statistics (DuelsStats.cpp).
         std::string LastTicketNonce();
         int PeerRating();
         // A relay's name for the master's tickets: "server:port" (the port always).
@@ -142,6 +142,12 @@ namespace Duels
         void SendResult(const Relay::MatchResult &result);
         // The result: 0 none, 1 on its way, 2 the relay has it, -1 the relay didn't answer.
         int ResultState();
+        // A ranked room's match is recorded at the relay (roadmap CN): its demo is the server's. Our full states and the
+        // demo's markers go there for the record only (the other game never gets them); the messages it passes on, it
+        // records itself. True while that is so: a ranked relay room, connected, not a replay.
+        bool RecordsAtRelay();
+        // A record for the relay's demo (DuelsDemo.h's kinds and types); false when it didn't go.
+        bool SendRecord(uint8_t kind, uint8_t type, const uint8_t *data, size_t size);
 
         // A relay of the list: its name there ("server[:port]"), and where it is.
         struct RelayAddress

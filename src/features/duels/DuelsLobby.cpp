@@ -1129,14 +1129,14 @@ namespace Duels
         void ToLobby()
         {
             if (g.saving) return;
-            // The swap of full states, and a ranked match's result on its way to the relay (roadmap BG).
-            if (Demo::SwapBusy() || Net::ResultState() == 1)
+            // A ranked match's result on its way to the relay (roadmap BG).
+            if (Net::ResultState() == 1)
             {
                 g.saving = true;
                 g.savingUntilMs = WallMs() + 10000.0;
                 g.cover = true;
                 g.coverUntilMs = g.savingUntilMs + 1000.0;
-                Log("Lobby: LOBBY waits for the swap of full states after the match");
+                Log("Lobby: LOBBY waits for the relay to have the match's result");
                 return;
             }
             LeaveToLobby();
@@ -1176,7 +1176,7 @@ namespace Duels
             }
             CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, Rgb(6, 8, 12));
             CSurface::GL_SetColor(Rgb(226, 230, 236));
-            freetype::easy_printCenter(24, 640.f, 330.f, g.saving ? "SAVING THE REPLAY" : g.pending == Pending::Rejoin ? "BACK INTO THE MATCH"
+            freetype::easy_printCenter(24, 640.f, 330.f, g.saving ? "SENDING THE RESULT" : g.pending == Pending::Rejoin ? "BACK INTO THE MATCH"
                                        : "STARTING THE DUEL");   // font 24: its letters 15 px lower
             CSurface::GL_SetColor(COLOR_WHITE);
         }
@@ -1202,11 +1202,11 @@ namespace Duels
         {
             CApp *app = G_->GetCApp();
             if (!app) return;
-            // LOBBY once the swap of full states is done (or 10 s on).
-            if (g.saving && ((!Demo::SwapBusy() && Net::ResultState() != 1) || WallMs() > g.savingUntilMs))
+            // LOBBY once the relay has the result (or 10 s on).
+            if (g.saving && (Net::ResultState() != 1 || WallMs() > g.savingUntilMs))
             {
-                Log("Lobby: %s", Demo::SwapBusy() || Net::ResultState() == 1 ? "the swap of full states (or the result) isn't done after 10 s: LOBBY all the same"
-                                                                              : "the swap of full states is done");
+                Log("Lobby: %s", Net::ResultState() == 1 ? "the relay doesn't have the result after 10 s: LOBBY all the same"
+                                                         : "the relay has the result");
                 g.saving = false;
                 g.cover = false;
                 LeaveToLobby();

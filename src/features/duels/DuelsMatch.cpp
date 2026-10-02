@@ -1040,8 +1040,8 @@ namespace Duels
             uint16_t seq = ++g_match.stateSeq;
             WriteOwnState(w, ship, now, seq, false);
             Net::Send(MSG_STATE, w, false);
-            // Our ship with all in sight: for a demo (roadmap 5.1), and kept for the swap after the match (BA: the other
-            // game may record), recorded or not.
+            // Our ship with all in sight: for our demo (roadmap 5.1) and the relay's (CN), when either records.
+            if (Demo::WantsFullStates())
             {
                 Vision::FullScope full;
                 Writer record;
@@ -3151,7 +3151,6 @@ namespace Duels
                 ResetMatch();
                 // A demo of the match (roadmap 5.1), from its first message on.
                 Demo::Begin(Net::IsHost(), Net::IsHost() ? Net::OwnName() : Net::PeerName(), Net::IsHost() ? Net::PeerName() : Net::OwnName());
-                if (Net::RoomRanked() && !Net::Replaying()) Demo::SetTicket(Net::LastTicketNonce());
                 Fair::OnConnected(false);
                 // No pause in a duel, from the first preparation on (rules, section 1): the store and the menus
                 // would pause this game.
@@ -3229,10 +3228,6 @@ namespace Duels
                 Demo::Received(type, reader.Position(), reader.Remaining());
                 switch (type)
                 {
-                case Demo::MSG_DEMO_STATES:
-                case Demo::MSG_DEMO_SAVED:
-                    Demo::OnSwapMessage(type, reader);
-                    break;
                 case MSG_CHAT:
                     ReceiveChat(reader.Str());
                     break;
@@ -3367,12 +3362,8 @@ namespace Duels
             View::SetDuelOpponent((g_match.replicaReady || Ai::ShipStands()) && G_->GetShipManager(1) != nullptr);
             // A match against the AI runs in this game alone (roadmap 3.6): the frame without the network's part.
             if (!Net::IsConnected() && !Rounds::IsLocal()) return;
-            // The swap of full states after the match (roadmap BA, part 2): from the match's end, a piece a frame.
-            if (Net::IsConnected() && !Net::Replaying())
-            {
-                if (Rounds::GetPhase() == Rounds::Phase::MatchOver) Demo::StartSwap();
-                Demo::SwapFrame(now);
-            }
+            // The relay's record of a ranked match (roadmap CN): its header and markers again.
+            Demo::RelayFrame();
 
             MatchState &m = g_match;
             if (InGame())
@@ -3422,8 +3413,8 @@ namespace Duels
             }
             else TrackShots(now);
             m.lastTrackMs = now;
-            // The match's status as it changes, for the demo (roadmap BB).
-            if (Demo::Recording())
+            // The match's status as it changes, for the demo (roadmap BB) and the relay's (CN).
+            if (Demo::Recording() || Net::RecordsAtRelay())
             {
                 std::string why;
                 bool ranked = Rounds::Ranked(why);

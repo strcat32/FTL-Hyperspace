@@ -1,7 +1,6 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsBoarding.h"
-#include "DuelsAccount.h"
 #include "DuelsConfig.h"
 #include "DuelsConsole.h"
 #include "DuelsCrew.h"
@@ -60,29 +59,30 @@ namespace Duels
             uint32_t sent = 0, received = 0, fullStates = 0;
             int statusRanked = -1;          // the match's status as last recorded (BB)
             std::string statusWhy;
-            std::string ticketNonce;        // a ranked room's match: its ticket's nonce (the demo goes to the master, BQ)
         };
 
         static DemoState g;
 
-        // The swap after a match (BA, part 2).
-        struct SwapState
+        // The relay's demo of a ranked match (roadmap CN): what went there, and when it goes again. The header three times
+        // a second apart, a comeback's marker twice, the status at each change and every 10 s.
+        struct RelayRecord
         {
-            std::vector<uint8_t> own;       // our full states this match: each one's length (u16) and bytes
-            uint32_t ownCount = 0;
-            bool started = false;           // the match is over: ours are going (or gone)
-            std::vector<uint8_t> out;       // ours, deflated
-            size_t outSent = 0, pieces = 0;
-            bool lastSent = false;
-            double nextPieceMs = 0.0;
-            bool theirsHaveOurs = false;    // the other game said it has all of ours (MSG_DEMO_SAVED)
-            std::vector<uint8_t> in;        // theirs, as the pieces come
-            size_t piecesIn = 0;
-            bool inDone = false;
-            bool hold = false;              // tests: our pieces wait (demo hold on)
+            std::vector<uint8_t> header;
+            int headerSends = 0;
+            double nextHeaderMs = 0.0;
+            int statusRanked = -1;
+            std::string statusWhy;
+            double nextStatusMs = 0.0;
+            std::vector<uint8_t> peerCold;
+            double peerColdAgainMs = -1.0;
+            uint32_t fullStates = 0;
+            bool tooLongSaid = false;
         };
 
-        static SwapState g_swap;
+        static RelayRecord g_relay;
+        static const int RELAY_HEADER_SENDS = 3;
+        static const double RELAY_AGAIN_MS = 1000.0;
+        static const double RELAY_STATUS_MS = 10000.0;
 
         struct DemoRecord
         {
@@ -203,18 +203,44 @@ namespace Duels
             return word.empty() ? std::string("player") : word;
         }
 
+        static void SendStatusToRelay()
+        {
+            Writer w;
+            w.Bool(g_relay.statusRanked == 1);
+            w.Str(g_relay.statusWhy);
+            Net::SendRecord(KIND_MARKER, MARK_STATUS, w.data.data(), w.data.size());
+            g_relay.nextStatusMs = WallMs() + RELAY_STATUS_MS;
+        }
+
         void Begin(bool host, const std::string &hostName, const std::string &guestName)
         {
             if (g.file) End("a new match");
-            g.ticketNonce.clear();
-            g_swap = SwapState();   // a new connection, a new swap (BA)
-            if (!Enabled() || Net::Replaying()) return;
+            g_relay = RelayRecord();
+            if (Net::Replaying()) return;
+            std::time_t now = std::time(nullptr);
+            Writer header;
+            header.U16(Net::PROTOCOL_VERSION);
+            header.Str(Net::OwnVersion());
+            header.Str(Net::OwnBuild());
+            header.Str(Fair::GameDataHash());
+            header.U8(host ? FROM_HOST : FROM_GUEST);
+            header.Str(hostName);
+            header.Str(guestName);
+            header.U32((uint32_t)now);
+            header.Bool(true);   // full states of the recorder's ship
+            // A ranked room's match: the relay's demo (roadmap CN) begins with a header too (the host's is its own).
+            if (Net::RecordsAtRelay())
+            {
+                g_relay.header = header.data;
+                RelayFrame();
+                Log("Demo: the relay records this ranked match");
+            }
+            if (!Enabled()) return;
 #ifdef _WIN32
             _mkdir(FOLDER);
 #else
             mkdir(FOLDER, 0755);
 #endif
-            std::time_t now = std::time(nullptr);
             std::tm local = *std::localtime(&now);
             char stamp[32];
             std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
@@ -255,18 +281,7 @@ namespace Duels
             uint8_t head[3] = {(uint8_t)(FORMAT & 0xff), (uint8_t)(FORMAT >> 8), COMPRESSION_DEFLATE};
             std::fwrite(head, 1, sizeof(head), file);
             g.fileBytes = sizeof(MAGIC) + sizeof(head);
-
-            Writer w;
-            w.U16(Net::PROTOCOL_VERSION);
-            w.Str(Net::OwnVersion());
-            w.Str(Net::OwnBuild());
-            w.Str(Fair::GameDataHash());
-            w.U8(host ? FROM_HOST : FROM_GUEST);
-            w.Str(hostName);
-            w.Str(guestName);
-            w.U32((uint32_t)now);
-            w.Bool(true);   // full states of the recorder's ship
-            Record(host ? FROM_HOST : FROM_GUEST, KIND_MARKER, MARK_HEADER, w.data.data(), w.data.size());
+            Record(host ? FROM_HOST : FROM_GUEST, KIND_MARKER, MARK_HEADER, header.data.data(), header.data.size());
             Log("Demo: recording %s", path.c_str());
         }
 
@@ -284,44 +299,53 @@ namespace Duels
             Log("Demo: saved %s (%s; %llu records, %u sent, %u received, %u full states; %.0f kB, %.0f kB in the file, %.0f s)",
                 g.path.c_str(), why.c_str(), (unsigned long long)g.records, g.sent, g.received, g.fullStates, g.rawBytes / 1024.0,
                 g.fileBytes / 1024.0, (WallMs() - g.startMs) / 1000.0);
-            // A ranked room's demo goes to the master (roadmap BQ: signed-in players download it from the match's page):
-            // it waits as <demo>.upload, its ticket's nonce in it, until the master has it (Account::UploadDemos; a game
-            // closed before that sends it at its next start).
-            if (g.ticketNonce.size() == 16)
-            {
-                static const char *const DIGITS = "0123456789abcdef";
-                std::string hex;
-                for (unsigned char c : g.ticketNonce)
-                {
-                    hex += DIGITS[c >> 4];
-                    hex += DIGITS[c & 15];
-                }
-                FILE *marker = std::fopen((g.path + ".upload").c_str(), "w");
-                if (marker)
-                {
-                    std::fprintf(marker, "%s\n", hex.c_str());
-                    std::fclose(marker);
-                }
-                g.ticketNonce.clear();
-                Account::UploadDemos();
-            }
         }
 
         void NotePeerCold()
         {
-            if (!g.file) return;
             Writer w;
-            w.U8(g.host ? FROM_GUEST : FROM_HOST);
+            w.U8(Net::IsHost() ? FROM_GUEST : FROM_HOST);
+            if (Net::RecordsAtRelay())
+            {
+                Net::SendRecord(KIND_MARKER, MARK_PEER_COLD, w.data.data(), w.data.size());
+                g_relay.peerCold = w.data;
+                g_relay.peerColdAgainMs = WallMs() + RELAY_AGAIN_MS;
+            }
+            if (!g.file) return;
             Record(g.host ? FROM_HOST : FROM_GUEST, KIND_MARKER, MARK_PEER_COLD, w.data.data(), w.data.size());
         }
 
-        void SetTicket(const std::string &nonce)
+        bool WantsFullStates()
         {
-            if (g.file && nonce.size() == 16) g.ticketNonce = nonce;
+            return g.file != nullptr || Net::RecordsAtRelay();
+        }
+
+        void RelayFrame()
+        {
+            if (!Net::RecordsAtRelay()) return;
+            const double now = WallMs();
+            if (!g_relay.header.empty() && g_relay.headerSends < RELAY_HEADER_SENDS && now >= g_relay.nextHeaderMs)
+            {
+                Net::SendRecord(KIND_MARKER, MARK_HEADER, g_relay.header.data(), g_relay.header.size());
+                ++g_relay.headerSends;
+                g_relay.nextHeaderMs = now + RELAY_AGAIN_MS;
+            }
+            if (g_relay.peerColdAgainMs >= 0.0 && now >= g_relay.peerColdAgainMs)
+            {
+                Net::SendRecord(KIND_MARKER, MARK_PEER_COLD, g_relay.peerCold.data(), g_relay.peerCold.size());
+                g_relay.peerColdAgainMs = -1.0;
+            }
+            if (g_relay.statusRanked >= 0 && now >= g_relay.nextStatusMs) SendStatusToRelay();
         }
 
         void NoteStatus(bool ranked, const std::string &why)
         {
+            if (Net::RecordsAtRelay() && (g_relay.statusRanked != (ranked ? 1 : 0) || g_relay.statusWhy != why))
+            {
+                g_relay.statusRanked = ranked ? 1 : 0;
+                g_relay.statusWhy = why;
+                SendStatusToRelay();
+            }
             if (!g.file || (g.statusRanked == (ranked ? 1 : 0) && g.statusWhy == why)) return;
             g.statusRanked = ranked ? 1 : 0;
             g.statusWhy = why;
@@ -335,145 +359,40 @@ namespace Duels
         void Sent(uint8_t type, const uint8_t *data, size_t size)
         {
             // Our states too, as they went (what the opponent saw of our ship: their view in a replay, BA); in full they
-            // come with FullState. The swap's own messages aren't the match's.
-            if (!g.file || type == MSG_DEMO_STATES || type == MSG_DEMO_SAVED) return;
+            // come with FullState.
+            if (!g.file) return;
             ++g.sent;
             Record(g.host ? FROM_HOST : FROM_GUEST, KIND_MESSAGE, type, data, size);
         }
 
         void Received(uint8_t type, const uint8_t *data, size_t size)
         {
-            if (!g.file || type == MSG_DEMO_STATES || type == MSG_DEMO_SAVED) return;
+            if (!g.file) return;
             ++g.received;
             Record(g.host ? FROM_GUEST : FROM_HOST, KIND_MESSAGE, type, data, size);
         }
 
         void FullState(const Writer &w)
         {
-            // Kept for the swap after the match (BA), recorded or not: the other game may record.
-            if (!g_swap.started && w.data.size() <= 0xffff)
+            if (Net::RecordsAtRelay())
             {
-                g_swap.own.push_back((uint8_t)(w.data.size() & 0xff));
-                g_swap.own.push_back((uint8_t)(w.data.size() >> 8));
-                g_swap.own.insert(g_swap.own.end(), w.data.begin(), w.data.end());
-                ++g_swap.ownCount;
+                if (Net::SendRecord(KIND_FULL_STATE, MSG_STATE, w.data.data(), w.data.size())) ++g_relay.fullStates;
+                else if (w.data.size() + 2 > Relay::MAX_PAYLOAD && !g_relay.tooLongSaid)
+                {
+                    g_relay.tooLongSaid = true;
+                    Log("Demo: a full state too long for the relay's record (%u bytes): such ones stay out of it", (unsigned)w.data.size());
+                }
             }
             if (!g.file) return;
             ++g.fullStates;
             Record(g.host ? FROM_HOST : FROM_GUEST, KIND_FULL_STATE, MSG_STATE, w.data.data(), w.data.size());
         }
 
-        // ---------------------------------------------------------------------------------------------------------
-        // The swap after a match (roadmap BA, part 2)
-        // ---------------------------------------------------------------------------------------------------------
-
-        static const size_t SWAP_PIECE = 1000;                 // deflated bytes a message (a packet holds 1158)
-        static const double SWAP_PIECE_MS = 1000.0 / 60.0;     // a piece a frame at most (a relay takes 300 packets a second)
-        static const size_t SWAP_PENDING = 24;                 // no new piece while this many reliable messages wait
-
-        void StartSwap()
-        {
-            if (g_swap.started || !Net::IsConnected() || Net::Replaying()) return;
-            g_swap.started = true;
-            uLongf size = compressBound((uLong)g_swap.own.size());
-            g_swap.out.resize(size);
-            if (g_swap.own.empty() ||
-                compress2(g_swap.out.data(), &size, g_swap.own.data(), (uLong)g_swap.own.size(), Z_DEFAULT_COMPRESSION) != Z_OK)
-                size = 0;
-            g_swap.out.resize(size);
-            Log("Demo: the match is over: our %u full states go to the other game (%.0f kB, %.0f kB deflated)", g_swap.ownCount,
-                g_swap.own.size() / 1024.0, size / 1024.0);
-        }
-
-        void SwapFrame(double now)
-        {
-            if (!g_swap.started || g_swap.lastSent || g_swap.hold || !Net::IsConnected()) return;
-            if (now < g_swap.nextPieceMs || Net::PendingReliable() > SWAP_PENDING) return;
-            const size_t n = std::min(SWAP_PIECE, g_swap.out.size() - g_swap.outSent);
-            Writer w;
-            w.U32((uint32_t)g_swap.out.size());
-            w.U32((uint32_t)g_swap.own.size());
-            w.U32((uint32_t)g_swap.outSent);
-            w.F64(g.file ? g.startMs : -1.0);   // our demo's start (the other's demo knows how far apart the two began)
-            if (n > 0) w.Bytes(g_swap.out.data() + g_swap.outSent, n);
-            if (!Net::Send(MSG_DEMO_STATES, w, true)) return;
-            g_swap.outSent += n;
-            ++g_swap.pieces;
-            g_swap.nextPieceMs = now + SWAP_PIECE_MS;
-            if (g_swap.outSent >= g_swap.out.size())
-            {
-                g_swap.lastSent = true;
-                Log("Demo: our full states went (%u pieces)", (unsigned)g_swap.pieces);
-            }
-        }
-
-        void OnSwapMessage(uint8_t type, Reader &r)
-        {
-            if (type == MSG_DEMO_SAVED)
-            {
-                g_swap.theirsHaveOurs = true;
-                Log("Demo: the other game has our full states");
-                return;
-            }
-            if (type != MSG_DEMO_STATES || g_swap.inDone) return;
-            const uint32_t total = r.U32(), raw = r.U32(), offset = r.U32();
-            const double theirStart = r.F64();
-            const size_t n = r.Remaining();
-            if (!r.Ok() || offset != g_swap.in.size() || (size_t)offset + n > total || raw > 64u * 1024u * 1024u)
-            {
-                Log("Demo: a piece of the other game's full states doesn't fit (%u bytes at %u of %u)", (unsigned)n, offset, total);
-                return;
-            }
-            if (n > 0) g_swap.in.insert(g_swap.in.end(), r.Position(), r.Position() + n);
-            ++g_swap.piecesIn;
-            if (g_swap.in.size() < total) return;
-            g_swap.inDone = true;
-            // All here: theirs into our demo, each at the time it went, on our clock.
-            std::vector<uint8_t> states(raw);
-            uLongf size = raw;
-            const bool unpacked = total == 0 || uncompress(states.data(), &size, g_swap.in.data(), total) == Z_OK;
-            uint32_t count = 0;
-            double apart = theirStart >= 0.0 && g.file ? Net::PeerToLocalTime(theirStart) - g.startMs : 0.0;
-            if (unpacked && total > 0 && g.file)
-            {
-                const uint8_t side = g.host ? FROM_GUEST : FROM_HOST;
-                for (size_t pos = 0; pos + 2 <= size;)
-                {
-                    const size_t length = (size_t)states[pos] | ((size_t)states[pos + 1] << 8);
-                    pos += 2;
-                    if (pos + length > size) break;
-                    if (length >= sizeof(double))
-                    {
-                        // (One from before our demo's start goes in at its start: their first state can go before
-                        // our demo begins.)
-                        double sentAt;
-                        std::memcpy(&sentAt, &states[pos], sizeof(sentAt));
-                        const double ms = std::max(0.0, Net::PeerToLocalTime(sentAt) - g.startMs);
-                        RecordAt((uint32_t)ms, side, KIND_FULL_STATE, MSG_STATE, &states[pos], length);
-                        ++count;
-                    }
-                    pos += length;
-                }
-                Writer marker;
-                marker.F64(apart);
-                marker.U32(count);
-                Record(g.host ? FROM_HOST : FROM_GUEST, KIND_MARKER, MARK_SWAP, marker.data.data(), marker.data.size());
-            }
-            Writer w;
-            Net::Send(MSG_DEMO_SAVED, w, true);
-            Log("Demo: the other game's full states came (%u pieces, %.0f kB): %u into our demo (their demo began %+.0f ms after ours)%s",
-                (unsigned)g_swap.piecesIn, total / 1024.0, count, apart, unpacked ? "" : "; they don't unpack");
-        }
-
-        bool SwapBusy()
-        {
-            return g_swap.started && Net::IsConnected() && !Net::Replaying() && (!g_swap.theirsHaveOurs || !g_swap.inDone);
-        }
-
         std::string Status()
         {
             std::ostringstream out;
             out << "demo: " << (Enabled() ? "on" : "off");
+            if (Net::RecordsAtRelay()) out << ", the relay records this match (" << g_relay.fullStates << " full states sent)";
             if (g.file)
             {
                 out << ", recording " << g.path << " (" << g.records << " records, " << (g.rawBytes / 1024) << " kB, "
@@ -828,16 +747,8 @@ namespace Duels
             const uint8_t other = Other(out.recorder);
             if (out.hasFull[other])
             {
-                for (const DemoRecord &record : out.records)
-                {
-                    if (record.kind != KIND_MARKER || record.type != MARK_SWAP) continue;
-                    Reader r(record.data);
-                    const double apart = r.F64();
-                    const uint32_t count = r.U32();
-                    if (r.Ok())
-                        Log("Demo: swapped: %u full states of the %s's ship came after the match (their demo began %+d ms after this one)",
-                            count, SideName(other), (int)apart);
-                }
+                // The relay's demo of a ranked match (roadmap CN): both ships' full states, on the relay's clock.
+                Log("Demo: both players' full states are in the demo (+0 ms)");
                 if (!partner.empty()) Log("Demo: %s isn't joined: the demo has both players' full states", partner.c_str());
                 return true;
             }
@@ -1519,16 +1430,9 @@ namespace Duels
                 message = "demo saved: " + g.lastPath;
                 return true;
             }
-            if (ArgIs(cmd, 1, "hold"))
-            {
-                g_swap.hold = !ArgIs(cmd, 2, "off");
-                Log("Demo: the swap's pieces %s (test)", g_swap.hold ? "wait" : "go");
-                message = g_swap.hold ? "the swap's pieces wait (demo hold off lets them go)" : "the swap's pieces go";
-                return true;
-            }
             if (cmd.args.size() > 1)
             {
-                message = "usage: demo [on|off|stop|hold on|off]";
+                message = "usage: demo [on|off|stop]";
                 return false;
             }
             message = Status();

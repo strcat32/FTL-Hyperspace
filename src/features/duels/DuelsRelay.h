@@ -13,6 +13,8 @@ namespace Duels
     namespace Relay
     {
         static const uint16_t DEFAULT_PORT = 47700;
+        // The most a DATA or RECORD packet carries.
+        static const size_t MAX_PAYLOAD = 1300;
 
         enum class State
         {
@@ -118,6 +120,11 @@ namespace Duels
             // A RESULT packet (protocol 3) for a ranked room's match; false while there is no room. The relay answers
             // each with a ResultRecorded event.
             bool Result(const MatchResult &result, std::vector<uint8_t> &packet);
+
+            // A RECORD packet (roadmap CN) for the relay's demo of a ranked match: the record's kind, its type and its
+            // bytes (DuelsDemo.h). The relay keeps it; the other player never gets it. False while there is no room, or
+            // when it doesn't fit a packet.
+            bool Record(uint8_t kind, uint8_t type, const uint8_t *data, size_t size, std::vector<uint8_t> &packet);
 
             State GetState() const { return state; }
             const std::string &Code() const { return code; }

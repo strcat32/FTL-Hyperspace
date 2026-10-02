@@ -46,8 +46,6 @@ namespace Duels
         void SignOut();
         // The name and rating again from the master.
         void Refresh();
-        // Ranked matches' demos for the master (roadmap BQ): each waits as demos\<file>.upload until the master has it.
-        void UploadDemos();
         // A request to the account's master with the account's key (the ranked queue, DuelsQueue.cpp): path from "/api".
         void Request(const std::string &method, const std::string &path, const std::string &body, Http::Callback done);
         // This game for the master's ranked requests (roadmap CE): "\"protocol\": 18, \"version\": \"0.8.1\"" (fields of

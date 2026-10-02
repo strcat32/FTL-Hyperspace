@@ -29,7 +29,8 @@ namespace Duels
             ERROR_ = 0x0E,
             LIST = 0x10,
             ROOMS = 0x11,
-            RESULT = 0x12
+            RESULT = 0x12,
+            RECORD = 0x13
         };
 
         static const uint8_t PROTOCOL_VERSION = 3;
@@ -452,7 +453,7 @@ namespace Duels
 
         bool Client::Wrap(const uint8_t *payload, size_t size, std::vector<uint8_t> &packet)
         {
-            if (state != State::InRoom || size == 0 || size > 1300) return false;
+            if (state != State::InRoom || size == 0 || size > MAX_PAYLOAD) return false;
             Writer w;
             Header(w, DATA);
             w.U32(clientId);
@@ -479,6 +480,21 @@ namespace Duels
             w.Bytes(result.settings, sizeof(result.settings));
             w.U32(result.seconds);
             w.Str(CutUtf8(result.note, 60));
+            packet = w.data;
+            Tag(packet);
+            return true;
+        }
+
+        bool Client::Record(uint8_t kind, uint8_t type, const uint8_t *data, size_t size, std::vector<uint8_t> &packet)
+        {
+            if (state != State::InRoom || size + 2 > MAX_PAYLOAD) return false;
+            Writer w;
+            Header(w, RECORD);
+            w.U32(clientId);
+            w.U32(++sendSeq);
+            w.U8(kind);
+            w.U8(type);
+            if (size > 0) w.Bytes(data, size);
             packet = w.data;
             Tag(packet);
             return true;
