@@ -72,6 +72,7 @@ namespace Duels
             // needed), or NO_ANSWER when it didn't answer.
             int errorCode;
             static const int NO_ANSWER = -1;
+            static const int REFUSED = -2;    // not the relay's: the host's game refused the handshake (DuelsNet.cpp)
             static const int TICKET_REFUSED = 9;
             static const int RANKED_ROOM = 10;
             // RoomJoined, PeerJoined: the room is ranked (both came with a ticket), and the other player's rating.

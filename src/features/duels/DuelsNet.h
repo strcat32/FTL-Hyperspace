@@ -39,6 +39,8 @@ namespace Duels
             virtual void OnDisconnected(const std::string &reason, bool opponentGone) = 0;
             // Things the player should see: the relay's room code, the relay refusing, ...
             virtual void OnNotice(const std::string &text) { (void)text; }
+            // Our game refused a player's handshake (another version, other game data): the line for the player.
+            virtual void OnRefused(const std::string &text) { (void)text; }
             // The connection is lost while a match can go on (SetMatchToken): the session waits for the other player
             // to come back (cutOff false) or tries to come back itself (true). OnConnected follows if it works, with
             // Resumed() true, and OnDisconnected when the time is up.
@@ -110,7 +112,8 @@ namespace Duels
         bool ListRelayRooms(const std::string &server, uint16_t port, int page, std::string &message);
 
         // The last error a relay gave this game's room (hosting or joining): the relay's ERROR code, or
-        // Relay::Event::NO_ANSWER; 0 when the last try had none. HostRelay and JoinRelay clear it.
+        // Relay::Event::NO_ANSWER; Relay::Event::REFUSED when the host's game refused our handshake (its reason as the
+        // text: another version, other game data); 0 when the last try had none. HostRelay and JoinRelay clear it.
         int LastRelayError(std::string *text = nullptr);
 
         // Ranked rooms (roadmap BG; relay protocol 3): the master's ticket for the next HostRelay or JoinRelay (its

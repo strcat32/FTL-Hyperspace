@@ -340,9 +340,11 @@ namespace Duels
             }
             else if (opponent.empty() && Net::GetPhase() == Net::Phase::Hosting && Net::UsesRelay())
             {
-                // The room waits for its guest (HOST DUEL, or the console's host relay).
+                // The room waits for its guest (HOST DUEL, or the console's host relay); a guest our game refused, and why.
                 row("Room " + code + " is open: waiting for a guest", gold);
-                row(Net::RoomPrivate() ? "Private: give them the code" : "Give them the code (or JOIN DUEL's list)", soft);
+                std::string refused = Match::LastRefusal();
+                if (!refused.empty()) row(refused, Rgb(255, 150, 140));
+                else row(Net::RoomPrivate() ? "Private: give them the code" : "Give them the code (or JOIN DUEL's list)", soft);
             }
             else if (opponent.empty() && Net::GetPhase() == Net::Phase::Joining)
             {

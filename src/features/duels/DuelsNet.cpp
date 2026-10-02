@@ -389,10 +389,13 @@ namespace Duels
             g_session.peerToken = tokenLow | (tokenHigh << 32);
             if (protocol != PROTOCOL_VERSION || version != g_session.version)
             {
-                char buffer[200];
-                snprintf(buffer, sizeof(buffer), "version mismatch: FTL: Duels %s (protocol %u) vs %s (protocol %u)",
-                         g_session.version.c_str(), (unsigned)PROTOCOL_VERSION, version.c_str(), (unsigned)protocol);
-                problem = buffer;
+                // (The text goes to the other side too: it names the host's and the guest's, as the data's below.)
+                char ours[100], theirs[100];
+                snprintf(ours, sizeof(ours), "%s (protocol %u)", g_session.version.c_str(), (unsigned)PROTOCOL_VERSION);
+                snprintf(theirs, sizeof(theirs), "%s (protocol %u)", version.c_str(), (unsigned)protocol);
+                bool host = IsHost();
+                problem = std::string("another version of FTL: Duels: the host's ") + (host ? ours : theirs) + ", the guest's " + (host ? theirs : ours) +
+                          "; both players need the same (install the newest on both computers)";
                 return false;
             }
             if (dataHash != g_session.dataHash)
@@ -433,6 +436,8 @@ namespace Duels
                 if (!accepted)
                 {
                     Log("Net: rejecting %s: %s", s.peer.ToString().c_str(), problem.c_str());
+                    // Told on both sides: the player who tried gets the reason (MSG_REJECT), this one sees why nobody came.
+                    if (s.listener) s.listener->OnRefused((peerName.empty() ? std::string("A player") : peerName) + " couldn't join: " + problem);
                     Writer body;
                     body.Str(problem);
                     SendControl(MSG_REJECT, body);
@@ -484,6 +489,10 @@ namespace Duels
             {
                 std::string reason = reader.Str();
                 Log("Net: the host refused: %s", reason.c_str());
+                // The lobby says why (LastRelayError), not "the connection failed" (the user's two-PC test, 2026-10-02:
+                // one computer ran the build before, and the guest only read "Not joined: the connection failed").
+                g_lastRelayError = Relay::Event::REFUSED;
+                g_lastRelayErrorText = "the host's game refused: " + reason;
                 // Coming back, the next try may work (the other side may not be waiting yet).
                 Close();
                 return;

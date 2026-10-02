@@ -1048,6 +1048,8 @@ namespace Duels
             std::string text;
             int error = Net::LastRelayError(&text);
             why = text.empty() ? "the connection failed" : text;
+            // The relay's ERROR 5: the host's game is another version (the room list shows it in red; a code doesn't).
+            if (error == 5) why += " (both players need the same version of FTL: Duels: install the newest on both computers)";
             // A relay that takes no tickets (ERROR 9) may be followed by one that does.
             retry = error == Relay::Event::NO_ANSWER || error == 4 || error == 6 || (g.pending == Pending::Join && error == 2) ||
                     error == Relay::Event::TICKET_REFUSED;
@@ -1072,11 +1074,16 @@ namespace Duels
             }
             else
             {
+                // Back to the main menu, why in a note there, and JOIN DUEL's list again for a guest: the run was only
+                // for the duel (the user's two-PC test, 2026-10-02: a refused guest stayed in a run of its own, with FTL's
+                // map and store, and "Not joined: the connection failed" in the feed for a moment).
                 Log("Lobby: %s: %s", host ? "no room opened" : "not joined", why.c_str());
-                Console::Feed((host ? "No room opened: " : "Not joined: ") + why);
+                Match::Leave();
+                RequestMenu((host ? "No room opened: " : "Not joined: ") + why + ".", !host);
+                return;
             }
-            // The room's code while it waits, or why not; a guest's match begins at once (its window would flash).
-            if (host || !ok) ::Duels::Window::Open();
+            // The room's code while it waits; a guest's match begins at once (its window would flash).
+            if (host) ::Duels::Window::Open();
         }
 
         static void LeaveToLobby();
@@ -1133,11 +1140,12 @@ namespace Duels
             return asked;
         }
 
-        void RequestMenu(const std::string &note)
+        void RequestMenu(const std::string &note, bool listRooms)
         {
             g.pending = Pending::None;
             g.cover = false;
             g.toMenu = true;
+            g.listOnMenu = listRooms;
             Menu::ShowNote(note);
             Log("Lobby: to FTL's main menu: %s", note.c_str());
         }

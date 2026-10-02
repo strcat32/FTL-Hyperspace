@@ -117,6 +117,8 @@ namespace Duels
         const std::string &PlayerName();
         // The opponent's ship's blueprint in this match ("" before it came).
         std::string OpponentShip();
+        // The last player our game refused (another version, other game data), with why, while a room waits ("": none).
+        std::string LastRefusal();
         // Players' names (roadmap AG): the name prompt and the name command take up to NAME_MAX characters, and the
         // console and the chat log show them whole. On the screen (the score panel, the lines under the buttons, the
         // splashes, the Duels window) a name is cut after SCREEN_NAME_MAX characters, as FTL cuts crew names: what the

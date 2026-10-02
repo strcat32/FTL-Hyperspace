@@ -210,6 +210,7 @@ namespace Duels
             bool replicaReady = false;     // we built the opponent's ship
             bool peerReady = false;        // they built ours
             std::string opponentShip;
+            std::string lastRefusal;       // a player our game refused while the room waited, and why (the Duels window)
 
             uint16_t stateSeq = 0;
             bool havePeerState = false;
@@ -278,6 +279,7 @@ namespace Duels
         {
             MatchState &m = g_match;
             Vision::Reset();
+            m.lastRefusal.clear();
             m.loadoutSent = false;
             m.replicaReady = false;
             m.peerReady = false;
@@ -3185,6 +3187,12 @@ namespace Duels
                 Announce(text);
             }
 
+            void OnRefused(const std::string &text) override
+            {
+                Headline(text);
+                g_match.lastRefusal = text;
+            }
+
             void OnConnectionLost(const std::string &reason, bool cutOff) override
             {
                 Rounds::OnConnectionLost();
@@ -3418,6 +3426,12 @@ namespace Duels
                 bool ranked = Rounds::Ranked(why);
                 Demo::NoteStatus(ranked, why);
             }
+        }
+
+        std::string LastRefusal()
+        {
+            // (Only while the room waits: a match that began has a guest.)
+            return Net::IsConnected() ? std::string() : g_match.lastRefusal;
         }
 
         std::string OpponentShip()
