@@ -3136,6 +3136,7 @@ namespace Duels
                     if (Net::PeerCold())
                     {
                         g_match.havePeerState = false;
+                        Demo::NotePeerCold();   // a replay of this match: the same
                         if (Net::IsHost()) SendSettings();
                     }
                     Headline(Net::PeerName() + (Net::PeerCold() ? " is back (their game started again): the match goes on" : " is back: the match goes on"));

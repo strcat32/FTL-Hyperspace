@@ -112,7 +112,7 @@ namespace Duels
             Writer w;
             w.Str(MAGIC);
             w.U16(FORMAT);
-            w.Str(Net::OwnVersion());
+            w.Str(VERSION);
             uint64_t now = (uint64_t)std::time(nullptr);
             w.U32((uint32_t)(now & 0xffffffffu));
             w.U32((uint32_t)(now >> 32));
@@ -335,8 +335,11 @@ namespace Duels
                 g.trying = false;
                 Remove("the way back didn't work");
                 Log("Rejoin: the way back into the match against %s didn't work: %s", g.saved.opponent.c_str(), reason.c_str());
-                Console::Feed("Couldn't get back into the match: " + reason);
-                Lobby::RequestMenu("Couldn't get back into the match against " + g.saved.opponent + ": " + reason + ".");
+                // (The session's own words for a way back that ran out of time are about getting back.)
+                std::string why = reason.find("in time") != std::string::npos ? "no answer in time (the other game may wait no longer)" : reason;
+                std::string opponent = g.saved.opponent.empty() ? std::string("the other player") : g.saved.opponent;
+                Console::Feed("Couldn't get back into the match: " + why);
+                Lobby::RequestMenu("Couldn't get back into the match against " + opponent + ": " + why + ".");
                 return;
             }
             if (g.written) Clear("the connection ended");
@@ -351,9 +354,9 @@ namespace Duels
             if (g.trying || Net::GetPhase() != Net::Phase::Idle || Net::Replaying()) return false;
             g.menu = Load();
             if (!g.menu.ok) return false;
-            if (g.menu.version != Net::OwnVersion() || MsLeft(g.menu) <= 0.0)
+            if (g.menu.version != VERSION || MsLeft(g.menu) <= 0.0)
             {
-                Remove(g.menu.version != Net::OwnVersion() ? "of another version of the game" : "too old: the other game waits no longer");
+                Remove(g.menu.version != VERSION ? "of another version of the game" : "too old: the other game waits no longer");
                 return false;
             }
             g.available = true;
@@ -426,7 +429,7 @@ namespace Duels
                 message = "the match's file " + s.why;
                 return false;
             }
-            if (s.version != Net::OwnVersion())
+            if (s.version != VERSION)
             {
                 message = "the match was played with another version of the game";
                 return false;

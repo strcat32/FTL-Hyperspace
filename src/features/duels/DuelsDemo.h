@@ -30,6 +30,8 @@ namespace Duels
         static const uint8_t MARK_STATUS = 2;       // the match's status as it changes (BB): ranked (u8), why not (str)
         static const uint8_t MARK_SWAP = 3;         // the other's full states came after the match (BA): how far their
                                                     // demo's start is after ours (f64 ms), how many (u32)
+        static const uint8_t MARK_PEER_COLD = 4;    // the other game came back after a crash (roadmap BR): who (u8,
+                                                    // FROM_*); its states count from the start again
         // The swap after a match (BA, part 2): MSG_DEMO_STATES (reliable, either way, once the match is over) carries our
         // full states in pieces: the deflated length (u32), the raw length (u32), the piece's place (u32), our demo's
         // start on our clock (f64; -1 without a demo), the bytes. MSG_DEMO_SAVED (reliable): all of the other's came.
@@ -38,6 +40,9 @@ namespace Duels
         // A new match's connection (not a return after a lost one): a file opens, if demos are on (duels.cfg
         // record_demos, on by default; the `demo` verb). The end of the connection or leaving closes it.
         void Begin(bool host, const std::string &hostName, const std::string &guestName);
+        // The other game came back after a crash (roadmap BR, DuelsRejoin.cpp): its states count from the start again,
+        // in a replay of this demo too (MARK_PEER_COLD).
+        void NotePeerCold();
         void End(const std::string &why);
         bool Recording();
 

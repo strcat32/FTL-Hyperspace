@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsAccount.h"
+#include "DuelsConfig.h"
 #include "DuelsConsole.h"
 #include "DuelsMatch.h"
 #include "DuelsScreen.h"
@@ -157,6 +158,14 @@ namespace Duels
             const char *debug = getenv("DUELS_DEBUG");
             if (debug && debug[0] == '1') EnableDebug("DUELS_DEBUG");
             Console::MigrateKeys();
+        }
+        // The traces (duels_frames.csv, duels_sync.csv, duels_projectiles.csv) are on in the test builds unless duels.cfg
+        // says "trace off" (the user's two-PC tests, 2026-10-02: "enable debug traces for both clients ... in the dist").
+        // A test scenario sets its own (its first frame has read it by now).
+        if (g_frame == 2 && SettingsFromConfig() && Config::Value("trace") != "off" && !g_state.trace)
+        {
+            g_state.trace = true;
+            Log("Traces on (duels_frames.csv, duels_sync.csv, duels_projectiles.csv; \"trace off\" in duels.cfg switches them off)");
         }
         MuteForTests();
         PlaceOnTestDisplay();

@@ -307,6 +307,14 @@ namespace Duels
             }
         }
 
+        void NotePeerCold()
+        {
+            if (!g.file) return;
+            Writer w;
+            w.U8(g.host ? FROM_GUEST : FROM_HOST);
+            Record(g.host ? FROM_HOST : FROM_GUEST, KIND_MARKER, MARK_PEER_COLD, w.data.data(), w.data.size());
+        }
+
         void SetTicket(const std::string &nonce)
         {
             if (g.file && nonce.size() == 16) g.ticketNonce = nonce;
@@ -1004,6 +1012,12 @@ namespace Duels
                         g_replay.ranked = ranked ? 1 : 0;
                         g_replay.unrankedWhy = why;
                     }
+                }
+                // The other game came back after a crash (roadmap BR): its states count from the start again.
+                else if (record.type == MARK_PEER_COLD)
+                {
+                    Match::ReplayRestate();
+                    Log("Demo: replay: the %s's game came back after a crash here", !record.data.empty() && record.data[0] == FROM_HOST ? "host" : "guest");
                 }
                 return;
             }
