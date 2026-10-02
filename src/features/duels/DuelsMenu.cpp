@@ -55,6 +55,7 @@ namespace Duels
             Window open = Window::None;
             Window back = Window::None;          // where the guide goes back to
             bool pending = false;                // the menu opened: ours come on its first frame
+            bool openedBefore = false;           // the menu opened once already (the game's start is the first time)
             int mouseX = -1, mouseY = -1;
             struct TextInput *nameInput = nullptr;
             std::string nameError;
@@ -689,7 +690,11 @@ namespace Duels
                 Log("Menu: back in the main menu: the duel is left");
                 Match::Leave();
             }
-            Match::ForgetMatch();
+            // What the match before left behind goes. Not at the game's start: there is nothing to forget, and a test
+            // scenario isn't loaded yet then (forgetting reads the match settings, and a scenario's start from the
+            // defaults, not from duels.cfg).
+            if (g.openedBefore) Match::ForgetMatch();
+            g.openedBefore = true;
         }
 
         static void Close()
