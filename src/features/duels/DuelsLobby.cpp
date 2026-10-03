@@ -73,7 +73,10 @@ namespace Duels
             std::string message;                 // under the buttons: why CHOOSE SHIP didn't go on
             bool vsAi = false;                   // the opponent: FTL's AI, not another player (roadmap 3.6)
             int aiShip = 0;                      // the AI's ship: 0 random, else PlayerShips()[aiShip - 1]
-            Style::Box playerBox, aiBox, aiShipLess, aiShipMore;
+            Style::Box playerBox, aiBox, aiShipField;
+            // Its drop-down list (DQ): open or not, and its entries as drawn (their boxes and aiShip values).
+            bool aiShipOpen = false;
+            std::vector<std::pair<Style::Box, int>> aiShipItems;
             // Its level and FTL's pause (roadmap DC, DD).
             int aiLevel = Ai::NORMAL;
             bool aiPause = true;
@@ -174,6 +177,20 @@ namespace Duels
             box.w = w;
             box.h = h;
             Style::Button(x, y, w, h, label, TEXT, !enabled ? Style::Look::Off : Hover(box) ? Style::Look::Hover : Style::Look::Idle);
+        }
+
+        // A drop-down's field (DQ): its value, and an arrow at the right.
+        static void DropField(Style::Box &box, float x, float y, float w, float h, const std::string &value, bool open)
+        {
+            box.x = x;
+            box.y = y;
+            box.w = w;
+            box.h = h;
+            Style::Field(x, y, w, h, open || Hover(box));
+            Text(FONT, x + 10.f, y + std::floor((h - Style::LineHeight(FONT)) / 2.f) + 2.f, value, Rgb(255, 255, 255));
+            int ax = (int)(x + w - 20.f), ay = (int)(y + h / 2.f - 3.f);
+            if (open) CSurface::GL_DrawTriangle(Point(ax, ay + 6), Point(ax + 10, ay + 6), Point(ax + 5, ay), Rgb(226, 230, 236));
+            else CSurface::GL_DrawTriangle(Point(ax, ay), Point(ax + 10, ay), Point(ax + 5, ay + 6), Rgb(226, 230, 236));
         }
 
         // A check box and its label; the label clicks too.
@@ -284,6 +301,7 @@ namespace Duels
             g.next = Rounds::GetNextDuel();
             g.aiLevel = Ai::NextLevel();
             g.aiPause = Ai::NextPause();
+            g.aiShipOpen = false;
             g.message.clear();
             g.open = Window::Host;
             Focus(&g.name);
@@ -383,6 +401,65 @@ namespace Duels
             g.coverUntilMs = WallMs() + 10000.0;   // until our ship is made again
         }
 
+        // The AI's ship list (DQ), under its field and over the rest of the window: "Random", then each ship type in a
+        // row with its layouts A, B and C; the AI's ship gold.
+        static const float AI_LIST_ROW = 26.f, AI_LIST_W = 330.f;
+
+        static void RenderAiShipList()
+        {
+            std::vector<std::string> ships = Ai::PlayerShips();
+            // The types in the list's order: a layout's blueprint is its type's with "_2" or "_3".
+            std::vector<std::string> types;
+            std::vector<std::vector<int>> layouts;   // each type's ships, as aiShip values
+            for (size_t i = 0; i < ships.size(); ++i)
+            {
+                const std::string &name = ships[i];
+                bool variant = name.size() > 2 && name[name.size() - 2] == '_' && (name.back() == '2' || name.back() == '3');
+                std::string type = variant ? name.substr(0, name.size() - 2) : name;
+                auto found = std::find(types.begin(), types.end(), type);
+                if (found == types.end())
+                {
+                    types.push_back(type);
+                    layouts.push_back(std::vector<int>());
+                    found = types.end() - 1;
+                }
+                layouts[found - types.begin()].push_back((int)i + 1);
+            }
+            const Style::Box &field = g.aiShipField;
+            float x = field.x, y = field.y + field.h + 2.f, h = AI_LIST_ROW * (float)(types.size() + 1) + 14.f;
+            CSurface::GL_DrawRect(x - 2.f, y - 2.f, AI_LIST_W + 4.f, h + 4.f, Rgb(150, 160, 170));
+            CSurface::GL_DrawRect(x, y, AI_LIST_W, h, Rgb(18, 22, 28, 0.97f));
+            g.aiShipItems.clear();
+            const GL_Color goldBody = Rgb(255, 214, 90);
+            auto item = [&](float bx, float by, float bw, const std::string &label, int value)
+            {
+                Style::Box box;
+                box.x = bx;
+                box.y = by;
+                box.w = bw;
+                box.h = AI_LIST_ROW - 4.f;
+                bool hover = Hover(box), chosen = g.aiShip == value;
+                Style::Button(box.x, box.y, box.w, box.h, label, FONT, hover ? Style::Look::Hover : Style::Look::Idle,
+                              chosen && !hover ? &goldBody : nullptr);
+                g.aiShipItems.push_back(std::make_pair(box, value));
+            };
+            float rowY = y + 7.f;
+            item(x + 8.f, rowY, AI_LIST_W - 16.f, "Random", 0);
+            rowY += AI_LIST_ROW;
+            for (size_t t = 0; t < types.size(); ++t)
+            {
+                // "Kestrel Cruiser A" names layout A: its type's name is the title without the letter.
+                std::string title = Ai::ShipTitle(types[t]);
+                if (title.size() > 2 && title[title.size() - 2] == ' ') title.resize(title.size() - 2);
+                Text(FONT, x + 12.f, rowY + 4.f, title, Rgb(226, 230, 236));
+                for (size_t l = 0; l < layouts[t].size() && l < 3; ++l)
+                {
+                    item(x + AI_LIST_W - 8.f - 3.f * 38.f + 38.f * (float)l, rowY, 34.f, std::string(1, (char)('A' + l)), layouts[t][l]);
+                }
+                rowY += AI_LIST_ROW;
+            }
+        }
+
         static void RenderHost()
         {
             Style::Dialog(HX, HY, HW, HH, "HOST DUEL");
@@ -395,25 +472,21 @@ namespace Duels
             y += 30.f;
             CheckAt(g.aiBox, lx, y, g.vsAi, "FTL's AI (on this computer, unranked)");
             y += 34.f;
-            if (g.vsAi && g.next.ships == 1)
+            if (g.vsAi)
             {
-                // The AI picks one of the ships drawn at random (roadmap 3.9, CC); its ship isn't set here.
-                Text(FONT, lx, y + 6.f, "The AI picks one of the ships drawn, at random.", light);
-                g.aiShipLess.w = g.aiShipMore.w = 0.f;
+                // Its ship (DQ): a drop-down of FTL's player ships. A ship set here is the one it flies, whatever the ship
+                // choice offers the player; "Random" is one of the three drawn (one of the list's, any).
+                Text(FONT, lx, y + 6.f, "The AI's ship:", light);
+                std::string shipName = g.aiShip != 0 ? Ai::ShipTitle(AiShipBlueprint())
+                                       : g.next.ships == 1 ? std::string("Random, of the three drawn")
+                                       : g.next.ships == 2 ? std::string("Random, from the list") : std::string("Random");
+                DropField(g.aiShipField, lx + 110.f, y, 230.f, 28.f, shipName, g.aiShipOpen);
             }
-            else if (g.vsAi)
+            else
             {
-                // Its ship: from a host's list, its pick if the list has it (else one of the list at random); with each
-                // player's own (the console's), the ship it flies.
-                std::vector<std::string> ships = Ai::PlayerShips();
-                Text(FONT, lx, y + 6.f, g.next.ships == 2 ? "The AI's pick:" : "The AI's ship:", light);
-                ButtonAt(g.aiShipLess, lx + 110.f, y, 30.f, 28.f, "<");
-                CSurface::GL_SetColor(white);
-                std::string shipName = g.aiShip == 0 ? std::string("Random") : Ai::ShipTitle(AiShipBlueprint());
-                freetype::easy_printCenter(FONT, lx + 110.f + 30.f + 85.f, y + 6.f, shipName);
-                ButtonAt(g.aiShipMore, lx + 110.f + 30.f + 170.f, y, 30.f, 28.f, ">");
+                g.aiShipField = Style::Box();
+                g.aiShipOpen = false;
             }
-            else g.aiShipLess.w = g.aiShipMore.w = 0.f;
             y += 44.f;
 
             const bool ranked = g.ranked && !g.vsAi;
@@ -593,16 +666,33 @@ namespace Duels
             if (!g.message.empty()) Paragraph(FONT, HX + 30.f, by + 8.f, 380.f, g.message, Rgb(255, 140, 120));
             ButtonAt(g.cancel, HX + HW - 30.f - 190.f - 12.f - 130.f, by, 130.f, 34.f, "CANCEL");
             ButtonAt(g.choose, HX + HW - 30.f - 190.f, by, 190.f, 34.f, StartsWithoutHangar() ? "START" : "CHOOSE SHIP");
+            if (g.vsAi && g.aiShipOpen) RenderAiShipList();
         }
 
         static void ClickHost(int x, int y)
         {
             Rounds::NextDuel &n = g.next;
-            int ships = (int)Ai::PlayerShips().size();
+            if (g.aiShipOpen)
+            {
+                // The AI's open ship list takes the click (DQ): an entry is picked; anywhere else closes it.
+                for (const auto &entry : g.aiShipItems)
+                {
+                    if (!entry.first.Contains(x, y)) continue;
+                    g.aiShip = entry.second;
+                    Log("Lobby: the AI's ship: %s", g.aiShip == 0 ? "random" : AiShipBlueprint().c_str());
+                }
+                g.aiShipOpen = false;
+                g.aiShipItems.clear();
+                return;
+            }
             if (g.playerBox.Contains(x, y)) g.vsAi = false;
             else if (g.aiBox.Contains(x, y)) g.vsAi = true;
-            else if (g.aiShipLess.Contains(x, y)) g.aiShip = (g.aiShip + ships) % (ships + 1);
-            else if (g.aiShipMore.Contains(x, y)) g.aiShip = (g.aiShip + 1) % (ships + 1);
+            else if (g.aiShipField.Contains(x, y))
+            {
+                g.aiShipOpen = true;
+                Log("Lobby: the AI's ship list opens under %.0f,%.0f (%u ships, rows of %.0f px)", g.aiShipField.x,
+                    g.aiShipField.y + g.aiShipField.h, (unsigned)Ai::PlayerShips().size(), AI_LIST_ROW);
+            }
             else if (g.aiLevelLess.Contains(x, y)) g.aiLevel = (g.aiLevel + 2) % 3;
             else if (g.aiLevelMore.Contains(x, y)) g.aiLevel = (g.aiLevel + 1) % 3;
             else if (g.aiPauseBox.Contains(x, y)) g.aiPause = !g.aiPause;

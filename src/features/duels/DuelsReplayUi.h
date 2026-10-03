@@ -12,8 +12,6 @@ namespace Duels
     namespace ReplayUi
     {
         void Render();
-        // A long seek's cover over the whole screen (roadmap BO): what the seek is for and how far it is.
-        void RenderSeekCover();
         // The controls take their clicks before the game does; true when one did.
         bool LButtonDown(int x, int y);
         void MouseMove(int x, int y);

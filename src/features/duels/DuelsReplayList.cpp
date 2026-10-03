@@ -24,17 +24,21 @@ namespace Duels
         static const int ROWS = 15;
         static const int FONT = 10, TEXT = 12;
 
-        enum Column { FILE_NAME, DATE, HOST, GUEST, RANKED, HOST_SHIP, GUEST_SHIP, LENGTH, COLUMNS };
-        static const char *const HEADS[COLUMNS] = {"FILE", "DATE", "HOST", "GUEST", "RANKED", "HOST'S SHIP", "GUEST'S SHIP", "LENGTH"};
-        static const char *const NAMES[COLUMNS] = {"file", "date", "host", "guest", "ranked", "hostship", "guestship", "length"};
-        static const float COLUMN_X[COLUMNS] = {10.f, 240.f, 375.f, 500.f, 625.f, 700.f, 860.f, 1020.f};
-        static const float COLUMN_W[COLUMNS] = {222.f, 128.f, 118.f, 118.f, 66.f, 152.f, 152.f, 70.f};
+        enum Column { FILE_NAME, DATE, HOST, GUEST, SOURCE, RANKED, HOST_SHIP, GUEST_SHIP, LENGTH, COLUMNS };
+        static const char *const HEADS[COLUMNS] = {"FILE", "DATE", "HOST", "GUEST", "SOURCE", "RANKED", "HOST'S SHIP", "GUEST'S SHIP", "LENGTH"};
+        static const char *const NAMES[COLUMNS] = {"file", "date", "host", "guest", "source", "ranked", "hostship", "guestship", "length"};
+        static const float COLUMN_X[COLUMNS] = {10.f, 178.f, 314.f, 440.f, 566.f, 640.f, 714.f, 862.f, 1010.f};
+        static const float COLUMN_W[COLUMNS] = {160.f, 128.f, 118.f, 118.f, 66.f, 66.f, 140.f, 140.f, 70.f};
+        // The filters above the list (DL): only the server's demos, only those against the AI.
+        enum Filter { ALL, SERVER_ONLY, AI_ONLY };
 
         struct State
         {
             bool open = false;
             int mouseX = -1, mouseY = -1;
-            std::vector<Demo::DemoInfo> demos;
+            std::vector<Demo::DemoInfo> all, demos;   // every demo in demos\, those the filter shows
+            int filter = ALL;
+            Style::Box serverOnly, aiOnly;
             int sortColumn = DATE;
             bool descending = true;
             int page = 0;
@@ -117,6 +121,13 @@ namespace Duels
             return text;
         }
 
+        // Where a demo comes from (DL): the server (the relay's record of a ranked match), a match against the AI, or
+        // this game's own recording of a duel.
+        static std::string Source(const Demo::DemoInfo &d)
+        {
+            return d.server ? "Server" : d.ai ? "AI" : "Own";
+        }
+
         static std::string Cell(const Demo::DemoInfo &d, int column)
         {
             switch (column)
@@ -125,6 +136,7 @@ namespace Duels
             case DATE: return Date(d);
             case HOST: return d.hostName.empty() ? std::string("?") : d.hostName;
             case GUEST: return d.guestName.empty() ? std::string("?") : d.guestName;
+            case SOURCE: return Source(d);
             case RANKED: return d.ranked < 0 ? std::string("?") : d.ranked ? std::string("[x]") : std::string("[ ]");
             case HOST_SHIP: return Ship(d.hostShip);
             case GUEST_SHIP: return Ship(d.guestShip);
@@ -188,15 +200,39 @@ namespace Duels
             Lobby::PlayReplay(path);
         }
 
+        // The filter's demos, sorted.
+        static void Filter()
+        {
+            g.demos.clear();
+            for (const Demo::DemoInfo &d : g.all)
+            {
+                if ((g.filter == SERVER_ONLY && !d.server) || (g.filter == AI_ONLY && !d.ai)) continue;
+                g.demos.push_back(d);
+            }
+            Sort();
+            g.page = 0;
+            if (!Find(g.picked)) g.picked.clear();
+        }
+
+        static void SetFilter(int filter)
+        {
+            g.filter = filter;
+            Filter();
+            Log("Replays: %s (%u of %u demos)", filter == SERVER_ONLY ? "the server's demos only" : filter == AI_ONLY ? "the AI's demos only" : "every demo",
+                (unsigned)g.demos.size(), (unsigned)g.all.size());
+        }
+
         void Open()
         {
-            g.demos = Demo::ListDemos();
-            Sort();
+            g.all = Demo::ListDemos();
+            Filter();
             g.page = 0;
             g.picked.clear();
             g.message.clear();
             g.open = true;
-            Log("Replays: %u demos in demos\\", (unsigned)g.demos.size());
+            Log("Replays: %u demos in demos\\ (%u server, %u against the AI)", (unsigned)g.all.size(),
+                (unsigned)std::count_if(g.all.begin(), g.all.end(), [](const Demo::DemoInfo &d) { return d.server; }),
+                (unsigned)std::count_if(g.all.begin(), g.all.end(), [](const Demo::DemoInfo &d) { return d.ai; }));
         }
 
         void Close()
@@ -215,6 +251,19 @@ namespace Duels
             const GL_Color soft = Rgb(190, 196, 204), light = Rgb(226, 230, 236), white = Rgb(255, 255, 255), gold = Rgb(255, 235, 170),
                            red = Rgb(255, 140, 120);
             Style::Dialog(BX, BY, BW, BH, "REPLAYS");
+
+            // The filters (DL): check boxes over the list's right end; one at a time.
+            auto check = [&](Style::Box &box, float x, bool on, const std::string &label)
+            {
+                box.x = x;
+                box.y = LIST_Y - 32.f;
+                box.w = Style::CHECK_SIZE + 10.f + (float)freetype::easy_measureWidth(FONT, label);
+                box.h = Style::CHECK_SIZE;
+                Style::CheckBox(box.x, box.y, on, Hover(box));
+                Text(FONT, box.x + Style::CHECK_SIZE + 10.f, box.y + 6.f, label, light);
+            };
+            check(g.aiOnly, LX + LW - 150.f, g.filter == AI_ONLY, "AI demos only");
+            check(g.serverOnly, LX + LW - 340.f, g.filter == SERVER_ONLY, "Server demos only");
 
             // The heads: a click sorts by that column (again: the other way round).
             float listH = ROW_H * (ROWS + 1) + 8.f;
@@ -248,7 +297,8 @@ namespace Duels
                 for (int c = 0; c < COLUMNS; ++c)
                 {
                     const GL_Color &colour = !playable ? soft : c == FILE_NAME || c == LENGTH ? light
-                                           : c == RANKED && d.ranked == 1 ? Rgb(140, 255, 130) : white;
+                                           : c == RANKED && d.ranked == 1 ? Rgb(140, 255, 130)
+                                           : c == SOURCE && d.server ? gold : c == SOURCE && d.ai ? Rgb(150, 200, 255) : c == SOURCE ? soft : white;
                     Text(FONT, LX + COLUMN_X[c], box.y + 4.f, Fit(FONT, Cell(d, c), COLUMN_W[c] - 8.f), colour);
                 }
                 g.rows.push_back(box);
@@ -257,8 +307,10 @@ namespace Duels
 
             // Under the list: how many, the pages; the marked demo's problem, if it has one; CLOSE and PLAY.
             float sy = LIST_Y + listH + 8.f;
-            std::string count = g.demos.empty() ? std::string("No demos in demos\\ yet: every duel is recorded there (Record a demo, in HOST DUEL and JOIN DUEL).")
-                                                : std::to_string(g.demos.size()) + (g.demos.size() == 1 ? " demo" : " demos") + " in demos\\ (all kept).";
+            std::string count = g.all.empty() ? std::string("No demos in demos\\ yet: every duel is recorded there (Record a demo, in HOST DUEL and JOIN DUEL).")
+                              : g.filter != ALL ? std::to_string(g.demos.size()) + " of the " + std::to_string(g.all.size()) + " demos in demos\\ (" +
+                                                      (g.filter == SERVER_ONLY ? "the server's" : "against the AI") + ")."
+                                                : std::to_string(g.all.size()) + (g.all.size() == 1 ? " demo" : " demos") + " in demos\\ (all kept).";
             Text(FONT, LX, sy, Fit(FONT, count, LW - 170.f), light);
             ButtonAt(g.prev, LX + LW - 160.f, sy - 2.f, 36.f, 26.f, "<", g.page > 0);
             CSurface::GL_SetColor(light);
@@ -279,6 +331,16 @@ namespace Duels
         {
             if (!g.open) return false;
             g.message.clear();
+            if (g.serverOnly.Contains(x, y))
+            {
+                SetFilter(g.filter == SERVER_ONLY ? ALL : SERVER_ONLY);
+                return true;
+            }
+            if (g.aiOnly.Contains(x, y))
+            {
+                SetFilter(g.filter == AI_ONLY ? ALL : AI_ONLY);
+                return true;
+            }
             for (int c = 0; c < COLUMNS; ++c)
             {
                 if (!g.heads[c].Contains(x, y)) continue;
@@ -321,7 +383,7 @@ namespace Duels
 
         bool RunVerb(const std::vector<std::string> &args, std::string &message)
         {
-            // menu replays [close | sort <column> | pick <row> | play [<file>|newest]]
+            // menu replays [close | filter server|ai|off | sort <column> | pick <row> | play [<file>|newest]]
             if (args.size() <= 2)
             {
                 Open();
@@ -336,6 +398,14 @@ namespace Duels
                 return true;
             }
             if (!g.open) Open();
+            if (what == "filter" && args.size() > 3)
+            {
+                // filter server|ai|off: the check boxes over the list (DL).
+                SetFilter(args[3] == "server" ? SERVER_ONLY : args[3] == "ai" ? AI_ONLY : ALL);
+                message = std::to_string(g.demos.size()) + " of " + std::to_string(g.all.size()) + " demos shown" +
+                          (g.demos.empty() ? std::string() : ", " + FileShown(g.demos.front()) + " first");
+                return true;
+            }
             if (what == "sort" && args.size() > 3)
             {
                 for (int c = 0; c < COLUMNS; ++c)
@@ -352,7 +422,7 @@ namespace Duels
                               (g.demos.empty() ? std::string("no demos") : FileShown(g.demos.front()) + " first");
                     return true;
                 }
-                message = "usage: menu replays sort file|date|host|guest|ranked|hostship|guestship|length";
+                message = "usage: menu replays sort file|date|host|guest|source|ranked|hostship|guestship|length";
                 return false;
             }
             if (what == "pick" && args.size() > 3)
@@ -392,7 +462,7 @@ namespace Duels
                 Play(file);
                 return true;
             }
-            message = "usage: menu replays [close | sort <column> | pick <row> | play [<file>|newest]]";
+            message = "usage: menu replays [close | filter server|ai|off | sort <column> | pick <row> | play [<file>|newest]]";
             return false;
         }
     }

@@ -880,6 +880,12 @@ namespace Duels
             bool replay = Net::Replaying();
             if (d.round == 1 && !replay) TakeChosenShip();
             if (d.round == 1 && g.local && !d.ships[GUEST].empty()) Ai::TakeShip(d.ships[GUEST]);   // its pick
+            if (d.round == 1 && d.settings.ships == SHIPS_LIST && d.settings.list.size() == 1 && !d.ships[g.me].empty())
+            {
+                // No ship choice for a list of one (DQ).
+                Announce("Your ship: the " + Ships::Title(d.ships[g.me]) + " (the host's list has only it). " + Who(Other(g.me)) +
+                         "'s: the " + Ships::Title(d.ships[Other(g.me)]));
+            }
             if (!replay) Refit::Restore(d.settings.permadeath);
             if (g.scrapRound != d.round && !replay)
             {
@@ -898,7 +904,8 @@ namespace Duels
             // The match begins: the Duels window (the room's code, the waiting) makes way; DUELS opens it again (AM).
             if (d.round == 1 && ::Duels::Window::IsOpen()) ::Duels::Window::Close();
             Announce("Round " + std::to_string(d.round) + " of " + std::to_string(d.settings.rounds) + ": preparation, " +
-                     std::to_string(d.settings.prepSeconds) + " s (" + std::to_string(d.scrap) + " scrap, shop and upgrades)");
+                     (d.phaseEnd < 0.0 ? std::string("until READY") : std::to_string(d.settings.prepSeconds) + " s") + " (" +
+                     std::to_string(d.scrap) + " scrap, shop and upgrades)");
             // Revealed now, so that the players can prepare for it (rules, section 5).
             if (d.env.kind != Environment::NONE)
             {
@@ -1180,6 +1187,7 @@ namespace Duels
             d.timeoutStart = d.timeoutEnd = -1.0;
             d.timeoutsUsed = 0;
             if (d.settings.free) SetPhase(Phase::Starting, -1.0);
+            else if (g.local && Ai::PauseAllowed()) SetPhase(Phase::Prep, -1.0);   // against the AI with the pause: until READY (DR)
             else SetPhase(Phase::Prep, Now() + d.settings.prepSeconds * 1000.0);
         }
 
@@ -1224,6 +1232,8 @@ namespace Duels
         // Test verb "match firstban host|guest|random": who bans first in the next matches (else the server's draw).
         static uint8_t g_firstBanner = NOBODY;
 
+        static void Reveal();
+
         // Before round 1 (roadmap 3.9): the server draws who bans first.
         static void StartChoice()
         {
@@ -1243,6 +1253,16 @@ namespace Duels
                 StartRound(1);
                 return;
             }
+            if (BansDone(d) && d.offer.size() == 1)
+            {
+                // A list of one ship (DQ): nothing to choose, no choice window; both fly it (the AI the ship set for it).
+                g.picks[HOST] = g.picks[GUEST] = 0;
+                d.picked[HOST] = d.picked[GUEST] = PICK_SERVER;
+                Reveal();
+                Note("one ship to choose from: the " + d.offer[0] + " for both, no ship choice");
+                StartRound(1);
+                return;
+            }
             SetPhase(Phase::Choice, Now() + (d.offer.empty() ? BanMs() : PickMs()));
         }
 
@@ -1255,6 +1275,8 @@ namespace Duels
                 int pick = g.picks[player] >= 0 && g.picks[player] < (int)d.offer.size() ? g.picks[player] : 0;
                 d.ships[player] = d.offer.empty() ? std::string() : d.offer[pick];
             }
+            // HOST DUEL's ship for the AI (DQ) is the one it flies, whatever was offered.
+            if (g.local && !Ai::FixedShip().empty()) d.ships[GUEST] = Ai::FixedShip();
             d.phaseEnd = Now() + RevealMs();
             g.dirty = true;
         }
@@ -1558,7 +1580,7 @@ namespace Duels
                 else if (now >= d.phaseEnd) ChoiceTimeout();
                 break;
             case Phase::Prep:
-                if (now >= d.phaseEnd || (d.ready[HOST] && d.ready[GUEST])) SetPhase(Phase::Starting, -1.0);
+                if ((d.phaseEnd >= 0.0 && now >= d.phaseEnd) || (d.ready[HOST] && d.ready[GUEST])) SetPhase(Phase::Starting, -1.0);
                 break;
             case Phase::Starting:
                 if (g.local ? Ai::ShipStands() : Match::ShipsStand())
@@ -2077,10 +2099,12 @@ namespace Duels
             g.data.settings = g.settings;
             g.data.token = 1;
             if (g.data.settings.free) g.data.settings.rounds = 1;
+            // With the pause the preparation lasts until READY (DR).
             Announce(g.data.settings.free ? std::string("A free fight against the AI (no rounds)")
                                           : "A match against the AI: best of " + std::to_string(g.data.settings.rounds) + " rounds, " +
-                                                std::to_string(g.data.settings.prepSeconds) + " s preparation, permanent death " +
-                                                (g.data.settings.permadeath ? "on" : "off"));
+                                                (Ai::PauseAllowed() ? std::string("preparation until READY")
+                                                                    : std::to_string(g.data.settings.prepSeconds) + " s preparation") +
+                                                ", permanent death " + (g.data.settings.permadeath ? "on" : "off"));
             // The ships are chosen as in a duel, the AI banning and picking in its turns (DuelsAi.cpp); with each
             // player's own, ours is the hangar's and the AI's the one HOST DUEL's window set.
             if (ChoosesShips(g.data.settings)) StartChoice();
@@ -3244,6 +3268,7 @@ namespace Duels
                 s.countdownLabel = "Fight in";
                 s.countdownMs = FromHost(d.phaseEnd) - now;
             }
+            else if (d.phase == Phase::Prep && !d.settings.free) s.untimedPrep = true;
             else if (TimeoutRunning(now))
             {
                 s.countdownLabel = "Timeout";

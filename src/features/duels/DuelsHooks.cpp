@@ -283,6 +283,14 @@ HOOK_METHOD_PRIORITY(CommandGui, ShowWriteError, -2000, () -> void)
 HOOK_METHOD_PRIORITY(CommandGui, RenderPause, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> CommandGui::RenderPause -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Ai::Paused() && !bPaused)
+    {
+        // Against the AI the pause key's pause shows it, as FTL's own pause does (DR; FTL's flag is cleared every frame).
+        bPaused = true;
+        super();
+        bPaused = false;
+        return;
+    }
     if (Duels::GetState().noPause || Duels::Match::WaitingForMatch()) return;
     super();
 }
@@ -292,8 +300,68 @@ HOOK_METHOD_PRIORITY(CommandGui, RenderPause, -2000, () -> void)
 HOOK_METHOD_PRIORITY(TutorialManager, AllowUpgrades, -2000, () -> bool)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> TutorialManager::AllowUpgrades -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return true;   // to look at the shown ship's systems, crew and cargo (DN), read only
     if (!Duels::Rounds::ShoppingAllowed()) return false;
     return super();
+}
+
+// A replay's ship screens (DN, the fifth test): they show the shown player's ship as it is at that moment (its systems,
+// crew and cargo), and nothing in them changes it: no upgrade, sale, name, dismissal or item moved. Their tabs and
+// ACCEPT (TabbedWindow's own) still work.
+HOOK_METHOD_PRIORITY(Upgrades, MouseClick, -2000, (int mX, int mY) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Upgrades::MouseClick -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return;
+    super(mX, mY);
+}
+
+HOOK_METHOD_PRIORITY(Upgrades, MouseRightClick, -2000, (int mX, int mY) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Upgrades::MouseRightClick -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return;
+    super(mX, mY);
+}
+
+HOOK_METHOD_PRIORITY(CrewManifest, MouseClick, -2000, (int mX, int mY) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewManifest::MouseClick -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return;
+    super(mX, mY);
+}
+
+HOOK_METHOD_PRIORITY(CrewManifest, OnKeyDown, -2000, (SDLKey key) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewManifest::OnKeyDown -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return;
+    super(key);
+}
+
+HOOK_METHOD_PRIORITY(CrewManifest, OnTextInput, -2000, (SDLKey key) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewManifest::OnTextInput -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return;
+    super(key);
+}
+
+HOOK_METHOD_PRIORITY(CrewManifest, OnTextEvent, -2000, (CEvent::TextEvent event) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> CrewManifest::OnTextEvent -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return;
+    super(event);
+}
+
+HOOK_METHOD_PRIORITY(Equipment, MouseClick, -2000, (int mX, int mY) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Equipment::MouseClick -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return;
+    super(mX, mY);
+}
+
+HOOK_METHOD_PRIORITY(Equipment, MouseUp, -2000, (int mX, int mY) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Equipment::MouseUp -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Net::Replaying()) return;
+    super(mX, mY);
 }
 
 // Running away (roadmap AD): in a match FTL's JUMP button (and the jump key) ends the round as an escape, when FTL
@@ -379,6 +447,14 @@ HOOK_METHOD_PRIORITY(SoundControl, PlaySoundMix, -2000, (const std::string &soun
     return super(soundName, volume, loop);
 }
 
+// FTL's looping sounds as they are set (DS): the way to the main menu stops them (DuelsMenu.cpp).
+HOOK_METHOD_PRIORITY(SoundControl, UpdateSoundLoop, -2000, (const std::string &loopId, float count) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SoundControl::UpdateSoundLoop -> Begin (DuelsHooks.cpp)\n")
+    Duels::NoteSoundLoop(loopId, count);
+    super(loopId, count);
+}
+
 HOOK_METHOD_PRIORITY(ReactorButton, OnRightClick, -2000, () -> void)
 {
     LOG_HOOK("HOOK_METHOD_PRIORITY -> ReactorButton::OnRightClick -> Begin (DuelsHooks.cpp)\n")
@@ -427,6 +503,12 @@ HOOK_METHOD_PRIORITY(Upgrades, Open, -2000, () -> void)
     LOG_HOOK("HOOK_METHOD_PRIORITY -> Upgrades::Open -> Begin (DuelsHooks.cpp)\n")
     super();
     Duels::Refit::OnUpgradesOpen();
+    if (Duels::Net::Replaying())
+    {
+        ShipManager *ship = G_->GetShipManager(0);
+        Duels::Log("Replay: the ship's screens open on the shown ship, %s, read only (%u upgrade boxes)",
+                   ship ? ship->myBlueprint.blueprintName.c_str() : "-", (unsigned)vUpgradeBoxes.size());
+    }
 }
 
 // Game speed must stay at normal: under split authority a faster client would charge weapons faster.
@@ -1077,6 +1159,22 @@ HOOK_METHOD_PRIORITY(SystemBox, OnRender, -2000, (bool ignoreStatus) -> void)
     if (mouseHover && pSystem && Duels::Bays::Tooltip(pSystem, text)) G_->GetMouseControl()->SetTooltip(text);
 }
 
+// FTL finds the icon under the mouse from the box's own place (location + 21 to 42), and SystemBox::OnLoop shows an
+// enemy icon's tooltip ("tooltip_<system>_enemy") from that: the duel view's rows draw the opponent's icons elsewhere,
+// so the mouse is moved into the box's own frame; a hidden bay's box (no weapon or drone in it) isn't there at all.
+HOOK_METHOD_PRIORITY(SystemBox, MouseMove, -2000, (int x, int y) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> SystemBox::MouseMove -> Begin (DuelsHooks.cpp)\n")
+    if (Duels::Bays::HideBox(pSystem))
+    {
+        mouseHover = false;
+        return;
+    }
+    int dx = 0, dy = 0;
+    if (Duels::View::SysBoxShift(this, dx, dy)) super(x - dx, y - dy);
+    else super(x, y);
+}
+
 // Our own bays get no box in the subsystem panel (while it is laid out, our ship has none).
 HOOK_METHOD_PRIORITY(SystemControl, CreateSystemBoxes, -2000, () -> void)
 {
@@ -1569,6 +1667,8 @@ static bool OrdersHeld(CommandGui *gui, int mX, int mY)
     // FTL's takes its click (a replay's first box, come late, roadmap BO).
     if ((!Duels::Rounds::NetPaused() && !Duels::Rejoin::Trying() && !Duels::Net::Replaying() && !Duels::Match::WaitingForMatch()) ||
         gui->menuBox.bOpen || gui->choiceBox.bOpen) return false;
+    // A replay's ship screens (DN): to look, read only (the screens' own hooks above; ReplayUi opens them).
+    if (Duels::Net::Replaying() && gui->shipScreens.bOpen) return false;
     const Globals::Rect &options = gui->optionsButton.hitbox;
     return !(mX >= options.x && mX < options.x + options.w && mY >= options.y && mY < options.y + options.h);
 }
@@ -1660,7 +1760,6 @@ HOOK_METHOD_PRIORITY(MouseControl, OnRender, -2000, () -> void)
     Duels::Window::Render();
     Duels::MatchUi::RenderSplash();
     Duels::Rejoin::Render();
-    Duels::ReplayUi::RenderSeekCover();
     Duels::Lobby::RenderCover();
     Duels::Hud::EndFrame();
     if (!Duels::Console::Render()) return super();

@@ -32,6 +32,8 @@ namespace Duels
                                                     // (3: the swap after a match, BA part 2, gone in protocol 19)
         static const uint8_t MARK_PEER_COLD = 4;    // the other game came back after a crash (roadmap BR): who (u8,
                                                     // FROM_*); its states count from the start again
+        // What the header's last byte says the demo is (DL; older headers end before it: a duel).
+        static const uint8_t HEADER_DUEL = 0, HEADER_AI = 1;
 
         // A new match's connection (not a return after a lost one): a file opens, if demos are on (duels.cfg
         // record_demos, on by default; the `demo` verb). The end of the connection or leaving closes it. A ranked room's
@@ -75,6 +77,9 @@ namespace Duels
             std::string hostShip, guestShip;     // the blueprints of their first loadouts
             int ranked = -1;                     // the match's last status (BB): 1, 0, -1 not known
             double lengthMs = 0.0;
+            // Where it comes from (DL): the relay's record of a ranked match, the server's (both ships' full states, CN),
+            // or a match against FTL's AI (its header says so); else this game's own of a duel.
+            bool server = false, ai = false;
         };
         std::vector<DemoInfo> ListDemos();
         // Test verb: demo (its state), demo on|off (record the next matches or not), demo stop (close the file now).
@@ -117,15 +122,13 @@ namespace Duels
             bool fullSensors = false;
             int ranked = -1;              // the recorded match's status: 1 ranked, 0 unranked, -1 not known (an older demo)
             std::string unrankedWhy;
-            // A long seek (a view switch, a step back: from the demo's start) runs behind a cover (roadmap BO): what it
-            // says, and how far it is (0 to 1).
-            bool covering = false;
-            std::string coverText;
-            double coverProgress = 0.0;
+            // Where a seek runs to (roadmap DO: the game runs there as fast as it can, in sight, without its sounds; the
+            // time line marks the way still to go); -1 while none runs.
+            double seekToMs = -1.0;
         };
         ReplayView GetReplayView();
         // Its controls (the replay verbs do the same): play or pause (at its end: from the start again), stop (back to
-        // the start, paused, as a media player's stop), to a time of the demo, back or on by ms, the speed one up (1),
+        // the start, paused, as a media player's stop; a seek that runs stops where it is, paused, DO), to a time of the demo, back or on by ms, the speed one up (1),
         // one down (-1) or round (0: 1/2, 1, 2, 4, 8, 1/2, ...). The start is the demo's first state of our ship (the
         // ships are fitted then); no seek goes further back.
         void ReplayPlayPause();

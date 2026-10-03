@@ -66,6 +66,11 @@ namespace Duels
     // FTL plays a sound (SoundControl::PlaySoundMix): one that comes again and again is logged, with how often (roadmap
     // CU: a sound repeated over and over in the fourth test, which one wasn't known).
     void NoteSound(const std::string &name);
+    // FTL's looping sounds (fires, air leaking, ...: SoundControl::UpdateSoundLoop) as last set, and all of them stopped
+    // (DS: a fire's sound went on in the main menu after a match against the AI; SoundControl's own pause of its loops
+    // lasts only until its next frame).
+    void NoteSoundLoop(const std::string &id, float count);
+    void StopSoundLoops(const char *why);
 
     // Autotest harness (DuelsAutotest.cpp): runs a scenario from duels_autotest.txt without a human.
     void AutotestOnFrame();

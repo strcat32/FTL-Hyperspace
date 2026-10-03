@@ -83,6 +83,9 @@ namespace Duels
         // The store shows the description of the item under the mouse, right of it (roadmap BY: the preparation's
         // countdown and READY covered it; they step aside meanwhile).
         bool StoreDescriptionShown();
+        // The ship's screens (upgrades, crew, cargo) 20 px lower than FTL has them (roadmap CW: the score panel covered
+        // their tabs): in the preparation, and in a replay (DN).
+        void PlaceShipScreens();
         // Each frame of a preparation: after a system's sale the store is built again (once its window is closed), with
         // the system on the buy-back page (roadmap BJ: a sixth page, our sold systems at FTL's price).
         void OnPrepFrame();

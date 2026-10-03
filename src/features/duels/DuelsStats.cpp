@@ -37,6 +37,12 @@ namespace Duels
 
         void Record(const MatchLine &line)
         {
+            // A ranked match's record is the master's (DK): kept here too it was a second count that could differ.
+            if (line.ranked && !line.ai)
+            {
+                Log("Stats: the ranked match against %s is the master's record (not kept on this computer)", line.opponent.c_str());
+                return;
+            }
             bool fresh = !std::ifstream(FILE_NAME).good();
             std::ofstream file(FILE_NAME, std::ios::app);
             if (!file)

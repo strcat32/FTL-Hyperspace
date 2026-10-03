@@ -240,6 +240,8 @@ namespace Duels
         // hacking system would hack them here at its own moment, and FTL's hacked effects on them (shields draining,
         // drones losing power) would run ahead of the owner's.
         void HoldReplicaHacking(ShipManager *ship);
+        // A copy's system manned on its owner's ship, as the owner's state says (DG).
+        bool ReplicaManned(const ShipManager *ship, int systemType);
 
         // CloakingSystem::SetTurnedOn: the replica's cloak goes on and off only with its owner's (roadmap 2.4); its
         // own timer, power or damage would end it a moment before the owner's does.

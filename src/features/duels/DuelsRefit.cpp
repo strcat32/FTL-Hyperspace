@@ -686,7 +686,33 @@ namespace Duels
         {
             ShipManager *own = G_->GetShipManager(0);
             if (!own || !own->oxygenSystem) return;
-            for (float &level : own->oxygenSystem->oxygenLevels) level = 100.f;
+            // Rooms open to space keep their own air (DH), and the rooms open to them: FTL (Hyperspace's airlock update)
+            // empties such a room again at once, with its air-loss sound, so a refill every frame played that sound every
+            // frame until the next fight.
+            std::set<int> venting;
+            for (Door *door : own->ship.vOuterAirlocks)
+            {
+                if (!door || !door->bOpen) continue;
+                if (door->iRoom1 >= 0) venting.insert(door->iRoom1);
+                if (door->iRoom2 >= 0) venting.insert(door->iRoom2);
+            }
+            for (bool grown = !venting.empty(); grown;)
+            {
+                grown = false;
+                for (Door *door : own->ship.vDoorList)
+                {
+                    if (!door || !door->bOpen || door->iRoom1 < 0 || door->iRoom2 < 0) continue;
+                    bool one = venting.count(door->iRoom1) > 0, two = venting.count(door->iRoom2) > 0;
+                    if (one == two) continue;
+                    venting.insert(one ? door->iRoom2 : door->iRoom1);
+                    grown = true;
+                }
+            }
+            std::vector<float> &levels = own->oxygenSystem->oxygenLevels;
+            for (size_t room = 0; room < levels.size(); ++room)
+            {
+                if (!venting.count((int)room)) levels[room] = 100.f;
+            }
             own->oxygenSystem->fTotalOxygen = 1.f;
         }
 
@@ -819,7 +845,17 @@ namespace Duels
                 Log("Refit: FTL's store window at %d,%d; ours %d px lower", g_ftlStoreX, g_ftlStoreY, STORE_LOWER);
             }
             gui->storeScreens.SetPosition(Point(g_ftlStoreX, g_ftlStoreY + STORE_LOWER));
-            // The ship's screens (upgrades, crew, cargo) as much lower (roadmap CW): the score panel covered their tabs.
+            PlaceShipScreens();
+            ++g_refit.shops;
+            Log("Refit: round %d's shop is open (%u items, %u to buy back)%s", round, (unsigned)stock.size(), (unsigned)buyBack.size(),
+                store ? "" : ", but no store came");
+        }
+
+        void PlaceShipScreens()
+        {
+            CommandGui *gui = Gui();
+            if (!gui) return;
+            // As much lower as the store (roadmap CW): the score panel covered their tabs.
             if (!g_shipScreensPlaced)
             {
                 g_shipScreensPlaced = true;
@@ -828,9 +864,6 @@ namespace Duels
                 Log("Refit: FTL's ship screens at %d,%d; ours %d px lower", g_ftlShipScreensX, g_ftlShipScreensY, STORE_LOWER);
             }
             gui->shipScreens.SetPosition(Point(g_ftlShipScreensX, g_ftlShipScreensY + STORE_LOWER));
-            ++g_refit.shops;
-            Log("Refit: round %d's shop is open (%u items, %u to buy back)%s", round, (unsigned)stock.size(), (unsigned)buyBack.size(),
-                store ? "" : ", but no store came");
         }
 
         bool StoreDescriptionShown()

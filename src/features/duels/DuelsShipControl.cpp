@@ -763,6 +763,23 @@ namespace Duels
         return true;
     }
 
+    // burn <ship> <room>: a fire in the room (tests of FTL's fire sound, DS).
+    static bool DoBurn(const Command &cmd, std::string &message)
+    {
+        ShipManager *ship = ArgShip(cmd, 1, message);
+        if (!ship) return false;
+        int room;
+        if (!ArgInt(cmd, 2, room) || room < 0 || room >= (int)ship->ship.vRoomList.size())
+        {
+            message = "usage: burn <ship> <room>";
+            return false;
+        }
+        ship->StartFire(room);
+        message = "a fire in room " + std::to_string(room) + " of ship " + std::to_string(ship->iShipId) + " (" +
+                  std::to_string(ship->fireSpreader.count) + " burning)";
+        return true;
+    }
+
     // kill <ship> crew [<index>]: the ship's whole crew dies, wherever they are (tests of the crew-dead end of a round),
     // or one of them (as the crew verb counts them: tests of Permanent Death).
     static bool DoKill(const Command &cmd, std::string &message)
@@ -1330,6 +1347,7 @@ namespace Duels
         if (verb == "crewpower") return DoCrewPower(cmd, message);
         if (verb == "door") return DoDoor(cmd, message);
         if (verb == "hull") return DoHull(cmd, message);
+        if (verb == "burn") return DoBurn(cmd, message);
         if (verb == "kill") return DoKill(cmd, message);
         if (verb == "cloak") return DoCloak(cmd, message);
         if (verb == "spawn") return DoSpawn(cmd, message);

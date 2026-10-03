@@ -210,6 +210,11 @@ namespace Duels
             Log("Ai: its ship for the match: %s (%s)", blueprint.c_str(), ShipTitle(blueprint).c_str());
         }
 
+        std::string FixedShip()
+        {
+            return g.active ? g.preferred : std::string();
+        }
+
         bool Active()
         {
             return g.active;

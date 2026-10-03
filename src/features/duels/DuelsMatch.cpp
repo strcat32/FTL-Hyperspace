@@ -811,12 +811,22 @@ namespace Duels
         struct SystemState { int id; int power; int health; int lock; float lockTime; float lockGoal; int hack; int bonus; };
 
         // A system's hacking in the state: FTL's hack level (1 = a drone attached, 2 = pulsing) and whether it is
-        // hacked at all.
-        enum { HACK_LEVEL = 3, HACK_UNDER_ATTACK = 0x80 };
+        // hacked at all; and whether a crew member mans its console (protocol 20, DG: the other game reckoned its
+        // player's sensors by its copy of their crew, hidden while it didn't see inside their ship).
+        enum { HACK_LEVEL = 3, SYSTEM_MANNED = 0x40, HACK_UNDER_ATTACK = 0x80 };
 
         static int HackFlags(const ShipSystem *system)
         {
-            return (std::max(0, std::min(system->iHackEffect, 2)) & HACK_LEVEL) | (system->bUnderAttack ? HACK_UNDER_ATTACK : 0);
+            return (std::max(0, std::min(system->iHackEffect, 2)) & HACK_LEVEL) | (system->bUnderAttack ? HACK_UNDER_ATTACK : 0) |
+                   (system->iActiveManned > 0 ? SYSTEM_MANNED : 0);
+        }
+
+        bool ReplicaManned(const ShipManager *ship, int systemType)
+        {
+            if (!DrivenShip(ship)) return false;
+            const std::map<int, int> &flags = g_driven[ship->iShipId].hackFlags;
+            auto found = flags.find(systemType);
+            return found != flags.end() && (found->second & SYSTEM_MANNED) != 0;
         }
 
         void HoldReplicaHacking(ShipManager *ship)
@@ -2228,15 +2238,28 @@ namespace Duels
             return 1;
         }
 
-        // Would this frame's movement decide the shot (cross the shields, or reach the target point)?
+        // Inside the shields' ellipse as FTL's Shields::CollisionTest measures it (its half axes a and a times the
+        // ellipse's ratio), whatever the layers (DI): the defender's state can take the copy's last layer away before
+        // our shot gets there, and FTL's own test then lets the shot through to a room, though the defender's shields
+        // stopped it.
+        static bool InShieldEllipse(const Shields *shields, float x, float y)
+        {
+            const float a = shields->baseShield.a, b = shields->baseShield.a * shields->ellipseRatio;
+            if (a <= 0.f || b <= 0.f) return false;
+            const float dx = x - (float)shields->baseShield.center.x, dy = y - (float)shields->baseShield.center.y;
+            return dx * dx / (a * a) + dy * dy / (b * b) < 1.f;
+        }
+
+        static bool CrossesShieldEllipse(const Shields *shields, Pointf start, Pointf finish)
+        {
+            return shields && !InShieldEllipse(shields, start.x, start.y) && InShieldEllipse(shields, finish.x, finish.y);
+        }
+
+        // Would this frame's movement decide the shot (cross the shields' ellipse, or reach the target point)?
         static bool WouldDecide(Projectile *projectile, ShipManager *replica)
         {
             if (projectile->AtTarget()) return true;
-            Shields *shields = replica->shieldSystem;
-            if (!shields) return false;
-            Damage damage = projectile->damage;
-            return shields->CollisionTest(projectile->last_position.x, projectile->last_position.y, damage).collision_type == 0 &&
-                   shields->CollisionTest(projectile->position.x, projectile->position.y, damage).collision_type != 0;
+            return CrossesShieldEllipse(replica->shieldSystem, projectile->last_position, projectile->position);
         }
 
         // A shot of ours that the defender shot down (or that ran into a drone there) explodes on our screen too.
@@ -2555,9 +2578,7 @@ namespace Duels
 
             Shields *shields = ship->shieldSystem;
             if (!shields) return true;
-            bool crossing = shields->CollisionTest(start.x, start.y, damage).collision_type == 0 &&
-                            shields->CollisionTest(finish.x, finish.y, damage).collision_type != 0;
-            if (!crossing) return true;
+            if (!CrossesShieldEllipse(shields, start, finish)) return true;
 
             switch (g_forced.verdict)
             {
@@ -2567,7 +2588,13 @@ namespace Duels
                 response.collision_type = 3;
                 break;
             case OUTCOME_SHIELD:
-                // Let the replica's shields show the hit; the state update brings the exact layers anyway.
+                // Let the replica's shields show the hit; the state update brings the exact layers anyway. (With its last
+                // layer already gone there, the shot still ends at the shields' edge, DI.)
+                if (shields->shields.power.first <= 0 && shields->shields.power.super.first <= 0)
+                {
+                    static int logged = 0;
+                    if (logged++ < 5) Log("Match: our shot ends at their shields' edge (their state took the layer away before it got there)");
+                }
                 response = shields->CollisionReal(finish.x, finish.y, damage, false);
                 if (response.collision_type != 2)
                 {
@@ -2598,6 +2625,8 @@ namespace Duels
                 break;
             case OUTCOME_SHIELD:
                 hit = true;   // their shields took it; ours were a moment out of date
+                // (It ends at the shields' edge since DI; a shot that gets here still is logged.)
+                Log("Match: a shot their shields stopped reached the hull of our copy of their ship (shown there)");
                 break;
             default:
                 if (!ship->bJumping) ship->damMessages.push_back(new DamageMessage(1.f, location, DamageMessage::MISS));
@@ -3603,7 +3632,10 @@ namespace Duels
                 message = "not connected";
                 return false;
             }
-            Console::Chat("You", text);
+            // Our line under our name, as the score panel shows it (DJ: it said "You").
+            const std::string name = PlayerName().empty() ? std::string("You") : PlayerName();
+            Log("Match: our chat, as %s: %s", name.c_str(), text.c_str());
+            Console::Chat(name, text);
             message = "said: " + text;
             return true;
         }

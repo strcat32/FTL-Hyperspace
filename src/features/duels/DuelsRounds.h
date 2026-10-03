@@ -204,6 +204,7 @@ namespace Duels
             std::string countdownLabel;
             double countdownMs = -1.0;
             bool paused = false;            // the connection is lost: the match waits
+            bool untimedPrep = false;       // against the AI with the pause on (DR): the preparation lasts until READY
             std::string pausedText;         // "Waiting for Captain_Lil" / "Getting back into the match"
 
             // The ship choice (Phase::Choice, roadmap 3.9).

@@ -244,6 +244,15 @@ namespace Duels
 
         static void RenderCountdown(const Rounds::Summary &s, bool prepLayout)
         {
+            if (s.untimedPrep && prepLayout)
+            {
+                // Against the AI with the pause on (DR): no time limit, the fight begins at READY.
+                if (PrepHidden(prepLayout)) return;
+                Panel(PREP_CENTRE - 75.f, PREP_TOP - 6.f, 150.f, 58.f);
+                PrintCentre(12, PREP_CENTRE, PREP_TOP, "No time limit", ColourOf(WHITE, 0.9f));
+                PrintCentre(12, PREP_CENTRE, PREP_TOP + 24.f, "until READY", ColourOf(GOLD, 1.f));
+                return;
+            }
             if (s.countdownMs < 0.0 || s.countdownLabel.empty()) return;
             bool preparation = s.countdownLabel == "Fight in";
             if (preparation && s.countdownMs <= 5000.0) return;   // the splash counts the last five
@@ -925,12 +934,21 @@ namespace Duels
                     ++greyed;
                 }
             }
+            // The duel's box covers the ship's achievements: FTL would still show one's tooltip under the mouse (DP).
+            size_t achievements = menu->shipAchievements.size();
+            Point first = achievements ? menu->shipAchievements[0].position : Point(0, 0);
+            if (DuelEscMenu())
+            {
+                menu->shipAchievements.clear();
+                menu->selectedAch = -1;
+            }
             static bool logged = false;
             if (!logged)
             {
                 logged = true;
-                Log("MatchUi: FTL's menu in a %s: %d of its %u buttons greyed out (HANGAR, RESTART)", Net::Replaying() ? "replay" : "duel",
-                    greyed, (unsigned)menu->buttons.size());
+                Log("MatchUi: FTL's menu in a %s: %d of its %u buttons greyed out (HANGAR, RESTART), %u ship achievements "
+                    "taken out (the first at %d,%d)", Net::Replaying() ? "replay" : "duel", greyed, (unsigned)menu->buttons.size(),
+                    DuelEscMenu() ? (unsigned)achievements : 0u, first.x, first.y);
             }
         }
 

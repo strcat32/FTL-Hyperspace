@@ -161,6 +161,33 @@ namespace Duels
         }
     }
 
+    static std::map<std::string, float> g_soundLoops;
+
+    void NoteSoundLoop(const std::string &id, float count)
+    {
+        g_soundLoops[id] = count;
+    }
+
+    void StopSoundLoops(const char *why)
+    {
+        SoundControl *sound = G_->GetSoundControl();
+        if (!sound) return;
+        std::string stopped;
+        for (const auto &loop : g_soundLoops)
+        {
+            if (loop.second <= 0.f) continue;
+            stopped += (stopped.empty() ? "" : ", ") + loop.first;
+        }
+        if (stopped.empty()) return;
+        for (auto &loop : g_soundLoops)
+        {
+            if (loop.second <= 0.f) continue;
+            std::string id = loop.first;   // (the call comes back through NoteSoundLoop)
+            sound->UpdateSoundLoop(id, 0.f);
+        }
+        Log("Sounds: FTL's looping sounds stopped (%s): %s", why, stopped.c_str());
+    }
+
     static void MuteForTests()
     {
         static int mute = -1;

@@ -425,9 +425,14 @@ namespace Duels
             return true;
         }
 
+        // The boxes before CombatControl::UpdateSysBoxes, which FTL calls every frame: it makes new ones only when the
+        // opponent's systems changed.
+        static std::vector<SystemBox*> g_boxesBefore;
+
         void BeginSysBoxes(CombatControl *combat)
         {
             if (g_window.moved && combat == g_window.combat) combat->boxPosition.y = g_window.ftlBoxY;
+            g_boxesBefore = combat->sysBoxes;
         }
 
         struct BoxShift
@@ -442,12 +447,17 @@ namespace Duels
         static std::map<const SystemBox*, BoxHit> g_boxHits;
         static const int BOX_SPACING = 30;   // FTL's, between two icons of a row
         static const int BOX_ROW_GAP = 34;   // between two rows
-        static const int ROW_MARGIN = 14;    // from the window's sides
+        // An icon's disc, from the box's place (FTL takes the mouse over it from location + 21 to 42).
+        static const int ICON_LEFT = 15, ICON_RIGHT = 48;
+        // The discs stay inside the frame: its left border, and its right one, which sits further in (MARGIN_RIGHT).
+        static const int ROW_MARGIN_LEFT = 14, ROW_MARGIN_RIGHT = 24;
 
         void EndSysBoxes(CombatControl *combat)
         {
             if (g_window.moved && combat == g_window.combat) combat->boxPosition.y = g_window.ourBoxY;
-            // FTL made new boxes: the old ones' places and hit boxes are gone with them.
+            // FTL made new boxes: the old ones' places and hit boxes are gone with them. (The places stay while the
+            // boxes do: the mouse finds the icons where they were drawn last.)
+            if (combat->sysBoxes == g_boxesBefore) return;
             g_boxShifts.clear();
             g_boxHits.clear();
         }
@@ -463,15 +473,16 @@ namespace Duels
                 if (box && box->pSystem && !Bays::HideBox(box->pSystem)) shown.push_back(box);
             }
             if (shown.empty()) return;
-            // The window's inside, in the boxes' coordinates (FTL draws them from CombatControl::position).
-            int left = (int)std::lround(l.boxX) - combat->position.x + ROW_MARGIN;
-            int right = (int)std::lround(l.boxX + l.boxW) - combat->position.x - ROW_MARGIN;
-            int perRow = std::max(1, (right - left) / BOX_SPACING);
+            // The window's inside, in the boxes' coordinates (FTL draws them from CombatControl::position): where the
+            // first and the last disc of a row may go. A row starts where FTL put the first icon (clear of the frame's
+            // cut corner at the bottom left) unless the window is too narrow for that; it wraps before the frame.
+            int left = (int)std::lround(l.boxX) - combat->position.x + ROW_MARGIN_LEFT - ICON_LEFT;
+            int right = (int)std::lround(l.boxX + l.boxW) - combat->position.x - ROW_MARGIN_RIGHT - ICON_RIGHT;
+            int start = std::max(left, std::min(shown[0]->location.x, right));
+            int perRow = std::max(1, (right - start) / BOX_SPACING + 1);
             int count = (int)shown.size();
             int rows = (count + perRow - 1) / perRow;
             int inRow = (count + rows - 1) / rows;   // rows as even as they come
-            int start = std::max(left, shown[0]->location.x);
-            if (start + (inRow - 1) * BOX_SPACING + BOX_SPACING > right) start = left;
             int baseY = shown[0]->location.y;
             for (int i = 0; i < count; ++i)
             {
@@ -480,6 +491,17 @@ namespace Duels
                 shift.dx = start + column * BOX_SPACING - shown[i]->location.x;
                 shift.dy = baseY - row * BOX_ROW_GAP - shown[i]->location.y;
                 if (shift.dx || shift.dy) g_boxShifts[shown[i]] = shift;
+            }
+            // The log names a new arrangement once: the icons' discs on the screen, row by row.
+            static std::string g_lastRows;
+            char rowsText[200];
+            snprintf(rowsText, sizeof(rowsText), "%d icons in %d row(s) of up to %d, discs from x %d to %d, bottom row at y %d",
+                     count, rows, inRow, combat->position.x + start + ICON_LEFT,
+                     combat->position.x + start + (inRow - 1) * BOX_SPACING + ICON_RIGHT, combat->position.y + baseY + 21);
+            if (g_lastRows != rowsText)
+            {
+                g_lastRows = rowsText;
+                Log("View: the opponent's system icons: %s (the window from x %.0f to %.0f)", rowsText, l.boxX, l.boxX + l.boxW);
             }
         }
 

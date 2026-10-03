@@ -821,6 +821,16 @@ namespace Duels
             message = "mouse at " + std::to_string(x) + "," + std::to_string(y);
             return true;
         }
+        if (verb == "tooltip")
+        {
+            // tooltip: the text FTL shows (or would show) at the mouse now, on one line.
+            MouseControl *mouse = G_->GetMouseControl();
+            std::string text = mouse ? mouse->tooltip : std::string();
+            for (char &c : text) if (c == '\n') c = '|';
+            message = "tooltip at " + std::to_string(mouse ? mouse->position.x : 0) + "," +
+                      std::to_string(mouse ? mouse->position.y : 0) + ": " + (text.empty() ? std::string("none") : text);
+            return true;
+        }
         if (verb == "ftlcharge")
         {
             // ftlcharge: our FTL drive charged at once (tests of running away, roadmap AD).

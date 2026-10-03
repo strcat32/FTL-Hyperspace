@@ -25,6 +25,11 @@
 #include <map>
 #include <sstream>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 namespace Duels
 {
     namespace Menu
@@ -82,7 +87,7 @@ namespace Duels
             int statsTab = -1;
             size_t shipsTop = 0, matchesTop = 0, onlineTop = 0;
             double clearArmedUntil = 0.0;
-            Style::Box statsTabs[3], shipsUp, shipsDown, matchesUp, matchesDown, onlineUp, onlineDown, clear;
+            Style::Box statsTabs[3], shipsUp, shipsDown, matchesUp, matchesDown, onlineUp, onlineDown, clear, profile;
         };
 
         static MenuState g;
@@ -319,10 +324,10 @@ namespace Duels
             g.stats = Stats::Load();
             if (g.statsTab < 0)
             {
-                // The ranked record if there is one, else the first that has matches.
+                // The unranked record if there is one, else the AI's, else the ranked one (the master's page, DK).
                 int counts[3] = {0, 0, 0};
                 for (const Stats::MatchLine &m : g.stats) ++counts[StatsKind(m)];
-                g.statsTab = counts[0] > 0 ? 0 : counts[1] > 0 ? 1 : counts[2] > 0 ? 2 : 0;
+                g.statsTab = counts[1] > 0 ? 1 : counts[2] > 0 ? 2 : 0;
             }
             g.shipsTop = g.matchesTop = g.onlineTop = 0;
             g.clearArmedUntil = 0.0;
@@ -380,6 +385,26 @@ namespace Duels
         {
             if (direction < 0) top = top >= rows ? top - rows : 0;
             else if (top + rows < total) top += rows;
+        }
+
+        // The player's page at the master (DK): their ranked record, rating and matches; "" before a Steam sign-in.
+        static std::string ProfileUrl()
+        {
+            Account::View a = Account::GetView();
+            if (a.state != Account::State::SignedIn || a.steamId.empty()) return std::string();
+            return Config::MasterUrl() + "/player/" + a.steamId;
+        }
+
+        static void OpenProfile()
+        {
+            std::string url = ProfileUrl();
+            if (url.empty()) return;
+            Log("Menu: STATS: the player's page at the master: %s", url.c_str());
+#ifdef _WIN32
+            // (A test's game opens no browser.)
+            if (!AutotestActive() && (url.compare(0, 8, "https://") == 0 || url.compare(0, 7, "http://") == 0))
+                ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#endif
         }
 
         static void RenderStats()
@@ -468,13 +493,34 @@ namespace Duels
                 tab.w = 154.f;
                 tab.h = 34.f;
                 const Style::Look look = t == g.statsTab ? Style::Look::Pressed : tab.Contains(g.mouseX, g.mouseY) ? Style::Look::Hover : Style::Look::Idle;
-                Style::Button(tab.x, tab.y, tab.w, tab.h, std::string(STATS_TABS[t]) + " " + std::to_string(counts[t]), TEXT, look);
+                // (The ranked record is the master's: no count of this computer's.)
+                Style::Button(tab.x, tab.y, tab.w, tab.h, std::string(STATS_TABS[t]) + (t == 0 ? std::string() : " " + std::to_string(counts[t])),
+                              TEXT, look);
             }
             ry += 34.f + 18.f;
-            g.shipsUp = g.shipsDown = g.matchesUp = g.matchesDown = Style::Box();
-            if (all.empty())
+            g.shipsUp = g.shipsDown = g.matchesUp = g.matchesDown = g.profile = Style::Box();
+            if (g.statsTab == 0)
             {
-                static const char *const NONE[3] = {"No ranked match on this computer yet: RANKED in HOST DUEL, or the ranked queue.",
+                // Ranked (DK): the master keeps the record (this computer no second count); the player's page there.
+                const std::string url = ProfileUrl();
+                ry += Paragraph(TEXT, rx, ry, cw, "Your ranked matches, rating and place are on the master's website: one record, "
+                                                  "the one the leaderboard uses.", light) + 14.f;
+                if (url.empty())
+                {
+                    Paragraph(TEXT, rx, ry, cw, "SIGN IN in the FTL: DUELS panel, and your page is at " + Config::MasterUrl() + "/player/...", soft);
+                }
+                else
+                {
+                    Text(TEXT, rx, ry, "Your page:", soft);
+                    ry += 22.f;
+                    Text(FONT, rx, ry, Cut(FONT, url, cw), gold);
+                    ry += 28.f;
+                    ButtonAt(g.profile, rx, ry, 220.f, "OPEN IN THE BROWSER");
+                }
+            }
+            else if (all.empty())
+            {
+                static const char *const NONE[3] = {"",
                                                     "No unranked match on this computer yet (or the record was cleared).",
                                                     "No match against the AI on this computer yet (or the record was cleared)."};
                 Paragraph(TEXT, rx, ry, cw, NONE[g.statsTab], soft);
@@ -787,8 +833,9 @@ namespace Duels
             // defaults, not from duels.cfg).
             if (g.openedBefore) Match::ForgetMatch();
             // FTL's looping sounds (a room losing air, fires) stop: FTL's way to the main menu leaves them playing (roadmap
-            // CU: the oxygen loss went on in the menu after a match). A game's first frame sets them going again.
-            if (g.openedBefore && G_->GetSoundControl()) G_->GetSoundControl()->PauseLoops1(true);
+            // CU: the oxygen loss went on in the menu after a match; DS: a fire's after a match against the AI). Its own
+            // pause of them (PauseLoops) lasts only until its next frame: each is set to nothing.
+            if (g.openedBefore) StopSoundLoops("back in the main menu");
             g.openedBefore = true;
         }
 
@@ -1088,7 +1135,7 @@ namespace Duels
                                   : name == "ships-prev" ? &g.shipsUp : name == "ships-next" ? &g.shipsDown
                                   : name == "matches-prev" ? &g.matchesUp : name == "matches-next" ? &g.matchesDown
                                   : name == "online-prev" ? &g.onlineUp : name == "online-next" ? &g.onlineDown
-                                  : name == "clear" ? &g.clear : nullptr;
+                                  : name == "clear" ? &g.clear : name == "profile" ? &g.profile : nullptr;
             if (g.open != Window::Stats || !box || box->w <= 0.f) return false;
             x = (int)(box->x + box->w / 2.f);
             y = (int)(box->y + box->h / 2.f);
@@ -1121,6 +1168,7 @@ namespace Duels
             else if (g.matchesDown.Contains(x, y)) Page(g.matchesTop, MATCH_ROWS, shown, 1);
             else if (g.onlineUp.Contains(x, y)) Page(g.onlineTop, ONLINE_ROWS, online, -1);
             else if (g.onlineDown.Contains(x, y)) Page(g.onlineTop, ONLINE_ROWS, online, 1);
+            else if (g.profile.Contains(x, y)) OpenProfile();
             else if (g.clear.Contains(x, y) && g.statsTab != 0)
             {
                 if (WallMs() < g.clearArmedUntil)

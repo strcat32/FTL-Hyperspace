@@ -114,10 +114,7 @@ namespace Duels
             int ranked = -1;                 // the recorded match's status (BB): 1, 0, -1 not known
             std::string unrankedWhy;
             uint32_t delivered = 0, ownLoadouts = 0, ownStates = 0, held = 0;
-            // A long seek's cover (roadmap BO): from where, what it says; when this frame's steps began (real time).
-            bool covering = false;
-            double coverFrom = 0.0;
-            std::string coverText;
+            // When this frame's steps began (real time): a seek's budget.
             double stepsStartReal = 0.0;
         };
 
@@ -228,6 +225,7 @@ namespace Duels
             header.Str(guestName);
             header.U32((uint32_t)now);
             header.Bool(true);   // full states of the recorder's ship
+            header.U8(HEADER_DUEL);   // a duel (DL; a match against the AI: HEADER_AI)
             // A ranked room's match: the relay's demo (roadmap CN) begins with a header too (the host's is its own).
             if (Net::RecordsAtRelay())
             {
@@ -504,6 +502,7 @@ namespace Duels
             uint8_t recorder = FROM_HOST;
             std::string hostName, guestName;
             uint32_t startUtc = 0;
+            uint8_t kind = HEADER_DUEL;   // after the full states' flag; older headers end before it
         };
 
         static bool ReadHeader(const DemoRecord &record, Header &h)
@@ -517,7 +516,10 @@ namespace Duels
             h.hostName = r.Str();
             h.guestName = r.Str();
             h.startUtc = r.U32();
-            return r.Ok();
+            r.Bool();   // the recorder's full states
+            bool ok = r.Ok();
+            if (ok && r.Remaining() > 0) h.kind = r.U8();
+            return ok;
         }
 
         static bool ReadDemo(const std::string &path, ReplayState &out, std::string &message)
@@ -573,9 +575,15 @@ namespace Duels
             info.hostName = h.hostName;
             info.guestName = h.guestName;
             info.startUtc = h.startUtc;
+            info.ai = h.kind == HEADER_AI;
             if (h.protocol != Net::PROTOCOL_VERSION) info.problem = "from version " + h.version + ": this game plays only its own version's demos";
+            // The server's record has both ships' full states; a game's own has only its ship's (an older game's swapped
+            // the other's in after the match, with a mark: MARK_SWAP, 3).
+            bool fullStates[2] = {false, false}, swapped = false;
             for (const DemoRecord &record : records)
             {
+                if (record.kind == KIND_FULL_STATE && record.from <= FROM_GUEST) fullStates[record.from] = true;
+                else if (record.kind == KIND_MARKER && record.type == 3) swapped = true;
                 if (record.kind == KIND_MESSAGE && record.type == LIST_MSG_LOADOUT)
                 {
                     std::string &ship = record.from == FROM_HOST ? info.hostShip : info.guestShip;
@@ -589,6 +597,7 @@ namespace Duels
                     info.ranked = record.data[0] != 0 ? 1 : 0;
                 }
             }
+            info.server = fullStates[FROM_HOST] && fullStates[FROM_GUEST] && !swapped;
             info.lengthMs = records.back().ms;
         }
 
@@ -848,7 +857,6 @@ namespace Duels
         {
             if (!g_replay.active && !Net::Replaying()) return;
             g_replay.active = false;
-            g_replay.covering = false;
             Net::EndReplay(why);
         }
 
@@ -1016,10 +1024,10 @@ namespace Duels
         }
 
         // A seek runs ahead as fast as a frame's budget of real time allows (roadmap BO; it was 32 steps a frame, about
-        // half a minute a second, and the user watched it go): at most this many steps, until the budget is spent.
+        // half a minute a second, and the user watched it go): at most this many steps, until the budget is spent. It
+        // runs in sight (DO: no cover any more, the user's wish), its sounds held.
         static const int SEEK_STEPS = 4000;
         static const double SEEK_BUDGET_MS = 28.0;
-        static const double COVER_FROM_MS = 3000.0;   // a seek this long or longer runs behind the cover
 
         void Pace(int &steps, float &share, double stepMs)
         {
@@ -1037,15 +1045,6 @@ namespace Duels
         bool SeekBudgetSpent()
         {
             return g_replay.active && g_replay.seekTo >= 0.0 && RealMs() - g_replay.stepsStartReal >= SEEK_BUDGET_MS;
-        }
-
-        // A seek to `target` from the replay's position now: behind the cover when it is long.
-        static void CoverSeek(double target, const std::string &text)
-        {
-            const double position = WallMs() - g_replay.startMs;
-            g_replay.covering = target - position >= COVER_FROM_MS;
-            g_replay.coverFrom = position;
-            g_replay.coverText = text;
         }
 
         // The records whose time has come.
@@ -1093,7 +1092,6 @@ namespace Duels
                 Log("Demo: the replay is at %.1f s (seek)", (now - g_replay.startMs) / 1000.0);
                 g_replay.seekTo = -1.0;
                 g_replay.paused = g_replay.pauseAfterSeek;
-                g_replay.covering = false;
             }
             if (g_replay.active && !g_replay.ended && g_replay.next >= g_replay.records.size())
             {
@@ -1101,7 +1099,6 @@ namespace Duels
                 g_replay.ended = true;
                 g_replay.paused = true;
                 g_replay.seekTo = -1.0;
-                g_replay.covering = false;
                 Log("Demo: the replay is over (%u messages played, %u held, %u own loadouts, %u own states); it stays on its last moment",
                     g_replay.delivered, g_replay.held, g_replay.ownLoadouts, g_replay.ownStates);
             }
@@ -1132,9 +1129,6 @@ namespace Duels
             g_replay.seekTo = target;
             g_replay.pauseAfterSeek = paused;
             g_replay.paused = false;
-            char text[64];
-            snprintf(text, sizeof(text), "To %d:%02d", (int)(target / 1000.0) / 60, (int)(target / 1000.0) % 60);
-            CoverSeek(target, text);
             message = "replay seeking " + std::to_string((int)(target / 1000.0)) + " s" + (target < position ? " (from the start)" : "");
             return true;
         }
@@ -1158,13 +1152,7 @@ namespace Duels
             v.fullSensors = g_replay.fullSensors;
             v.ranked = g_replay.ranked;
             v.unrankedWhy = g_replay.unrankedWhy;
-            v.covering = g_replay.covering && g_replay.seekTo >= 0.0;
-            if (v.covering)
-            {
-                v.coverText = g_replay.coverText;
-                const double way = g_replay.seekTo - g_replay.coverFrom;
-                v.coverProgress = way > 0.0 ? std::max(0.0, std::min(1.0, (v.positionMs - g_replay.coverFrom) / way)) : 1.0;
-            }
+            v.seekToMs = g_replay.seekTo;
             return v;
         }
 
@@ -1195,6 +1183,14 @@ namespace Duels
         void ReplayStop()
         {
             if (!g_replay.active) return;
+            if (g_replay.seekTo >= 0.0)
+            {
+                // A seek that runs stops where it is (DO): paused there, to play on from it.
+                g_replay.seekTo = -1.0;
+                g_replay.paused = true;
+                Log("Demo: the seek stops at %.1f s (paused)", (WallMs() - g_replay.startMs) / 1000.0);
+                return;
+            }
             std::string message;
             if (Seek(0.0, message)) g_replay.pauseAfterSeek = true;
         }
@@ -1216,8 +1212,6 @@ namespace Duels
             g_replay.seekTo = std::max(g_replay.firstMs, target);
             g_replay.pauseAfterSeek = paused;
             g_replay.paused = false;
-            CoverSeek(g_replay.seekTo, std::string(side == FROM_HOST ? "The host's view" : "The guest's view") + " (" +
-                                           (side == FROM_HOST ? g_replay.hostName : g_replay.guestName) + ")");
             Log("Demo: the %s's side, on to %.1f s", SideName(side), g_replay.seekTo / 1000.0);
         }
 

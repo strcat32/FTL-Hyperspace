@@ -18,7 +18,7 @@ namespace Duels
         // Bump whenever a message changes, or anything that changes how a match plays out (the rules, the shop, the
         // ships, a fix in the fight): two games play each other only with the same protocol (roadmap CE). A change
         // only of the looks (the windows, a text) keeps it: such versions play each other.
-        static const uint16_t PROTOCOL_VERSION = 19;
+        static const uint16_t PROTOCOL_VERSION = 20;
 
         // Message types below this are the session's own; the game layer uses the rest.
         static const uint8_t FIRST_GAME_MESSAGE = 16;

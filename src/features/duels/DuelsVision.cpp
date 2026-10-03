@@ -2,6 +2,7 @@
 #include "Duels.h"
 #include "DuelsCrew.h"
 #include "DuelsEnvironment.h"
+#include "DuelsMatch.h"
 #include "DuelsNet.h"
 #include "DuelsVision.h"
 
@@ -30,24 +31,11 @@ namespace Duels
         FullScope::FullScope() { ++g_fullScopes; }
         FullScope::~FullScope() { --g_fullScopes; }
 
-        // One of their crew at their sensors' console, as far as we see it (a hidden puppet there may be long gone).
-        static bool SensorsManned(ShipManager *replica, ShipSystem *sensors)
-        {
-            for (CrewMember *crew : replica->vCrewList)
-            {
-                if (crew && !crew->bDead && crew->iShipId == 1 && crew->currentSystem == sensors && crew->bActiveManning &&
-                    !Crew::IsHidden(crew))
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
         // Their sensors' working level, as our copy of their ship has it from their state: its power within its damage,
-        // and a level more while manned (FTL's GetEffectivePower: level 3 manned sees the power use), counted only when
-        // we see it; none while our hacking drone pulses there, ion-locked away, or in a nebula or an ion storm (FTL
-        // limits sensors to nothing there, on both ships).
+        // and a level more while manned (FTL's GetEffectivePower: level 3 manned sees the power use; their state says
+        // so, DG: our copy of the crew member there is hidden while we don't see inside their ship); none while our
+        // hacking drone pulses there, ion-locked away, or in a nebula or an ion storm (FTL limits sensors to nothing
+        // there, on both ships).
         static int TheirSensors(ShipManager *replica)
         {
             ShipSystem *sensors = replica ? replica->GetSystem(SYS_SENSORS) : nullptr;
@@ -56,7 +44,7 @@ namespace Duels
             if (kind == Environment::NEBULA || kind == Environment::STORM) return 0;
             if (sensors->iHackEffect >= 2) return 0;
             int level = std::max(0, std::min(replica->GetSystemPower(SYS_SENSORS), sensors->healthState.first));
-            if (level > 0 && SensorsManned(replica, sensors)) ++level;
+            if (level > 0 && Match::ReplicaManned(replica, SYS_SENSORS)) ++level;
             return level;
         }
 

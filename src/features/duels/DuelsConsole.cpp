@@ -65,7 +65,7 @@ namespace Duels
             "droneparts", "dronepower", "export", "fire", "host", "import", "install", "ionize", "join", "keys", "leave", "lobby",
             "name", "nebula", "net", "netsim", "netstats", "nopause", "note", "pausetest", "power", "quit", "relay", "rooms", "say", "screenshot", "swap",
             "script", "spawn", "status", "stop", "supershield", "trace", "tracepower", "upgrade", "version", "view",
-            "weapon", "window", "xp", "match", "ready", "forfeit", "concede", "draw", "hull", "kill", "duels", "fonttest", "mouse", "click", "chatflood", "shake", "drag", "hotkey", "rclick", "escape", "ftlcharge", "menu", "upgradeclick", "aim", "crash"};
+            "weapon", "window", "xp", "match", "ready", "forfeit", "concede", "draw", "hull", "kill", "duels", "fonttest", "mouse", "click", "chatflood", "shake", "drag", "hotkey", "rclick", "escape", "ftlcharge", "menu", "upgradeclick", "aim", "crash", "tooltip", "burn"};
 
         static std::string Lower(std::string text)
         {
@@ -433,7 +433,6 @@ namespace Duels
             float x = (float)printer->x;
             float y = (float)printer->y;
             int font = printer->font;
-            if (Demo::GetReplayView().covering) return false;   // a replay's seek behind its cover (roadmap BO)
             RenderFeed();
             bool console = g_console.open && !g_console.chat && g_console.input;
             if (!console)

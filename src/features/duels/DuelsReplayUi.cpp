@@ -1,6 +1,7 @@
 #include "Global.h"
 #include "Duels.h"
 #include "DuelsDemo.h"
+#include "DuelsRefit.h"
 #include "DuelsReplayUi.h"
 #include "DuelsStyle.h"
 #include "DuelsTrace.h"
@@ -112,8 +113,9 @@ namespace Duels
             }
         }
 
-        // The demo's time line: its whole length, the part played, a mark where it is ("SEEKING" while it runs there).
-        static void Line(float x, double fraction, bool seeking)
+        // The demo's time line: its whole length, the part played, a mark where it is; while a seek runs (DO) the way
+        // still to go, from there to where it runs, in blue, its end marked: it shrinks as the seek gets there.
+        static void Line(float x, double fraction, double seekFraction)
         {
             Style::Box &box = g.line;
             box.x = x;
@@ -125,13 +127,32 @@ namespace Duels
             float inner = W_LINE - 12.f;
             float played = (float)(inner * std::max(0.0, std::min(1.0, fraction)));
             CSurface::GL_DrawRect(x + 6.f, BAR_Y + 10.f, played, H - 20.f, GL_Color(1.f, 0.84f, 0.3f, 0.9f));
-            CSurface::GL_DrawRect(x + 6.f + played - 2.f, BAR_Y + 6.f, 4.f, H - 12.f, GL_Color(1.f, 1.f, 1.f, 1.f));
-            if (seeking)
+            if (seekFraction >= 0.0)
             {
-                CSurface::GL_SetColor(GL_Color(1.f, 1.f, 1.f, 1.f));
-                freetype::easy_printCenter(10, x + W_LINE / 2.f, BAR_Y + 7.f, "SEEKING");
-                CSurface::GL_SetColor(COLOR_WHITE);
+                float to = (float)(inner * std::max(0.0, std::min(1.0, seekFraction)));
+                if (to > played) CSurface::GL_DrawRect(x + 6.f + played, BAR_Y + 10.f, to - played, H - 20.f, GL_Color(0.45f, 0.75f, 1.f, 0.9f));
+                CSurface::GL_DrawRect(x + 6.f + to - 1.f, BAR_Y + 5.f, 2.f, H - 10.f, GL_Color(0.45f, 0.75f, 1.f, 1.f));
             }
+            CSurface::GL_DrawRect(x + 6.f + played - 2.f, BAR_Y + 6.f, 4.f, H - 12.f, GL_Color(1.f, 1.f, 1.f, 1.f));
+        }
+
+        // The ship's screens in a replay (DN): opened on a tab, or closed when it is the one open.
+        static void ShipScreens(unsigned tab)
+        {
+            CommandGui *gui = G_->GetWorld() ? G_->GetWorld()->commandGui : nullptr;
+            if (!gui || gui->storeScreens.bOpen || gui->menuBox.bOpen || gui->choiceBox.bOpen) return;
+            TabbedWindow &screens = gui->shipScreens;
+            if (screens.bOpen && screens.currentTab == tab)
+            {
+                screens.Close();
+                return;
+            }
+            if (!screens.bOpen)
+            {
+                Refit::PlaceShipScreens();
+                screens.Open();
+            }
+            if (tab != 0) screens.SetTab(tab);
         }
 
         void Render()
@@ -140,6 +161,9 @@ namespace Duels
             g.stop.w = g.back.w = g.play.w = g.on.w = g.speed.w = g.line.w = g.view.w = g.sensors.w = 0.f;
             Demo::ReplayView v = Demo::GetReplayView();
             if (!v.active || !InGame()) return;
+            // The ship's screens open (DN): the controls make way for their buttons (ACCEPT closes them, or the keys).
+            CommandGui *gui = G_->GetWorld()->commandGui;
+            if (gui->shipScreens.bOpen) return;
             g.shown = true;
             g.lengthMs = v.lengthMs;
             float x = BAR_X;
@@ -153,7 +177,17 @@ namespace Duels
             x += W_ICON + GAP;
             Button(g.speed, x, W_SPEED, SpeedText(v.speed));
             x += W_SPEED + GAP;
-            Line(x, v.lengthMs > 0.0 ? v.positionMs / v.lengthMs : 0.0, v.seeking);
+            Line(x, v.lengthMs > 0.0 ? v.positionMs / v.lengthMs : 0.0,
+                 v.seeking && v.lengthMs > 0.0 ? v.seekToMs / v.lengthMs : -1.0);
+            if (v.seeking)
+            {
+                // "Seeking..." over the line's end while a seek runs (DO), on a dark backing.
+                const std::string seekingText = "Seeking... to " + Clock(v.seekToMs);
+                float sw = (float)freetype::easy_measureWidth(10, seekingText);
+                CSurface::GL_DrawRect(x + W_LINE - sw - 12.f, BAR_Y - 19.f, sw + 12.f, 18.f, GL_Color(0.f, 0.f, 0.f, 0.65f));
+                CSurface::GL_SetColor(GL_Color(0.45f, 0.75f, 1.f, 1.f));
+                freetype::easy_print(10, x + W_LINE - sw - 6.f, BAR_Y - 17.f, seekingText);
+            }
             x += W_LINE + GAP;
             // The time and the demo's length, on FTL's dark backing as its other numbers.
             std::string time = Clock(v.positionMs) + " / " + Clock(v.lengthMs);
@@ -167,24 +201,17 @@ namespace Duels
             SideButton(g.sensors, SIDE_X + W_VIEW + GAP, W_SENSORS, "FULL SENSORS", v.bothSides, v.fullSensors);
         }
 
-        void RenderSeekCover()
-        {
-            Demo::ReplayView v = Demo::GetReplayView();
-            if (!v.active || !v.covering || !InGame()) return;
-            CSurface::GL_DrawRect(0.f, 0.f, 1280.f, 720.f, GL_Color(6.f / 255.f, 8.f / 255.f, 12.f / 255.f, 1.f));
-            CSurface::GL_SetColor(GL_Color(226.f / 255.f, 230.f / 255.f, 236.f / 255.f, 1.f));
-            freetype::easy_printCenter(24, 640.f, 300.f, "REPLAY");   // font 24: its letters 15 px lower
-            freetype::easy_printCenter(12, 640.f, 352.f, v.coverText);
-            const float bw = 420.f, bx = 640.f - bw / 2.f, by = 384.f;
-            CSurface::GL_DrawRect(bx, by, bw, 10.f, GL_Color(0.2f, 0.22f, 0.26f, 1.f));
-            CSurface::GL_DrawRect(bx, by, (float)(bw * v.coverProgress), 10.f, GL_Color(1.f, 0.84f, 0.3f, 1.f));
-            CSurface::GL_SetColor(COLOR_WHITE);
-        }
-
         bool LButtonDown(int x, int y)
         {
-            if (Demo::GetReplayView().covering) return true;   // nothing to click behind the cover
             if (!g.shown) return false;
+            // The ship button (DN): the ship's screens on the shown ship, read only (FTL keeps them shut "in danger").
+            CommandGui *gui = G_->GetWorld() ? G_->GetWorld()->commandGui : nullptr;
+            const Globals::Rect *ship = gui ? &gui->upgradeButton.hitbox : nullptr;
+            if (ship && !gui->shipScreens.bOpen && x >= ship->x && x < ship->x + ship->w && y >= ship->y && y < ship->y + ship->h)
+            {
+                ShipScreens(0);
+                return true;
+            }
             if (g.stop.Contains(x, y)) Demo::ReplayStop();
             else if (g.back.Contains(x, y)) Demo::ReplayStep(-STEP_MS);
             else if (g.play.Contains(x, y)) Demo::ReplayPlayPause();
@@ -211,7 +238,6 @@ namespace Duels
         {
             Demo::ReplayView v = Demo::GetReplayView();
             if (!v.active) return false;
-            if (v.covering) return key != SDLK_ESCAPE;   // behind the cover only FTL's menu
             switch (key)
             {
             case SDLK_SPACE: Demo::ReplayPlayPause(); return true;
@@ -223,7 +249,15 @@ namespace Duels
             case SDLK_v: Demo::ReplaySwitchView(); return true;
             case SDLK_f: Demo::ReplaySetFullSensors(!Demo::ReplayFullSensors()); return true;
             case SDLK_ESCAPE: return false;   // FTL's menu
-            default: return true;             // nothing else reaches the game in a replay
+            default:
+                // FTL's keys for the ship's screens (DN): each opens its tab on the shown ship, read only. Nothing else
+                // reaches the game in a replay.
+                for (unsigned tab = 0; tab < 3; ++tab)
+                {
+                    static const char *const SCREENS[3] = {"ship_info", "ship_crew", "ship_inv"};
+                    if ((int)Settings::GetHotkey(SCREENS[tab]) > 0 && key == (int)Settings::GetHotkey(SCREENS[tab])) ShipScreens(tab);
+                }
+                return true;
             }
         }
 
