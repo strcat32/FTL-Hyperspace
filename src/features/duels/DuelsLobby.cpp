@@ -506,7 +506,7 @@ namespace Duels
                 ButtonAt(g.aiLevelMore, lx + 110.f + 30.f + 170.f, y, 30.f, 28.f, ">");
                 y += 38.f;
                 y += Paragraph(FONT, lx, y, lw, LEVEL_TEXTS[std::max(0, std::min(2, g.aiLevel))], soft) + 14.f;
-                CheckAt(g.aiPauseBox, lx, y, g.aiPause, "Pause (the pause key holds the match and its clock)");
+                CheckAt(g.aiPauseBox, lx, y, g.aiPause, "Pause allowed (and no time limit to prepare)");
                 y += 40.f;
                 g.name.box = g.password.box = Style::Box();
                 g.listedBox = g.rankedBox = g.recordBox = g.demoBox = Style::Box();
