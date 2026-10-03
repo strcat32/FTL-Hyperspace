@@ -1159,6 +1159,19 @@ HOOK_METHOD_PRIORITY(SystemBox, OnRender, -2000, (bool ignoreStatus) -> void)
     if (mouseHover && pSystem && Duels::Bays::Tooltip(pSystem, text)) G_->GetMouseControl()->SetTooltip(text);
 }
 
+// The team colours (roadmap 5.2): in a match each ship's hull in its side's colour (DuelsView.cpp), drawn by
+// Hyperspace's own hull drawing (CustomShips.cpp) with the tinted copy for the frame.
+HOOK_METHOD_PRIORITY(Ship, OnRenderBase, -2000, (bool engines) -> void)
+{
+    LOG_HOOK("HOOK_METHOD_PRIORITY -> Ship::OnRenderBase -> Begin (DuelsHooks.cpp)\n")
+    GL_Primitive *tinted = Duels::View::TeamHull(this);
+    if (!tinted) return super(engines);
+    GL_Primitive *own = shipImagePrimitive;
+    shipImagePrimitive = tinted;
+    super(engines);
+    shipImagePrimitive = own;
+}
+
 // FTL finds the icon under the mouse from the box's own place (location + 21 to 42), and SystemBox::OnLoop shows an
 // enemy icon's tooltip ("tooltip_<system>_enemy") from that: the duel view's rows draw the opponent's icons elsewhere,
 // so the mouse is moved into the box's own frame; a hidden bay's box (no weapon or drone in it) isn't there at all.

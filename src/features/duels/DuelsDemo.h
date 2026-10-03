@@ -20,7 +20,11 @@ namespace Duels
 
     namespace Demo
     {
-        static const uint16_t FORMAT = 1;
+        // Format 2 (DM, the fifth test: smaller demos): each record's time as the step from the one before it (a signed
+        // 32-bit number), and a state (MSG_STATE, as it went or in full) as its difference from the one before it of the
+        // same side and kind (XOR, the earlier one padded with zeros). Format 1 had the times and the states whole; both
+        // are read.
+        static const uint16_t FORMAT = 2;
         static const uint8_t COMPRESSION_DEFLATE = 1;
         static const uint8_t FROM_HOST = 0, FROM_GUEST = 1;
         static const uint8_t KIND_MESSAGE = 0;      // a message between the games, as it went

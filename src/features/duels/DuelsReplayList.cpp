@@ -262,8 +262,11 @@ namespace Duels
                 Style::CheckBox(box.x, box.y, on, Hover(box));
                 Text(FONT, box.x + Style::CHECK_SIZE + 10.f, box.y + 6.f, label, light);
             };
-            check(g.aiOnly, LX + LW - 150.f, g.filter == AI_ONLY, "AI demos only");
-            check(g.serverOnly, LX + LW - 340.f, g.filter == SERVER_ONLY, "Server demos only");
+            // (Only when there are demos of matches against the AI: none are recorded yet, roadmap DT.)
+            const bool anyAi = std::any_of(g.all.begin(), g.all.end(), [](const Demo::DemoInfo &d) { return d.ai; });
+            if (anyAi) check(g.aiOnly, LX + LW - 150.f, g.filter == AI_ONLY, "AI demos only");
+            else g.aiOnly = Style::Box();
+            check(g.serverOnly, LX + LW - (anyAi ? 340.f : 170.f), g.filter == SERVER_ONLY, "Server demos only");
 
             // The heads: a click sorts by that column (again: the other way round).
             float listH = ROW_H * (ROWS + 1) + 8.f;

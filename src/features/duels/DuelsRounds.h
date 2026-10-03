@@ -97,6 +97,9 @@ namespace Duels
         // the air stays full (Refit::KeepAir): a player who sold the oxygen system lost the whole crew in the preparation,
         // and the round before it began (the ranked test of 2026-10-02).
         bool BetweenFights();
+        // A ship's team in a match (roadmap 5.2): 0 the host's (red), 1 the guest's (blue), as the score panel has them;
+        // ship 0 is the viewer's (ours, or in a replay the shown player's). -1 outside a match.
+        int TeamOfShip(int shipId);
 
         // Running away (roadmap AD; rules, section 3): in a match's fight the FTL drive charges as in FTL, and its jump
         // ends the round, half a point for the other player and none for the runner. InMatch: a match runs (FTL's

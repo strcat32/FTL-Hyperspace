@@ -2,6 +2,7 @@
 #include "CustomEvents.h"
 #include "Duels.h"
 #include "DuelsBays.h"
+#include "DuelsRounds.h"
 #include "DuelsView.h"
 #include "DuelsWindow.h"
 #include "EnemyShipIcons.h"
@@ -428,6 +429,42 @@ namespace Duels
         // The boxes before CombatControl::UpdateSysBoxes, which FTL calls every frame: it makes new ones only when the
         // opponent's systems changed.
         static std::vector<SystemBox*> g_boxesBefore;
+
+        // The team colours (5.2): each ship's tinted hull, made again when the ship, its image or its team change.
+        struct TintedHull
+        {
+            const Ship *ship = nullptr;
+            GL_Texture *texture = nullptr;
+            int x = 0, y = 0, team = -1;
+            GL_Primitive *primitive = nullptr;
+        };
+        static TintedHull g_tinted[2];
+
+        GL_Primitive *TeamHull(Ship *ship)
+        {
+            if (!ship || ship->iShipId < 0 || ship->iShipId > 1 || !ship->shipImage.tex) return nullptr;
+            const int team = Rounds::TeamOfShip(ship->iShipId);
+            if (team < 0) return nullptr;
+            TintedHull &t = g_tinted[ship->iShipId];
+            if (t.primitive && t.ship == ship && t.texture == ship->shipImage.tex && t.x == ship->shipImage.x && t.y == ship->shipImage.y &&
+                t.team == team)
+            {
+                return t.primitive;
+            }
+            if (t.primitive) CSurface::GL_DestroyPrimitive(t.primitive);
+            // FTL's image times the colour: the host's a warm red, the guest's a cool blue; light enough to keep the hull's
+            // own shading and markings.
+            const GL_Color colour = team == 0 ? GL_Color(1.f, 0.72f, 0.68f, 1.f) : GL_Color(0.68f, 0.8f, 1.f, 1.f);
+            t.primitive = G_->GetResources()->CreateImagePrimitive(ship->shipImage.tex, ship->shipImage.x, ship->shipImage.y, 0, colour, 1.f,
+                                                                   false);
+            t.ship = ship;
+            t.texture = ship->shipImage.tex;
+            t.x = ship->shipImage.x;
+            t.y = ship->shipImage.y;
+            t.team = team;
+            Log("View: ship %d's hull in the %s team's colour", ship->iShipId, team == 0 ? "red (host's)" : "blue (guest's)");
+            return t.primitive;
+        }
 
         void BeginSysBoxes(CombatControl *combat)
         {

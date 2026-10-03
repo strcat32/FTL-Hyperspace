@@ -2488,6 +2488,13 @@ namespace Duels
             return g.active && g.data.phase == Phase::Prep;
         }
 
+        int TeamOfShip(int shipId)
+        {
+            if (!g.active || shipId < 0 || shipId > 1) return -1;   // (a free fight too: its score panel has the colours)
+            uint8_t viewer = Viewer();
+            return shipId == 0 ? viewer : Other(viewer);
+        }
+
         bool BetweenFights()
         {
             if (!g.active || g.data.settings.free) return false;

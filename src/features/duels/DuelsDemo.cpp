@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -45,8 +46,31 @@ namespace Duels
         static const size_t PIECE_BYTES = 64 * 1024;
         static const double PIECE_MS = 2000.0;
 
+        // Format 2's coding of a record (DM): the time's step, a state's difference. Each stream of states (a side and
+        // a kind) keeps its last one, whole.
+        struct DeltaCoder
+        {
+            uint32_t lastMs = 0;
+            std::map<int, std::vector<uint8_t>> lastState;
+
+            static int Stream(uint8_t from, uint8_t kind) { return from * 4 + kind; }
+            static bool IsState(uint8_t kind, uint8_t type) { return (kind == KIND_MESSAGE || kind == KIND_FULL_STATE) && type == MSG_STATE; }
+
+            // `data` (size bytes) as its difference from the stream's last state, into out; the stream keeps `data`.
+            void Xor(uint8_t from, uint8_t kind, const uint8_t *data, size_t size, std::vector<uint8_t> &out, bool decoding)
+            {
+                std::vector<uint8_t> &last = lastState[Stream(from, kind)];
+                out.resize(size);
+                for (size_t i = 0; i < size; ++i) out[i] = (uint8_t)(data[i] ^ (i < last.size() ? last[i] : 0));
+                // The stream remembers the whole state: written, the one given; read, the one decoded.
+                if (decoding) last = out;
+                else last.assign(data, data + size);
+            }
+        };
+
         struct DemoState
         {
+            DeltaCoder coder;               // format 2's (DM)
             bool configRead = false;
             bool enabled = true;
             FILE *file = nullptr;
@@ -171,12 +195,20 @@ namespace Duels
         static void RecordAt(uint32_t ms, uint8_t from, uint8_t kind, uint8_t type, const uint8_t *data, size_t size)
         {
             if (!g.file) return;
-            Put32(g.pending, ms);
+            // Format 2 (DM): the time's step, a state's difference from the stream's last.
+            Put32(g.pending, ms - g.coder.lastMs);
+            g.coder.lastMs = ms;
             g.pending.push_back(from);
             g.pending.push_back(kind);
             g.pending.push_back(type);
             Put32(g.pending, (uint32_t)size);
-            if (size > 0) g.pending.insert(g.pending.end(), data, data + size);
+            if (size > 0 && DeltaCoder::IsState(kind, type))
+            {
+                std::vector<uint8_t> coded;
+                g.coder.Xor(from, kind, data, size, coded, false);
+                g.pending.insert(g.pending.end(), coded.begin(), coded.end());
+            }
+            else if (size > 0) g.pending.insert(g.pending.end(), data, data + size);
             ++g.records;
             g.rawBytes += 11 + size;
             if (g.pending.size() >= PIECE_BYTES || WallMs() - g.lastPieceMs >= PIECE_MS) Compress(Z_SYNC_FLUSH);
@@ -259,7 +291,8 @@ namespace Duels
                 return;
             }
             g.z = z_stream();
-            if (deflateInit(&g.z, Z_DEFAULT_COMPRESSION) != Z_OK)
+            g.coder = DeltaCoder();
+            if (deflateInit(&g.z, Z_BEST_COMPRESSION) != Z_OK)
             {
                 std::fclose(file);
                 Log("Demo: no compressor: not recorded");
@@ -435,7 +468,7 @@ namespace Duels
             }
             uint16_t format = (uint16_t)(raw[8] | (raw[9] << 8));
             uint8_t compression = raw[10];
-            if (format != FORMAT || (compression != COMPRESSION_DEFLATE && compression != 0))
+            if (format < 1 || format > FORMAT || (compression != COMPRESSION_DEFLATE && compression != 0))
             {
                 message = "the demo's format (" + std::to_string(format) + ", compression " + std::to_string(compression) + ") isn't this game's";
                 return false;
@@ -469,6 +502,7 @@ namespace Duels
             }
             records.clear();
             size_t pos = 0;
+            DeltaCoder coder;   // format 2 (DM)
             while (pos + 11 <= data.size())
             {
                 DemoRecord record;
@@ -479,7 +513,16 @@ namespace Duels
                 uint32_t size = Get32(data, pos + 7);
                 pos += 11;
                 if (pos + size > data.size()) break;
-                record.data.assign(data.begin() + pos, data.begin() + pos + size);
+                if (format >= 2)
+                {
+                    coder.lastMs += record.ms;   // the step (two's complement: a step back too)
+                    record.ms = coder.lastMs;
+                }
+                if (format >= 2 && DeltaCoder::IsState(record.kind, record.type))
+                {
+                    coder.Xor(record.from, record.kind, data.data() + pos, size, record.data, true);
+                }
+                else record.data.assign(data.begin() + pos, data.begin() + pos + size);
                 pos += size;
                 records.push_back(std::move(record));
             }

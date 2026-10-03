@@ -242,6 +242,8 @@ namespace Duels
         void HoldReplicaHacking(ShipManager *ship);
         // A copy's system manned on its owner's ship, as the owner's state says (DG).
         bool ReplicaManned(const ShipManager *ship, int systemType);
+        // What we see of the opponent's ship, as their last state says (Vision::SEES_* bits, roadmap 4.5).
+        uint8_t PeerVision();
 
         // CloakingSystem::SetTurnedOn: the replica's cloak goes on and off only with its owner's (roadmap 2.4); its
         // own timer, power or damage would end it a moment before the owner's does.

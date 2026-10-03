@@ -91,6 +91,9 @@ namespace Duels
         // inside the window, in more rows when one isn't enough; SystemBox::OnRender draws a box shifted there and
         // moves its hit box (the mouse) the same way.
         void PlaceSysBoxes(CombatControl *combat);
+        // The team colours (roadmap 5.2): in a match a ship's hull image with its team's colour (the host's red, the
+        // guest's blue), as a tinted copy of FTL's (its rooms, crew and floor keep theirs); null outside a match.
+        GL_Primitive *TeamHull(Ship *ship);
         bool SysBoxShift(const SystemBox *box, int &dx, int &dy);
         void BeforeSysBoxRender(SystemBox *box);
         void AfterSysBoxRender(SystemBox *box, int dx, int dy);

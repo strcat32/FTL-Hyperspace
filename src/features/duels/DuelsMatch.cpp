@@ -821,6 +821,11 @@ namespace Duels
                    (system->iActiveManned > 0 ? SYSTEM_MANNED : 0);
         }
 
+        uint8_t PeerVision()
+        {
+            return g_match.peerVision;
+        }
+
         bool ReplicaManned(const ShipManager *ship, int systemType)
         {
             if (!DrivenShip(ship)) return false;
@@ -1050,8 +1055,9 @@ namespace Duels
             uint16_t seq = ++g_match.stateSeq;
             WriteOwnState(w, ship, now, seq, false);
             Net::Send(MSG_STATE, w, false);
-            // Our ship with all in sight: for our demo (roadmap 5.1) and the relay's (CN), when either records.
-            if (Demo::WantsFullStates())
+            // Our ship with all in sight: for our demo (roadmap 5.1) and the relay's (CN), when either records; every
+            // second state (5 a second, DM: smaller demos; the replay's ship walks and charges between them).
+            if (Demo::WantsFullStates() && seq % 2 == 0)
             {
                 Vision::FullScope full;
                 Writer record;
